@@ -415,9 +415,11 @@ class Predictor:
         roc_60 = mom._roc(60)
         roc_120 = mom._roc(120)
 
-        # Cold-start guard: need real 2-min price history before trading
-        if roc_60 == 0.0 and roc_120 == 0.0 and momentum_raw == 0.0:
-            self._diag_log(f"cold-start-{coin}", f"[COLD START] {coin}: no momentum data yet — waiting for 2min+ history", 30.0)
+        # Cold-start guard: need 60s+ of tick data (not momentum values, which can be zero in flat markets)
+        mom_ticks = mom.tick_count
+        mom_span = (mom._ticks[-1][0] - mom._ticks[0][0]) if mom_ticks >= 2 else 0.0
+        if mom_span < 60.0:
+            self._diag_log(f"cold-start-{coin}", f"[COLD START] {coin}: only {mom_span:.0f}s of tick data (need 60s+, have {mom_ticks} ticks)", 30.0)
             return None
 
         # Distance from strike as percentage
@@ -567,7 +569,7 @@ class Predictor:
         )
 
         self._window_direction = direction
-        self._chop_detector.record_direction(direction)
+        # ChopDetector records actual market outcome in run_bot.py, NOT bot's trade direction
         regime = "CHOPPY" if self._chop_detector.is_choppy() else "TRENDING"
         logger.debug(f"[COMMIT] {coin} {direction} | {regime} | history={self._chop_detector.summary()} | trends={dict(self._window_trends)}")
 

@@ -122,8 +122,8 @@ def is_good_trading_hour() -> tuple:
     if weekday >= 5:
         day_name = "Saturday" if weekday == 5 else "Sunday"
         return False, f"[WEEKEND] {day_name} {lima_hour}:00 Lima — no trading on weekends"
-    if lima_hour < 14 or lima_hour >= 17:
-        return False, f"[OFF HOURS] {lima_hour}:{now_lima.minute:02d} Lima — trade window 2pm-5pm Lima only (scanning active)"
+    if lima_hour < 14 or lima_hour >= 18:
+        return False, f"[OFF HOURS] {lima_hour}:{now_lima.minute:02d} Lima — trade window 2pm-6pm Lima only (scanning active)"
     return True, ""
 
 
@@ -288,7 +288,7 @@ def main():
             from zoneinfo import ZoneInfo as _ZI
             _lima_now = datetime.now(_ZI("America/Lima"))
             _is_morning = 9 <= _lima_now.hour < 14
-            _is_afternoon = 14 <= _lima_now.hour < 17
+            _is_afternoon = 14 <= _lima_now.hour < 18
 
 
 
@@ -449,6 +449,14 @@ def main():
                     if strike > 0 and final_price > 0:
                         went_up = final_price > strike
                         won = (side == "UP" and went_up) or (side == "DOWN" and not went_up)
+                except Exception:
+                    pass
+
+                # Record actual market direction in ChopDetector (not bot's bet direction)
+                try:
+                    actual_dir = "UP" if went_up else "DOWN"
+                    predictor._chop_detector.record_direction(actual_dir)
+                    logger.debug(f"[CHOP UPDATE] {coin}: market went {actual_dir} | history={predictor._chop_detector.summary()}")
                 except Exception:
                     pass
 
