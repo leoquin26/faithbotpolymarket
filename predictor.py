@@ -405,9 +405,9 @@ class Predictor:
             )
             return None
 
-        if self._recent_accuracy() < self.MIN_ACCURACY:
-            self._diag_log(f"cold-{coin}", f"[COLD STREAK] accuracy={self._recent_accuracy():.0%} — abstaining", 30.0)
-            return None
+        # Cold streak check is in morning_predictor only — afternoon has proven 80%+ WR
+        # Morning losses should never block afternoon trading
+        pass  # accuracy tracking still active for morning_predictor to read
 
         # ── Step 1: Trend-based direction (primary signal) ──
         # Use actual price movement to determine direction, not BS math

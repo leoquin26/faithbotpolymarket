@@ -40,7 +40,7 @@ SYMBOLS = {
 # === POSITION SIZING ===
 DEFAULT_POSITION_SIZE = float(os.getenv("DEFAULT_POSITION_SIZE", "5"))
 MAX_SINGLE_TRADE = float(os.getenv("MAX_SINGLE_TRADE", "10"))
-BANKROLL_BALANCE = float(os.getenv("BANKROLL_BALANCE", "88"))
+BANKROLL_BALANCE = float(os.getenv("BANKROLL_BALANCE", "120"))
 BANKROLL_PERCENT = float(os.getenv("BANKROLL_PERCENT", "3"))
 
 # === ENTRY ZONE ===
