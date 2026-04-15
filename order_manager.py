@@ -157,7 +157,9 @@ class OrderManager:
             self.daily_wins = 0.0
             self.daily_trades = 0
             self._trading_day = today
-        return self.daily_losses >= config.DAILY_LOSS_LIMIT
+        # Scale stop-loss with bankroll: 10% of current bankroll, min 5
+        dynamic_limit = max(config.DAILY_LOSS_LIMIT, self.get_live_bankroll() * 0.10)
+        return self.daily_losses >= dynamic_limit
 
     # ------------------------------------------------------------------
     # Order-book helpers
@@ -544,7 +546,9 @@ class OrderManager:
         if use_kelly and pred.edge > 0:
             kelly_fraction = float(os.getenv("KELLY_FRACTION", "0.25"))
             kelly_min_bet = float(os.getenv("KELLY_MIN_BET", "2.0"))
-            kelly_max_bet = float(os.getenv("KELLY_MAX_BET", "5.0"))
+            kelly_max_bet_env = float(os.getenv("KELLY_MAX_BET", "0"))
+            # Compounding: max bet = 8% of bankroll, with  floor and no hard ceiling
+            kelly_max_bet = max(kelly_max_bet_env, bankroll * 0.08) if kelly_max_bet_env > 0 else bankroll * 0.08
 
             entry_price = pred.entry_price if pred.entry_price > 0.05 else pred.poly_price
             if entry_price <= 0.01 or entry_price >= 0.99:

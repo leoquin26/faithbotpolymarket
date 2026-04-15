@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import config
-from morning_predictor import MorningPredictor
+import morning_strategy as morn
 import binance_ws
 from market_data import get_market_info, MarketInfo
 from predictor import Predictor, Prediction
@@ -122,8 +122,13 @@ def is_good_trading_hour() -> tuple:
     if weekday >= 5:
         day_name = "Saturday" if weekday == 5 else "Sunday"
         return False, f"[WEEKEND] {day_name} {lima_hour}:00 Lima — no trading on weekends"
+<<<<<<< Updated upstream
     if lima_hour < 14 or lima_hour >= 18:
         return False, f"[OFF HOURS] {lima_hour}:{now_lima.minute:02d} Lima — trade window 2pm-6pm Lima only (scanning active)"
+=======
+    if lima_hour < 9 or lima_hour >= 17:
+        return False, f"[OFF HOURS] {lima_hour}:{now_lima.minute:02d} Lima — trade window 9am-5pm Lima (scanning active)"
+>>>>>>> Stashed changes
     return True, ""
 
 
@@ -162,7 +167,7 @@ def main():
     time.sleep(2)
 
     print("=" * 60)
-    print("  V11 BOT — Black-Scholes Binary Engine")
+    print("  V12 BOT — Black-Scholes + Morning Strategy")
     print("=" * 60)
     print(f"  Mode:         {'DRY RUN' if config.DRY_RUN else 'LIVE TRADING'}")
     print(f"  Coins:        {', '.join(config.SYMBOLS.keys())}")
@@ -180,7 +185,6 @@ def main():
     print("=" * 60)
 
     predictor = Predictor()
-    morning_pred = MorningPredictor(predictor)
     orders = OrderManager()
     executor = ThreadPoolExecutor(max_workers=4)
 
@@ -284,68 +288,62 @@ def main():
                 time.sleep(config.SCAN_INTERVAL)
                 continue
 
-            # ── Morning strategy (9am-2pm Lima): separate, conservative predictor ──
+            # ── Time phase detection ──
             from zoneinfo import ZoneInfo as _ZI
             _lima_now = datetime.now(_ZI("America/Lima"))
             _is_morning = 9 <= _lima_now.hour < 14
             _is_afternoon = 14 <= _lima_now.hour < 18
 
+            # ── Morning strategy (9am-2pm): stricter filters, half Kelly ──
+            if _is_morning and can_trade and predictions:
+                morning_approved = []
+                for p in predictions:
+                    if p.confidence not in ("HIGH", "MEDIUM"):
+                        continue
+                    if p.edge < config.MIN_EDGE:
+                        continue
+                    filtered = morn.filter_morning_signal(p, p.trend_score)
+                    if filtered:
+                        morning_approved.append(filtered)
 
+                if morning_approved:
+                    active_count = len(orders.positions) + len(orders.active_gtc)
+                    if active_count < 1:  # max 1 position in morning (conservative)
+                        best_m = max(morning_approved, key=lambda x: x.probability)
+                        if not lock_window(best_m.coin, best_m.market_info.window_start):
+                            logger.debug(f"[LOCKED] {best_m.coin} already traded this window")
+                        else:
+                            clob_ask = orders.get_clob_ask(best_m.token_id)
+                            if clob_ask is not None:
+                                real_edge = best_m.probability - clob_ask
+                                best_m.entry_price = clob_ask
+                                best_m.edge = real_edge
 
-            morning_preds = []
-            if False and _is_morning and can_trade:  # morning disabled - no edge
-                for coin_name in config.SYMBOLS:
-                    try:
-                        minfo = get_market_info(coin_name)
-                        if not minfo or minfo.time_remaining < config.MIN_TIME_REMAINING:
-                            continue
-                        if is_window_locked(coin_name, minfo.window_start):
-                            continue
-                        if orders.is_window_traded(coin_name, minfo.window_start):
-                            continue
-                        if morning_pred.is_window_traded(coin_name, minfo.window_start):
-                            continue
-                        _ws = binance_ws.get_price(coin_name)
-                        if _ws and _ws > 0:
-                            minfo.current_crypto_price = _ws
-                        _ticks = binance_ws.get_tick_history(coin_name, 300)
-                        _ub = {}
-                        _db = {}
-                        try: _ub = orders.get_clob_book(minfo.up_token_id)
-                        except: pass
-                        try: _db = orders.get_clob_book(minfo.down_token_id)
-                        except: pass
-                        mp = morning_pred.predict(
-                            minfo,
-                            ws_price=minfo.current_crypto_price,
-                            up_ask=_ub.get("ask") or 0.0,
-                            down_ask=_db.get("ask") or 0.0,
-                            up_depth=_ub.get("depth_ratio", 0.0),
-                            down_depth=_db.get("depth_ratio", 0.0),
-                            ticks=_ticks,
-                        )
-                        if mp:
-                            morning_preds.append(mp)
-                    except Exception as e:
-                        logger.error(f"Morning scan error for {coin_name}: {e}")
-
-            if False and morning_preds and can_trade and _is_morning:  # morning disabled
-                active_count = len(orders.positions) + len(orders.active_gtc)
-                if active_count < 2:
-                    best_m = max(morning_preds, key=lambda x: x.probability)
-                    if not is_window_locked(best_m.coin, best_m.market_info.window_start):
-                        if lock_window(best_m.coin, best_m.market_info.window_start):
-                            logger.info(f"[MORNING TRADE] {best_m.coin} {best_m.direction} | "
-                                       f"Prob={best_m.probability:.0%} Edge={best_m.edge*100:.1f}%")
-                            # Half Kelly for morning trades
-                            import os as _os
-                            _orig_frac = _os.environ.get("KELLY_FRACTION", "0.15")
-                            _os.environ["KELLY_FRACTION"] = str(float(_orig_frac) * 0.5)
-                            filled_m = orders.place_bet(best_m)
-                            if not filled_m:
+                                if real_edge < config.MIN_EDGE:
+                                    logger.info(f"[MORNING REJECT] {best_m.coin}: edge={real_edge*100:.1f}% too low")
+                                    unlock_window(best_m.coin, best_m.market_info.window_start)
+                                elif clob_ask < config.ENTRY_MIN or clob_ask > config.ENTRY_MAX:
+                                    logger.info(f"[MORNING RANGE] {best_m.coin}: ask={clob_ask*100:.0f}c outside range")
+                                    unlock_window(best_m.coin, best_m.market_info.window_start)
+                                else:
+                                    phase = morn.get_morning_phase()
+                                    logger.info(
+                                        f"[MORNING TRADE] P{phase} {best_m.coin} {best_m.direction} | "
+                                        f"Prob={best_m.probability:.0%} | Ask={clob_ask*100:.0f}c | "
+                                        f"Edge={real_edge*100:.1f}% | {best_m.confidence}"
+                                    )
+                                    # Half Kelly for morning trades
+                                    import os as _os2
+                                    _orig_frac = _os2.environ.get("KELLY_FRACTION", "0.25")
+                                    _os2.environ["KELLY_FRACTION"] = str(float(_orig_frac) * 0.5)
+                                    filled_m = orders.place_bet(best_m)
+                                    _os2.environ["KELLY_FRACTION"] = _orig_frac
+                                    if not filled_m:
+                                        unlock_window(best_m.coin, best_m.market_info.window_start)
+                                        logger.info(f"[UNLOCK] {best_m.coin}: morning order failed")
+                            else:
+                                logger.info(f"[MORNING NO ASK] {best_m.coin}: no valid CLOB ask")
                                 unlock_window(best_m.coin, best_m.market_info.window_start)
-                                logger.info(f"[UNLOCK] {best_m.coin}: morning order failed, unlocked for retry")
-                            _os.environ["KELLY_FRACTION"] = _orig_frac
 
             # ── Afternoon strategy (2pm-5pm): main predictor, unchanged ──
             actionable = [

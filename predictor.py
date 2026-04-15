@@ -42,6 +42,7 @@ class Prediction:
     stale_gap: float = 0.0
     conviction_strength: Optional[str] = None
     force_fok: bool = False
+    trend_score: float = 0.0
 
 
 # ── Normal CDF (Abramowitz & Stegun approximation, max error 1.5e-7) ──
@@ -425,13 +426,33 @@ class Predictor:
         # Distance from strike as percentage
         dist_pct = (current_price - strike) / strike if strike > 0 else 0.0
 
-        # Trend score: combines short-term momentum with position relative to strike
+        # Multi-timeframe ROC for direction confirmation
+        roc_300 = mom._roc(300)  # 5-minute trend (big picture)
+
+        # Trend score: combines multi-timeframe momentum with position
         # Positive = price moving UP / above strike, Negative = DOWN / below strike
         trend_score = 0.0
-        trend_score += dist_pct * 200.0        # position vs strike (strongest signal)
-        trend_score += roc_60 * 500.0          # 60s momentum
-        trend_score += roc_120 * 300.0         # 2min trend
-        trend_score += momentum_raw * 400.0    # weighted momentum (10s/30s/60s)
+        trend_score += dist_pct * 200.0        # position vs strike
+        trend_score += roc_60 * 400.0          # 60s momentum (reduced from 500)
+        trend_score += roc_120 * 350.0         # 2min trend (increased from 300)
+        trend_score += roc_300 * 250.0         # 5min trend (NEW - bigger picture)
+        trend_score += momentum_raw * 300.0    # weighted momentum (reduced from 400)
+
+        # Direction disagreement filter: if 5-min trend strongly opposes 1-min signal,
+        # the signal is likely a bounce, not a reversal. Dampen the trend score.
+        if roc_300 != 0.0 and roc_60 != 0.0:
+            short_dir = 1 if roc_60 > 0 else -1
+            long_dir = 1 if roc_300 > 0 else -1
+            if short_dir != long_dir and abs(roc_300) > abs(roc_60) * 0.3:
+                dampen = 0.50  # cut trend score in half when timeframes disagree
+                old_ts = trend_score
+                trend_score *= dampen
+                self._diag_log(
+                    f"disagree-{coin}",
+                    f"[TF DISAGREE] {coin}: roc60={roc_60*10000:+.1f}bps vs roc300={roc_300*10000:+.1f}bps "
+                    f"— dampened trend {old_ts:+.2f} -> {trend_score:+.2f}",
+                    15.0,
+                )
 
         # Regime detection: choppy vs trending
         chop = self._chop_detector
@@ -473,6 +494,19 @@ class Predictor:
         # Blend: 70% trend-based, 30% BS mathematical
         combined_prob = 0.70 * raw_prob + 0.30 * base_up_prob
         combined_prob = max(0.01, min(0.99, combined_prob))
+
+        # Distance penalty: when price is near strike, dampen confidence toward 50%
+        # abs(dist_pct) < 0.05% means price is within 0.05% of strike = coin flip territory
+        # Scale: at dist=0 -> 40% penalty, at dist=0.1% -> 0% penalty
+        DIST_THRESHOLD = 0.001  # 0.1% from strike
+        if abs(dist_pct) < DIST_THRESHOLD:
+            dist_factor = abs(dist_pct) / DIST_THRESHOLD  # 0.0 at strike, 1.0 at threshold
+            penalty = 0.40 * (1.0 - dist_factor)  # 40% pull toward 0.5 when at strike
+            combined_prob = combined_prob * (1.0 - penalty) + 0.50 * penalty
+            logger.debug(
+                f"[DIST PENALTY] {coin}: dist={dist_pct*100:+.4f}% factor={dist_factor:.2f} "
+                f"penalty={penalty:.2f} prob_adj={combined_prob:.1%}"
+            )
 
         # ── Step 3: Decide direction and evaluate ──
         is_up = combined_prob >= 0.5
@@ -565,7 +599,7 @@ class Predictor:
         logger.info(
             f"[SIGNAL] {coin} {direction} | Prob={win_prob:.0%} | Ask={ask*100:.0f}c | "
             f"Edge={edge*100:.1f}% | Trend={trend_score:+.2f} Dist={dist_pct*100:+.3f}% "
-            f"ROC60={roc_60*10000:+.1f}bps σ={sigma:.2e} T={time_remaining:.0f}s"
+            f"ROC60={roc_60*10000:+.1f} ROC300={roc_300*10000:+.1f}bps σ={sigma:.2e} T={time_remaining:.0f}s"
         )
 
         self._window_direction = direction
@@ -587,4 +621,5 @@ class Predictor:
             mc_prob=win_prob,
             depth_ratio=depth,
             directional_edge=win_prob - 0.50,
+            trend_score=trend_score,
         )
