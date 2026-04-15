@@ -5,13 +5,14 @@
 1. [Overview](#overview)
 2. [Architecture](#architecture)
 3. [Module Reference](#module-reference)
-4. [Prediction Engine](#prediction-engine)
-5. [Trade Lifecycle](#trade-lifecycle)
-6. [Safety Systems](#safety-systems)
-7. [Configuration Guide](#configuration-guide)
-8. [Trading Schedule](#trading-schedule)
-9. [Performance Data](#performance-data)
-10. [Deployment](#deployment)
+4. [Morning Strategy](#morning-strategy)
+5. [Prediction Engine](#prediction-engine)
+6. [Trade Lifecycle](#trade-lifecycle)
+7. [Safety Systems](#safety-systems)
+8. [Configuration Guide](#configuration-guide)
+9. [Trading Schedule](#trading-schedule)
+10. [Performance Data](#performance-data)
+11. [Deployment](#deployment)
 
 ---
 
@@ -24,8 +25,8 @@ FaithBot is an automated trading bot for Polymarket's crypto "Up or Down" 15-min
 **Key Stats:**
 - Markets: BTC, ETH, SOL, XRP (15-minute Up/Down)
 - Best performance window: 2:00 PM - 3:00 PM Lima/ET (historically 80-86% win rate)
-- Trading hours: 2:00 PM - 5:00 PM Lima/ET, weekdays only
-- Bet sizing: Kelly Criterion with fractional sizing
+- Trading hours: 9:00 AM - 5:00 PM Lima/ET (morning strategy + afternoon main)
+- Bet sizing: Compounding Kelly Criterion (8% of bankroll cap)
 - Order type: Fill-or-Kill (FOK) for instant execution
 
 ---
@@ -59,14 +60,17 @@ FaithBot is an automated trading bot for Polymarket's crypto "Up or Down" 15-min
                  |  - Consensus    |
                  +--------+---------+
                           |
-                 +--------v---------+
-                 |   run_bot.py     |
-                 |  - Main loop    |
-                 |  - Scan coins   |
-                 |  - Trade gating |
-                 |  - Atomic locks |
-                 |  - Outcome track|
-                 +--------+---------+
+              +-----------+-----------+
+              |                       |
+    +---------v-----------+  +--------v---------+
+    | morning_strategy.py |  |   run_bot.py     |
+    | - Phase 1 filter    |  |  - Main loop    |
+    | - Phase 2 block     |  |  - Scan coins   |
+    | - Phase 3 filter    |  |  - Trade gating |
+    | - Half Kelly gate   |  |  - Atomic locks |
+    +---------+-----------+  |  - Outcome track|
+              |              +--------+---------+
+              +-----------+-----------+
                           |
               +-----------+-----------+
               |                       |
@@ -75,7 +79,8 @@ FaithBot is an automated trading bot for Polymarket's crypto "Up or Down" 15-min
     | - Kelly sizing   |    | - Fill alerts    |
     | - CLOB orders    |    | - Win/Loss alerts|
     | - FOK/GTC        |    | - Error alerts   |
-    | - Position track |    +------------------+
+    | - Compounding    |    +------------------+
+    | - Position track |
     +------------------+
               |
     +---------v--------+
@@ -99,13 +104,18 @@ FaithBot is an automated trading bot for Polymarket's crypto "Up or Down" 15-min
 3. **Prediction** (per coin per scan):
    - `predictor.py` receives ticks, market info, and orderbook data
    - Runs through safety filters (warmup, ticks, volatility, cold streak, etc.)
-   - Calculates trend score from momentum + distance
+   - Calculates trend score from momentum + distance (including 5-min ROC)
    - Converts to probability via Black-Scholes + sigmoid blend
    - Returns a `Prediction` object or `None` (abstain)
 
-4. **Trade Execution** (when signal passes all gates):
+4. **Morning Filter** (9am-2pm only):
+   - `morning_strategy.py` applies additional phase-based filters on top of predictor output
+   - Restricts coins, raises thresholds, enforces half Kelly sizing
+   - Does NOT replace the prediction engine -- acts as an extra gating layer
+
+5. **Trade Execution** (when signal passes all gates):
    - `run_bot.py` applies atomic window lock, re-fetches CLOB ask, validates edge
-   - `order_manager.py` calculates Kelly bet size, places FOK order
+   - `order_manager.py` calculates Kelly bet size (compounding: 8% of live bankroll)
    - Position tracked until window expiry, then win/loss recorded
 
 ---
@@ -150,7 +160,7 @@ Controls the bot's execution flow, scanning, trade gating, and lifecycle managem
 | Component | Purpose |
 |-----------|---------|
 | `_traded_set` + `_trade_lock` | Atomic one-trade-per-coin-per-window deduplication |
-| `is_good_trading_hour()` | Trading schedule enforcer (2pm-5pm Lima, weekdays only) |
+| `is_good_trading_hour()` | Trading schedule enforcer (9am-5pm Lima, weekdays only) |
 | `scan_coin(coin)` | Parallel scanner - fetches data and calls predictor |
 | `cleanup_old_windows()` | Memory leak prevention for old window locks |
 | Outcome tracking loop | Detects expired positions, determines win/loss, records results |
@@ -158,13 +168,14 @@ Controls the bot's execution flow, scanning, trade gating, and lifecycle managem
 
 **Trade Gating Flow (in order):**
 1. `is_good_trading_hour()` - are we in trading hours?
-2. `is_window_locked()` - already traded this coin this window?
-3. `active_count >= 2` - max 2 concurrent positions
-4. `lock_window()` - acquire atomic lock
-5. `get_clob_ask()` - re-fetch fresh price
-6. Edge validation - `real_edge >= MIN_EDGE`
-7. Price range check - `ENTRY_MIN <= ask <= ENTRY_MAX`
-8. `place_bet()` - execute order
+2. Morning/afternoon routing - which session are we in?
+3. `is_window_locked()` - already traded this coin this window?
+4. `active_count >= max_positions` - max 1 (morning) or 2 (afternoon) concurrent positions
+5. `lock_window()` - acquire atomic lock
+6. `get_clob_ask()` - re-fetch fresh price
+7. Edge validation - `real_edge >= MIN_EDGE`
+8. Price range check - `ENTRY_MIN <= ask <= ENTRY_MAX`
+9. `place_bet()` - execute order
 
 ### `config.py` - Configuration
 
@@ -181,12 +192,13 @@ Handles all interaction with the Polymarket CLOB API.
 | Feature | Description |
 |---------|-------------|
 | Kelly Criterion sizing | Calculates optimal bet size based on edge, probability, and bankroll |
+| Compounding mode | When `KELLY_MAX_BET=0`, sizes bets as 8% of live bankroll |
 | Live bankroll fetching | Queries CLOB API for real USDC balance every 5 minutes |
 | FOK orders | Fill-or-Kill for guaranteed instant execution |
 | GTC orders | Good-til-Cancelled for patient fills (used when edge > 8%) |
 | Window dedup | Persistent file-based tracking of traded windows |
 | Correlation limit | Max 2 same-direction trades per window across all coins |
-| Daily stop-loss | Halts trading if daily losses exceed configured limit |
+| Daily stop-loss | Halts trading if daily losses exceed configured limit (scales with bankroll) |
 
 **CLOB Interaction:**
 - Orderbook reads use direct `httpx` HTTP (bypasses Tor proxy for speed)
@@ -234,6 +246,56 @@ All messages sent in background threads with deduplication (5-second cooldown pe
 
 ---
 
+## Morning Strategy
+
+### `morning_strategy.py` - Phase-Based Morning Filter
+
+A separate filter layer that sits on top of the main predictor engine. It does NOT replace `predictor.py` -- it applies additional, stricter gating during morning hours (9:00 AM - 2:00 PM Lima/ET).
+
+**Why:** Morning markets have different characteristics than the proven afternoon window. Volatility is lower pre-US-open, and the US market open (10:30 AM Lima) causes high chop/reversal risk. The morning strategy captures the profitable morning windows while blocking the dangerous ones.
+
+### Phase Breakdown
+
+| Phase | Time (Lima/ET) | Coins | Min Prob | Min Edge | Min Trend | Sizing | Max Positions |
+|-------|---------------|-------|----------|----------|-----------|--------|---------------|
+| **Phase 1** | 9:00 - 10:30 | BTC, ETH only | 80% | 10% | \|trend\| >= 0.60 | Half Kelly | 1 |
+| **Phase 2** | 10:30 - 12:00 | NONE (scan only) | — | — | — | — | 0 |
+| **Phase 3** | 12:00 - 14:00 | All coins | 78% | 8% | \|trend\| >= 0.50 | Half Kelly | 1 |
+
+### Phase Details
+
+**Phase 1 (9:00 - 10:30 AM):**
+- Pre-US-market-open window. Crypto trends are cleaner before equity markets open.
+- Only BTC and ETH: highest liquidity, most predictable momentum.
+- Strictest thresholds: 80% probability, 10% edge, 0.60 trend score minimum.
+- Half Kelly sizing reduces risk during the less-proven morning session.
+- Maximum 1 position at a time (vs 2 in afternoon).
+
+**Phase 2 (10:30 AM - 12:00 PM):**
+- US market open zone. Equity market open causes cross-asset volatility spikes and reversals.
+- NO trading allowed. The bot continues scanning and collecting data.
+- Historically the weakest hour (65% WR at 11am vs 79% at 9am).
+
+**Phase 3 (12:00 - 2:00 PM):**
+- Post-open stabilization. Markets have absorbed the opening volatility.
+- All coins allowed (BTC, ETH, SOL, XRP).
+- Slightly relaxed thresholds vs Phase 1: 78% prob, 8% edge, 0.50 trend.
+- Still half Kelly sizing and max 1 position.
+
+### Morning vs Afternoon Comparison
+
+| Attribute | Morning (9am-2pm) | Afternoon (2pm-5pm) |
+|-----------|-------------------|---------------------|
+| Filter module | `morning_strategy.py` | Standard engine |
+| Min probability | 78-80% | 75% |
+| Min edge | 8-10% | 5% |
+| Min trend score | 0.50-0.60 | 0.40 |
+| Kelly sizing | Half Kelly | Full Kelly |
+| Max positions | 1 | 2 |
+| Coin restrictions | Phase-dependent | All coins |
+
+---
+
 ## Prediction Engine
 
 ### Step 1: EWMA Volatility (per-second sigma)
@@ -274,21 +336,36 @@ This gives the base probability that "UP" wins. `P(DOWN) = 1 - P(UP)`.
 
 ### Step 3: Trend Score (Primary Direction Signal)
 
-The raw Black-Scholes probability only captures the current position vs threshold. The trend score adds directional momentum:
+The raw Black-Scholes probability only captures the current position vs threshold. The trend score adds directional momentum across multiple timeframes:
 
 ```
-trend_score = dist_pct * 200       (position vs strike - strongest weight)
-            + roc_60 * 500         (60-second rate of change)
-            + roc_120 * 300        (120-second rate of change)
-            + momentum_raw * 400   (weighted 10s/30s/60s momentum)
+trend_score = dist_pct * 200       (position vs strike)
+            + roc_60  * 400        (60-second rate of change)
+            + roc_120 * 350        (120-second rate of change)
+            + roc_300 * 250        (5-minute rate of change — NEW)
+            + momentum_raw * 300   (weighted 10s/30s/60s momentum)
 ```
 
 Where:
 - `dist_pct = (current_price - strike) / strike` (positive = above strike)
 - `roc_N = (price_now - price_N_seconds_ago) / price_N_seconds_ago`
+- `roc_300` = 5-minute ROC, captures medium-term trend direction
 - `momentum_raw = 0.50 * roc_10 + 0.30 * roc_30 + 0.20 * roc_60`
 
+**Weight changes from V11:** `roc_60` reduced from 500 to 400, `roc_120` increased from 300 to 350, `momentum_raw` reduced from 400 to 300, `roc_300` added at 250. This rebalancing gives more weight to medium-term direction and reduces noise from short-term fluctuations.
+
 **Trend threshold:** In trending markets, `abs(trend_score) >= 0.40` required. In choppy markets, `abs(trend_score) >= 0.20` with additional conditions.
+
+### Step 3b: Timeframe Disagreement Dampener
+
+When short-term and medium-term momentum contradict each other, the trend score is dampened to prevent false signals:
+
+```
+if sign(roc_60) != sign(roc_300) AND abs(roc_300) > 0.30 * abs(roc_60):
+    trend_score = trend_score * 0.50   # Cut in half
+```
+
+This fires when the 60-second direction contradicts the 5-minute direction AND the 5-minute signal is significant (more than 30% of the 60-second magnitude). The dampener prevents the bot from trading on short-term noise that goes against the medium-term trend.
 
 ### Step 4: Choppy Market Adaptation
 
@@ -307,6 +384,18 @@ combined_prob = 0.70 * raw_prob + 0.30 * base_up_prob   # 70% trend, 30% BS math
 ```
 
 This ensures actual price movement (trend) is the primary driver, with BS math providing a mathematical sanity check.
+
+### Step 5b: Distance Penalty
+
+When the price is extremely close to the strike (`|dist_pct| < 0.1%`), the probability is dampened toward 50%:
+
+```
+if abs(dist_pct) < 0.001:
+    penalty = abs(dist_pct) / 0.001   # 0.0 to 1.0
+    combined_prob = 0.50 + (combined_prob - 0.50) * penalty
+```
+
+This prevents the bot from trading with false confidence when the price is right at the strike and could go either way.
 
 ### Step 6: Direction Decision
 
@@ -353,25 +442,27 @@ for each coin in [BTC, ETH, SOL, XRP]:  (parallel)
 ### Phase 3: Trade Gating
 
 ```
-1. Check trading hours (2pm-5pm Lima, weekdays)
-2. Check max positions (2 concurrent)
-3. Acquire atomic window lock (prevents double-trade)
-4. Re-fetch CLOB ask price (prevents stale execution)
-5. Recalculate edge with fresh ask
-6. Validate edge >= MIN_EDGE
-7. Validate ENTRY_MIN <= ask <= ENTRY_MAX
+1. Check trading hours (9am-5pm Lima, weekdays)
+2. Route to morning_strategy or afternoon engine
+3. Check max positions (1 morning / 2 afternoon)
+4. Acquire atomic window lock (prevents double-trade)
+5. Re-fetch CLOB ask price (prevents stale execution)
+6. Recalculate edge with fresh ask
+7. Validate edge >= session MIN_EDGE
+8. Validate ENTRY_MIN <= ask <= ENTRY_MAX
 ```
 
 ### Phase 4: Order Execution
 
 ```
-1. Calculate Kelly bet size
-2. Compute shares = size_usd / limit_price
-3. Create FOK order via py_clob_client
-4. Submit to Polymarket CLOB
-5. Parse fill result (matched shares, average price)
-6. Record position (coin, side, entry, shares, strike, window)
-7. Send Telegram notification
+1. Calculate Kelly bet size (half Kelly morning, full Kelly afternoon)
+2. In compounding mode: bet = min(kelly_size, bankroll * 0.08)
+3. Compute shares = size_usd / limit_price
+4. Create FOK order via py_clob_client
+5. Submit to Polymarket CLOB
+6. Parse fill result (matched shares, average price)
+7. Record position (coin, side, entry, shares, strike, window)
+8. Send Telegram notification
 ```
 
 ### Phase 5: Outcome Resolution
@@ -413,24 +504,26 @@ The bot has 13 independent safety filters. A trade must pass ALL of them:
 | 9 | **Choppy Abstain** | Special logic | In choppy markets, need stronger signal or mean-reversion |
 | 10 | **Direction Lock** | First direction commits | Once a direction is committed in a window, all coins must agree |
 | 11 | **Consensus** | Majority vote | If 2+ coins signal, minority direction is blocked |
+| 12 | **Timeframe Disagreement** | roc_60 vs roc_300 | Dampens trend when short-term contradicts medium-term |
 
 ### Price/Edge Filters
 
 | # | Filter | Threshold | Purpose |
 |---|--------|-----------|---------|
-| 12 | **Entry Range** | 15c - 68c | Avoid extreme prices (too cheap = unlikely, too expensive = bad risk/reward) |
-| 13 | **Minimum Probability** | 75% | Don't trade low-confidence signals |
-| 14 | **Minimum Edge** | 5% | Must have meaningful edge over market price |
+| 13 | **Entry Range** | 15c - 68c | Avoid extreme prices (too cheap = unlikely, too expensive = bad risk/reward) |
+| 14 | **Minimum Probability** | 75% (afternoon) / 78-80% (morning) | Don't trade low-confidence signals |
+| 15 | **Minimum Edge** | 5% (afternoon) / 8-10% (morning) | Must have meaningful edge over market price |
+| 16 | **Distance Penalty** | |dist_pct| < 0.1% | Dampens probability when price is at the strike |
 
 ### Execution Filters
 
 | # | Filter | Purpose |
 |---|--------|---------|
-| 15 | **Atomic Window Lock** | One trade per coin per window (threading.Lock + set) |
-| 16 | **Max Positions** | Max 2 concurrent positions |
-| 17 | **Correlation Limit** | Max 2 same-direction trades per window |
-| 18 | **Daily Stop-Loss** | Halt if daily losses exceed $15 |
-| 19 | **CLOB Re-validation** | Re-fetch ask and recalculate edge at execution time |
+| 17 | **Atomic Window Lock** | One trade per coin per window (threading.Lock + set) |
+| 18 | **Max Positions** | Max 1 (morning) or 2 (afternoon) concurrent positions |
+| 19 | **Correlation Limit** | Max 2 same-direction trades per window across all coins |
+| 20 | **Daily Stop-Loss** | Halt if daily losses exceed limit (scales with bankroll: max($15, bankroll * 10%)) |
+| 21 | **CLOB Re-validation** | Re-fetch ask and recalculate edge at execution time |
 
 ---
 
@@ -453,21 +546,23 @@ The bot has 13 independent safety filters. A trade must pass ALL of them:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DRY_RUN` | `true` | Set to `false` for live trading |
-| `BANKROLL_BALANCE` | `90` | Current bankroll in USDC (auto-updated from CLOB) |
+| `BANKROLL_BALANCE` | `110` | Current bankroll in USDC (auto-updated from CLOB) |
 | `ENTRY_MIN` | `0.15` | Minimum ask price to consider (15c) |
 | `ENTRY_MAX` | `0.68` | Maximum ask price to consider (68c) |
 | `MIN_EDGE_THRESHOLD` | `0.05` | Minimum edge required (5%) |
 | `MIN_WIN_PROB` | `0.75` | Minimum win probability required (75%) |
 | `MIN_DISTANCE_PCT` | `0.0008` | Minimum price distance from strike |
-| `WARMUP_SEC` | `75` | Seconds to wait after window opens |
+| `WARMUP_SEC` | `45` | Seconds to wait after window opens |
 
-#### Kelly Criterion Sizing
+#### Kelly Criterion / Bet Sizing
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `USE_KELLY_SIZING` | `true` | Enable Kelly Criterion bet sizing |
 | `KELLY_FRACTION` | `0.25` | Fraction of full Kelly to use (quarter Kelly) |
 | `KELLY_MIN_BET` | `2.00` | Minimum bet size in USDC |
-| `KELLY_MAX_BET` | `6.00` | Maximum bet size in USDC |
+| `KELLY_MAX_BET` | `0` | **0 = compounding mode** (bet size capped at 8% of live bankroll) |
+
+**Compounding Mode (`KELLY_MAX_BET=0`):** Instead of a fixed max bet, the bot sizes bets as a percentage of the live bankroll queried from the CLOB API. The cap is 8% of the current bankroll. As the bankroll grows, bet sizes grow proportionally. The live bankroll is auto-refreshed from the CLOB every 5 minutes.
 
 #### Schedule
 | Variable | Default | Description |
@@ -479,9 +574,11 @@ The bot has 13 independent safety filters. A trade must pass ALL of them:
 #### Risk Management
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DAILY_LOSS_LIMIT` | `15` | Maximum daily loss before halting (USDC) |
+| `DAILY_LOSS_LIMIT` | `15` | Base daily loss limit in USDC (scales with bankroll) |
 | `USE_DAILY_STOP_LOSS` | `true` | Enable daily stop-loss |
 | `MAX_SINGLE_TRADE` | `10` | Maximum single trade size (USDC) |
+
+**Scaling stop-loss:** The effective daily stop-loss is `max(DAILY_LOSS_LIMIT, bankroll * 0.10)`. As bankroll grows, the stop-loss scales up to allow proportional risk. At $110 bankroll, the effective limit is $15 (the base). At $200 bankroll, it would be $20 (10%).
 
 #### Infrastructure
 | Variable | Default | Description |
@@ -498,15 +595,25 @@ The bot has 13 independent safety filters. A trade must pass ALL of them:
 ## Trading Schedule
 
 ### Active Trading Hours
-- **Trading:** 2:00 PM - 5:00 PM Lima time (same as ET), Monday through Friday
+
+| Time (Lima/ET) | Session | Activity |
+|----------------|---------|----------|
+| **9:00 - 10:30 AM** | Morning Phase 1 | BTC/ETH only, strict filters, half Kelly |
+| **10:30 - 12:00 PM** | Morning Phase 2 | Scan only — NO trading (US market open chop zone) |
+| **12:00 - 2:00 PM** | Morning Phase 3 | All coins, moderate filters, half Kelly |
+| **2:00 - 5:00 PM** | Afternoon Main Session | Full engine, standard thresholds, full Kelly |
+
 - **Scanning:** 24/7 (the bot collects price data continuously even outside trading hours)
 - **Weekends:** No trading (Saturday and Sunday fully blocked)
 
 ### Why This Schedule
+
+- **9:00 AM - 10:30 AM:** Pre-US-market crypto trends. BTC/ETH have cleaner momentum before equity open. Historically 79% WR at 9am hour.
+- **10:30 AM - 12:00 PM:** US market open causes cross-asset volatility. Highest reversal risk. Historically weakest (65% WR at 11am). Bot scans but does not trade.
+- **12:00 PM - 2:00 PM:** Post-open stabilization. Markets have absorbed opening volatility. Historically 78% WR at 12pm, 100% at 1pm (small sample).
 - **2:00 PM - 3:00 PM:** Proven sweet spot with 80-86% historical win rate. US market hours, high liquidity, trending behavior.
 - **3:00 PM - 4:00 PM:** Moderate performance (50-67%). Market can become choppy.
 - **4:00 PM - 5:00 PM:** Variable. Extended to capture additional opportunities but with declining edge.
-- **Before 2:00 PM:** Morning markets are choppy and unprofitable. The bot scans but does not trade.
 - **After 5:00 PM:** Low liquidity, unreliable signals.
 
 ### Data Collection Importance
@@ -516,7 +623,7 @@ The bot must run continuously (not just during trading hours) because:
 3. The ChopDetector needs direction history across windows
 4. A bot started at 2pm with no prior data will have poor signals for the first 15-30 minutes
 
-**Best practice:** Start the bot before 9 AM and let it run 24/7. It will only trade during the configured window.
+**Best practice:** Start the bot before 9 AM and let it run 24/7. It will only trade during the configured windows.
 
 ---
 
@@ -540,10 +647,24 @@ The bot must run continuously (not just during trading hours) because:
 | 3:00 PM - 4:00 PM | 50-67% | Variable - can be choppy |
 | 4:00 PM - 5:00 PM | 67% | Decent but volatile |
 
+### Morning Strategy Performance
+
+Historical morning results: **72% WR across 78 trades (+$111.70 net)**
+
+| Hour (Lima/ET) | Win Rate | Notes |
+|----------------|----------|-------|
+| 9:00 AM | 79% | Pre-market open - clean BTC/ETH trends |
+| 10:00 AM | ~70% | Approaching market open - declining edge |
+| 11:00 AM | 65% | US market open - highest chop (Phase 2 blocks this) |
+| 12:00 PM | 78% | Post-open stabilization |
+| 1:00 PM | 100% | Small sample but strong |
+
+**Direction Bias:** DOWN trades are stronger in morning sessions (76% WR) vs UP trades (69% WR). This may reflect the tendency for crypto to drift lower during US equity market hours.
+
 ### Key Lesson
 The bot performs dramatically better when running uninterrupted. April 8 (13-2, 87%) vs April 9 (4-12, 25%) had identical code -- the only difference was 6 mid-session restarts on April 9 that destroyed accumulated momentum/volatility data.
 
-**Rule: Never restart or deploy changes during trading hours (2pm-5pm).**
+**Rule: Never restart or deploy changes during trading hours (9am-5pm). If you must deploy, do it before 9am or after 5pm.**
 
 ---
 
@@ -603,13 +724,13 @@ grep -E 'WIN|LOSS' /home/ubuntu/v3-bot/logs/bot_$(date +%Y-%m-%d).log
 /home/ubuntu/v3-bot/
     run_bot.py              # Main entry point and orchestrator
     predictor.py            # V12 prediction engine
+    morning_strategy.py     # 3-phase morning filter (on top of predictor)
     config.py               # Configuration with env var loading
-    order_manager.py        # Order execution and Kelly sizing
+    order_manager.py        # Order execution, Kelly sizing, compounding
     market_data.py          # Binance + Polymarket data fetching
     binance_ws.py           # WebSocket + REST price feed
     telegram_notifier.py    # Telegram notifications
     force_tor.py            # Tor proxy management
-    morning_predictor.py    # Morning strategy (disabled)
     .env                    # Environment variables (credentials, params)
     chop_state.json         # ChopDetector persistence
     outcomes.json           # Trade outcome history
