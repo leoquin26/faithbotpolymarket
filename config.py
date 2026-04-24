@@ -47,6 +47,9 @@ BANKROLL_PERCENT = float(os.getenv("BANKROLL_PERCENT", "3"))
 ENTRY_MIN = float(os.getenv("ENTRY_MIN", "0.45"))
 ENTRY_MAX = float(os.getenv("ENTRY_MAX", "0.78"))
 ABSOLUTE_MAX_ENTRY = ENTRY_MAX
+# PM-only tighter entry cap: data shows R:R collapses above 64c in the afternoon
+PM_ENTRY_MAX = float(os.getenv("PM_ENTRY_MAX", "0.64"))
+
 
 # === EDGE REQUIREMENTS ===
 MIN_EDGE = float(os.getenv("MIN_EDGE_THRESHOLD", "0.05"))

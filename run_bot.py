@@ -255,10 +255,14 @@ def is_good_trading_hour() -> tuple:
     lima = ZoneInfo("America/Lima")
     now_lima = datetime.now(lima)
     lima_hour = now_lima.hour
-    weekday = now_lima.weekday()
-    if weekday >= 5:
-        day_name = "Saturday" if weekday == 5 else "Sunday"
-        return False, f"[WEEKEND] {day_name} {lima_hour}:00 Lima — no trading on weekends"
+    weekday = now_lima.weekday()  # Mon=0, Fri=4, Sat=5, Sun=6
+    # Unified weekend mode: Fri 17:00+ -> Sat/Sun all day -> Mon <09:00 all blocked
+    _is_sat_sun      = weekday >= 5
+    _is_fri_evening  = (weekday == 4) and (lima_hour >= 17)
+    _is_mon_premarket = (weekday == 0) and (lima_hour < 9)
+    if _is_sat_sun or _is_fri_evening or _is_mon_premarket:
+        stamp = now_lima.strftime("%a %H:%M")
+        return False, f"[WEEKEND MODE] {stamp} Lima — blocked until Monday 09:00 Lima"
     if lima_hour < 9 or lima_hour >= 17:
         return False, f"[OFF HOURS] {lima_hour}:{now_lima.minute:02d} Lima — trade window 9am-5pm Lima (scanning active)"
     return True, ""
@@ -671,6 +675,13 @@ def main():
                                     f"[CLOB RANGE] {best.coin} {best.direction}: "
                                     f"CLOB ask={clob_ask*100:.0f}c outside "
                                     f"{config.ENTRY_MIN*100:.0f}-{config.ENTRY_MAX*100:.0f}c"
+                                )
+                                unlock_window(best.coin, best.market_info.window_start)
+                            elif _is_afternoon and clob_ask > config.PM_ENTRY_MAX:
+                                # PM R:R collapses above this price (backfill: 66-69c R:R=0.49, >=69c R:R=0.35)
+                                logger.info(
+                                    f"[PM ENTRY CAP] {best.coin} {best.direction}: "
+                                    f"CLOB ask={clob_ask*100:.0f}c > PM cap {config.PM_ENTRY_MAX*100:.0f}c — R:R too thin"
                                 )
                                 unlock_window(best.coin, best.market_info.window_start)
                             else:
