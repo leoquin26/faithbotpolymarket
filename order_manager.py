@@ -24,6 +24,12 @@ from py_clob_client.clob_types import (
 )
 from py_clob_client.order_builder.constants import BUY
 
+# ── analytics hook apr23 ──
+try:
+    from analytics import event_logger as _alog
+except Exception:
+    _alog = None
+
 
 class OrderManager:
     """Manages order placement, GTC tracking, and window dedup."""

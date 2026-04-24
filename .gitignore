@@ -11,3 +11,10 @@ outcomes_state.json
 nohup.out
 *.pem
 *.key
+
+# analytics runtime artifacts (data, not code)
+data/trade_events.jsonl
+data/trade_events_backfill.jsonl
+data/analytics_report.json
+data/Polymarket-History-*.csv
+*.bak_apr23_*

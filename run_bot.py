@@ -26,6 +26,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from loguru import logger
+# ── analytics hook apr23 ──
+try:
+    from analytics import event_logger as _alog
+    from analytics import resolver as _aresolver
+except Exception as _e:  # analytics is optional
+    _alog = None
+    _aresolver = None
 import telegram_notifier as tg
 
 from datetime import datetime, timezone
@@ -312,6 +319,13 @@ def main():
     predictor = Predictor()
     morning_pred = MorningPredictor(predictor)
     bootstrap_traded_set()
+    # ── analytics hook apr23 ── kick off resolver daemon
+    try:
+        if _aresolver is not None:
+            _aresolver.start_background()
+            logger.info('[ANALYTICS] resolver thread started')
+    except Exception as _e:
+        logger.debug(f'[ANALYTICS] resolver start failed: {_e}')
     orders = OrderManager()
     executor = ThreadPoolExecutor(max_workers=4)
 
@@ -458,9 +472,36 @@ def main():
                         _tk = binance_ws.get_tick_history(_p.coin, 300)
                         _res = exhaust.evaluate(_p, _tk, _wt, _pp)
                         _act = _res.get("action", "CLEAN") if isinstance(_res, dict) else "CLEAN"
+                        # ── analytics hook apr23 ── EXHAUST verdict
+                        try:
+                            if _alog is not None:
+                                _tid = _alog.new_trade_id()
+                                setattr(_p, "_trade_id", _tid)
+                                _alog.log_signal(_tid, _p, getattr(_p, "trend_score", 0.0))
+                                _alog.log_exhaust(
+                                    _tid, _p.coin, _p.direction, _act,
+                                    float(_res.get("score", 0) or 0),
+                                    session_range=_res.get("range"),
+                                    breadth=_res.get("breadth"),
+                                    decel=_res.get("decel"),
+                                    window_start=getattr(_p.market_info, "window_start", None),
+                                    token_id=getattr(_p, "token_id", None),
+                                )
+                        except Exception:
+                            pass
                         if _act == "ABSTAIN":
                             # ── Fix A apr23: sticky EXHAUST ABSTAIN memory ──
                             _last_exhaust_abstain[_p.coin] = time.time()
+                            try:
+                                if _alog is not None:
+                                    _alog.log_blocked(
+                                        getattr(_p, "_trade_id", None),
+                                        _p.coin, _p.direction, "EXHAUST_ABSTAIN",
+                                        score=float(_res.get("score", 0) or 0),
+                                        window_start=getattr(_p.market_info, "window_start", None),
+                                    )
+                            except Exception:
+                                pass
                             logger.info(f"[EXHAUST BLOCK] {_p.coin} {_p.direction} skipped (score={_res.get('score', 0):.2f})")
                             continue
                         if _act == "FLIP":
@@ -520,6 +561,17 @@ def main():
                         # ── Fix A apr23: sticky EXHAUST ABSTAIN memory ──
                         _abstain_age = time.time() - _last_exhaust_abstain.get(_best_m.coin, 0)
                         if _abstain_age < 30:
+                            try:
+                                if _alog is not None:
+                                    _alog.log_blocked(
+                                        getattr(_best_m, "_trade_id", None),
+                                        _best_m.coin, _best_m.direction,
+                                        "MORNING_STICKY_EXHAUST",
+                                        abstain_age_s=_abstain_age,
+                                        window_start=getattr(_best_m.market_info, "window_start", None),
+                                    )
+                            except Exception:
+                                pass
                             logger.info(
                                 f"[MORNING STICKY EXHAUST] {_best_m.coin} {_best_m.direction}: "
                                 f"ABSTAIN {_abstain_age:.0f}s ago — skipping to avoid oscillation"
@@ -548,6 +600,22 @@ def main():
                                         if _success and _best_m.coin in orders.positions:
                                             # Tag position as morning for isolated resolution
                                             orders.positions[_best_m.coin]["is_morning"] = True
+                                            # ── analytics hook apr23 ── morning FIRED
+                                            try:
+                                                if _alog is not None:
+                                                    _pos = orders.positions[_best_m.coin]
+                                                    _alog.log_fired(
+                                                        getattr(_best_m, '_trade_id', None),
+                                                        _best_m.coin, _best_m.direction,
+                                                        entry=_pos.get('entry', _best_m.entry_price),
+                                                        shares=_pos.get('shares', 0),
+                                                        cost=_pos.get('cost', 0),
+                                                        phase=f'MORNING_P{_phase}',
+                                                        window_start=getattr(_best_m.market_info, 'window_start', None),
+                                                        token_id=getattr(_best_m, 'token_id', None),
+                                                    )
+                                            except Exception:
+                                                pass
                                             logger.info(
                                                 f"[MORNING P{_phase} TRADE] {_best_m.coin} {_best_m.direction} "
                                                 f"placed (half-Kelly)"
@@ -759,6 +827,22 @@ def main():
 
                 _is_morning_trade = pos.get("is_morning", False)
                 _tag = "MORNING" if _is_morning_trade else "PM"
+                # ── analytics hook apr23 ── RESOLVED event
+                try:
+                    if _alog is not None:
+                        _alog.log_resolved(
+                            trade_id=pos.get("trade_id"),
+                            coin=coin, side=side,
+                            window_start=int(pos.get("window_start", 0) or 0),
+                            won=bool(won),
+                            cost=float(cost or 0),
+                            payout=float(payout or 0),
+                            pnl=float((payout - cost) if won else -cost),
+                            phase=_tag,
+                            resolution_source="live",
+                        )
+                except Exception:
+                    pass
                 if won:
                     pnl = payout - cost
                     logger.info(f"[WIN {_tag}] {coin} {side} | +${pnl:.2f} | Entry: {entry*100:.0f}c x{shares} | Payout: ${payout:.2f}")
