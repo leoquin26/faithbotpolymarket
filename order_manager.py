@@ -46,35 +46,12 @@ class OrderManager:
     _cached_balance = 0.0
 
     def get_live_bankroll(self) -> float:
-        import time as _t
-        now = _t.time()
-        if now - OrderManager._last_balance_check < 300:
-            return OrderManager._cached_balance if OrderManager._cached_balance > 0 else config.BANKROLL_BALANCE
+        """Static bankroll from .env BANKROLL_BALANCE. Zero API calls.
 
-        try:
-            http = self._get_direct_http()
-            addr = config.FUNDER_ADDRESS
-            resp = http.get(
-                f"https://clob.polymarket.com/balance?address={addr}",
-                timeout=5,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                balance = float(data) if isinstance(data, (int, float, str)) else 0.0
-                if balance <= 0 and isinstance(data, dict):
-                    balance = float(data.get("balance", 0) or data.get("amount", 0) or 0)
-                if balance > 0:
-                    old = config.BANKROLL_BALANCE
-                    config.BANKROLL_BALANCE = balance
-                    OrderManager._cached_balance = balance
-                    OrderManager._last_balance_check = now
-                    if abs(balance - old) > 0.50:
-                        logger.info(f"[BANKROLL] Updated: ${old:.2f} -> ${balance:.2f}")
-                    return balance
-        except Exception as e:
-            logger.debug(f"[BANKROLL] Balance fetch error: {e}")
-
-        OrderManager._last_balance_check = now
+        When wallet balance changes meaningfully, update .env and restart.
+        Having zero inline API calls here guarantees no interference with
+        the CLOB client used for order placement.
+        """
         return config.BANKROLL_BALANCE
 
         # ------------------------------------------------------------------
@@ -364,14 +341,19 @@ class OrderManager:
             return False
 
         size_usd = self._calc_size(pred)
-        shares = max(5, int(size_usd / limit_price))
+        # Fix C: min 2 shares (was 5) so Kelly-tier sizing isn't overridden
+        # by a floor that costs $3.40 at 68c. 5-share floor was fine when
+        # entries were 30-50c; with 65-68c entries it blows Kelly budget.
+        shares = max(2, int(size_usd / limit_price))
+        actual_cost = shares * limit_price
 
         order_type = OrderType.GTC if use_gtc else OrderType.FOK
         order_type_name = "GTC" if use_gtc else "FOK"
 
         logger.info(
             f"[ORDER] {coin} {direction} | {order_type_name} @ {limit_price*100:.0f}c | "
-            f"{shares} shares (${size_usd:.2f}) | Edge {real_edge*100:.1f}%"
+            f"{shares} shares (cost=${actual_cost:.2f}, sized=${size_usd:.2f}) | "
+            f"Edge {real_edge*100:.1f}%"
         )
 
         try:
@@ -426,7 +408,7 @@ class OrderManager:
                 return False
 
         except Exception as e:
-            logger.error(f"[ERROR] Order failed for {coin}: {e}")
+            import traceback as _tb; logger.error(f"[ERROR] Order failed for {coin}: {type(e).__name__}: {e}"); logger.error(f"[ERROR TRACE] {_tb.format_exc()}")
             tg.notify_error(f"Order failed: {coin} {direction}\n{str(e)[:100]}")
             print(f"\n  [ERROR] {coin} order failed: {e}")
             return False
@@ -544,7 +526,9 @@ class OrderManager:
         if use_kelly and pred.edge > 0:
             kelly_fraction = float(os.getenv("KELLY_FRACTION", "0.25"))
             kelly_min_bet = float(os.getenv("KELLY_MIN_BET", "2.0"))
-            kelly_max_bet = float(os.getenv("KELLY_MAX_BET", "5.0"))
+            kelly_max_bet = float(os.getenv("KELLY_MAX_BET", "0"))
+            # Option B default: 10% bankroll cap (configurable via KELLY_MAX_PCT)
+            kelly_max_pct = float(os.getenv("KELLY_MAX_PCT", "0.10"))
 
             entry_price = pred.entry_price if pred.entry_price > 0.05 else pred.poly_price
             if entry_price <= 0.01 or entry_price >= 0.99:
@@ -562,14 +546,63 @@ class OrderManager:
                 return kelly_min_bet
 
             fractional = full_kelly * kelly_fraction
-            capped = min(fractional, 0.10)
+            # Pct-of-bankroll ceiling (primary risk control)
+            capped = min(fractional, kelly_max_pct)
             size = bankroll * capped
-            size = max(kelly_min_bet, min(size, kelly_max_bet))
+            # Apply min floor, then optional absolute dollar ceiling
+            size = max(kelly_min_bet, size)
+            if kelly_max_bet > 0:
+                size = min(size, kelly_max_bet)
 
-            logger.debug(
+            # Fix B: scale down at expensive entries (R:R asymmetry protection).
+            # At 67c entry, one loss = -67c but one win = +33c -- 2x asymmetry.
+            # Cut size so a single high-entry loss doesn't erase 2-3 wins.
+            if entry_price <= 0.55:
+                tier_mult = 1.00
+                tier_name = "A"
+            elif entry_price <= 0.60:
+                tier_mult = 0.75
+                tier_name = "B"
+            elif entry_price <= 0.65:
+                tier_mult = 0.50
+                tier_name = "C"
+            else:
+                tier_mult = 0.33
+                tier_name = "D"
+            # ── Fix B apr23: daily-loss Kelly tier cap ──
+            # After losing $5+ today in PM session, never ramp tier above C (0.50)
+            # — even if recent wins say 'go big'. Prevents the win-streak → fat-loss
+            # pattern that erased today's PM recovery.
+            try:
+                _dl = float(getattr(self, 'daily_losses', 0.0))
+            except Exception:
+                _dl = 0.0
+            if _dl >= 5.0 and tier_mult > 0.50:
+                logger.info(
+                    f"[KELLY DAILY DAMP] daily_losses=${_dl:.2f} >= $5 — "
+                    f"capping tier {tier_name}({tier_mult:.2f}) -> C(0.50)"
+                )
+                tier_mult = 0.50
+                tier_name = "C*"
+            pre_tier = size
+            size = max(kelly_min_bet, size * tier_mult)
+
+            # Fix F (apr21): if exhaustion detector DAMPEN'd this pred,
+            # cut size in half so DAMPEN actually reduces risk (not just
+            # probability). Prior to this, DAMPEN was a no-op when Kelly
+            # was pct-capped because the cap dominated.
+            dampen_tag = ""
+            if getattr(pred, "_dampened", False):
+                pre_dampen = size
+                size = max(kelly_min_bet, size * 0.5)
+                dampen_tag = f" dampen=50%(pre=${pre_dampen:.2f})"
+
+            logger.info(
                 f"[KELLY] {pred.coin}: f*={full_kelly:.3f} frac={fractional:.3f} "
-                f"size=${size:.2f} (p={p:.0%} b={b:.2f} edge={pred.edge:.1%} "
-                f"entry={entry_price:.2f} bankroll=${bankroll:.0f})"
+                f"pct_cap={kelly_max_pct:.2%} tier={tier_name}({tier_mult:.0%}){dampen_tag} "
+                f"size=${size:.2f} (pre=${pre_tier:.2f}) "
+                f"(p={p:.0%} b={b:.2f} edge={pred.edge:.1%} "
+                f"entry={entry_price:.2f} bankroll=${bankroll:.2f})"
             )
             return size
 
@@ -585,22 +618,64 @@ class OrderManager:
 
     @staticmethod
     def _parse_result(result) -> tuple:
+        """Fix H (apr22): only return matched>0 when the API response
+        explicitly confirms a match. Previously we read takingAmount
+        (the signed REQUEST size) and reported phantom fills when an
+        order was submitted but never settled on-chain.
+        """
         matched = 0.0
         avg_price = 0.0
         order_id = None
 
+        # Only these status values mean the order actually matched.
+        SUCCESS_STATUSES = {"matched", "FILLED", "CONFIRMED", "confirmed"}
+
         if isinstance(result, dict):
             order_id = result.get("orderID") or result.get("id")
-            matched = float(result.get("takingAmount", 0) or result.get("matchedAmount", 0) or 0)
+            status = (result.get("status") or "").strip()
+            success_flag = bool(result.get("success", False))
+
+            # Prefer explicitly-matched fields over signed-request fields.
+            matched_amount = float(
+                result.get("matchedAmount", 0)
+                or result.get("matched_amount", 0)
+                or 0
+            )
+            taking_amount = float(result.get("takingAmount", 0) or 0)
             making = float(result.get("makingAmount", 0) or 0)
-            status = result.get("status", "")
-            if status == "matched" and matched > 0 and making > 0:
-                avg_price = making / matched
+
+            if status in SUCCESS_STATUSES or success_flag:
+                # Real fill. Prefer matchedAmount if the server reports
+                # it, otherwise fall back to takingAmount (which for a
+                # matched FOK equals the fill).
+                matched = matched_amount if matched_amount > 0 else taking_amount
+                if matched > 0 and making > 0:
+                    avg_price = making / matched
+                else:
+                    avg_price = float(result.get("price", 0) or 0)
             else:
-                avg_price = float(result.get("price", 0) or 0)
+                # Not actually filled. Force MISS path so we do not
+                # create a phantom position.
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    f"[PARSE] Order not matched: status={status!r} "
+                    f"matched_amt={matched_amount} taking={taking_amount} "
+                    f"making={making} success={success_flag} order_id={order_id}"
+                )
+                matched = 0.0
+                avg_price = 0.0
         elif hasattr(result, "orderID"):
+            # Object response path (legacy): trust it as before, but log.
             order_id = result.orderID
-            matched = float(getattr(result, "takingAmount", 0) or getattr(result, "matchedAmount", 0) or 0)
-            avg_price = float(getattr(result, "price", 0) or 0)
+            status = getattr(result, "status", "") or ""
+            if status in SUCCESS_STATUSES:
+                matched = float(
+                    getattr(result, "matchedAmount", 0)
+                    or getattr(result, "takingAmount", 0)
+                    or 0
+                )
+                avg_price = float(getattr(result, "price", 0) or 0)
+            else:
+                matched = 0.0
 
         return matched, avg_price, order_id

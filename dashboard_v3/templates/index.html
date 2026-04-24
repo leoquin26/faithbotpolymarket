@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polymarket Command Center v3</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<!-- ═════ Header ═════ -->
+<header class="header">
+  <div class="hdr-row">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/>
+      </svg>
+      <span>POLY<span class="accent">BOT</span></span>
+      <span class="badge-v3">v3</span>
+    </div>
+
+    <nav class="nav-tabs">
+      <a href="/" class="active">Dashboard</a>
+      <a href="/charts">📈 Charts</a>
+    </nav>
+
+    <div class="hdr-stats">
+      <div class="stat-pill" id="pill-pnl">
+        <span class="pill-label">P&L</span>
+        <span class="pill-value" id="hdr-pnl">—</span>
+      </div>
+      <div class="stat-pill" id="pill-wr">
+        <span class="pill-label">WR</span>
+        <span class="pill-value" id="hdr-wr">—</span>
+      </div>
+      <div class="stat-pill" id="pill-br">
+        <span class="pill-label">BR</span>
+        <span class="pill-value" id="hdr-bankroll">—</span>
+      </div>
+      <div class="stat-pill" id="pill-session">
+        <span class="pill-label">SESS</span>
+        <span class="pill-value" id="hdr-session">—</span>
+      </div>
+    </div>
+
+    <div class="hdr-right">
+      <div class="clock" id="hdr-clock">—</div>
+      <div class="bot-status" id="hdr-bot">
+        <span class="dot" id="bot-dot"></span>
+        <span id="bot-text">—</span>
+      </div>
+      <div class="ctrl-group">
+        <button class="btn btn-green" onclick="botAction('start')" title="Start bot">▶</button>
+        <button class="btn btn-red" onclick="botAction('stop')" title="Stop bot">■</button>
+        <button class="btn btn-blue" onclick="botAction('restart')" title="Restart bot">↻</button>
+        <button class="btn btn-ghost" onclick="botAction('clear_locks')" title="Clear traded-window locks">🔓</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ═════ Main ═════ -->
+<main class="layout">
+
+  <!-- ─── Left column ─── -->
+  <section class="col col-left">
+
+    <!-- P&L card -->
+    <div class="card">
+      <div class="card-head">
+        <h3>P&L Today</h3>
+        <span class="muted" id="pnl-subtitle">—</span>
+      </div>
+      <div class="pnl-hero">
+        <div class="pnl-value" id="pnl-value">$—</div>
+        <div class="pnl-sub">
+          <div><span id="pnl-wins">0</span><small>W</small></div>
+          <div><span id="pnl-losses">0</span><small>L</small></div>
+          <div><span id="pnl-winrate">—%</span><small>WR</small></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Risk panel -->
+    <div class="card">
+      <div class="card-head">
+        <h3>Risk</h3>
+      </div>
+      <div class="risk-grid">
+        <div class="risk-row">
+          <span>Bankroll</span>
+          <strong id="risk-bankroll">—</strong>
+        </div>
+        <div class="risk-row">
+          <span>Kelly max</span>
+          <strong id="risk-kelly">—</strong>
+        </div>
+        <div class="risk-row">
+          <span>Daily loss limit</span>
+          <strong id="risk-dsl">—</strong>
+        </div>
+        <div class="risk-row">
+          <span>Loss today</span>
+          <strong id="risk-loss">—</strong>
+        </div>
+        <div class="risk-row">
+          <span>DSL remaining</span>
+          <strong id="risk-dsl-remaining">—</strong>
+        </div>
+        <div class="risk-row">
+          <span>Streak</span>
+          <strong id="risk-streak">—</strong>
+        </div>
+        <div class="risk-row">
+          <span>Breakers today</span>
+          <strong id="risk-breakers">0</strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- Calibration / outcomes -->
+    <div class="card">
+      <div class="card-head">
+        <h3>Recent Outcomes</h3>
+        <span class="muted" id="cal-subtitle">—</span>
+      </div>
+      <div class="outcome-row" id="outcome-row"></div>
+    </div>
+
+    <!-- Exhaustion stats -->
+    <div class="card">
+      <div class="card-head">
+        <h3>Exhaustion Today</h3>
+      </div>
+      <div class="ex-grid">
+        <div class="ex-cell">
+          <div class="ex-num" id="ex-signals">0</div>
+          <div class="ex-lbl">signals</div>
+        </div>
+        <div class="ex-cell">
+          <div class="ex-num red" id="ex-blocks">0</div>
+          <div class="ex-lbl">blocks</div>
+        </div>
+        <div class="ex-cell">
+          <div class="ex-num amber" id="ex-dampens">0</div>
+          <div class="ex-lbl">dampens</div>
+        </div>
+        <div class="ex-cell">
+          <div class="ex-num purple" id="ex-flips">0</div>
+          <div class="ex-lbl">flips</div>
+        </div>
+        <div class="ex-cell">
+          <div class="ex-num" id="ex-orders">0</div>
+          <div class="ex-lbl">orders</div>
+        </div>
+        <div class="ex-cell">
+          <div class="ex-num green" id="ex-fills">0</div>
+          <div class="ex-lbl">fills</div>
+        </div>
+      </div>
+      <div class="ex-bycoin" id="ex-bycoin"></div>
+    </div>
+
+  </section>
+
+  <!-- ─── Middle column ─── -->
+  <section class="col col-mid">
+
+    <!-- Market grid -->
+    <div class="card">
+      <div class="card-head">
+        <h3>Market</h3>
+        <span class="muted">latest signals per coin/direction</span>
+      </div>
+      <div class="market-grid" id="market-grid"></div>
+    </div>
+
+    <!-- Scanner -->
+    <div class="card">
+      <div class="card-head">
+        <h3>Signal Scanner</h3>
+        <div class="tabs" id="scan-tabs">
+          <button class="tab active" data-filter="all">All</button>
+          <button class="tab" data-filter="signal">Signals</button>
+          <button class="tab" data-filter="block">Blocks</button>
+          <button class="tab" data-filter="dampen">Dampen</button>
+          <button class="tab" data-filter="kelly">Kelly</button>
+        </div>
+      </div>
+      <div class="scan-stream" id="scan-stream"></div>
+    </div>
+
+    <!-- Active Positions -->
+    <div class="card">
+      <div class="card-head">
+        <h3>Active Positions</h3>
+        <span class="muted" id="pos-subtitle">—</span>
+      </div>
+      <div id="positions-table"></div>
+    </div>
+
+  </section>
+
+  <!-- ─── Right column ─── -->
+  <section class="col col-right">
+
+    <!-- Trades today (from bot logs, matched to outcomes) -->
+    <div class="card">
+      <div class="card-head">
+        <h3>Trades Today</h3>
+        <span class="muted" id="trades-subtitle">—</span>
+      </div>
+      <div class="trades-stream" id="trades-stream"></div>
+    </div>
+
+    <!-- On-chain confirmed -->
+    <div class="card">
+      <div class="card-head">
+        <h3>On-Chain (CLOB)</h3>
+        <span class="muted" id="clob-subtitle">—</span>
+      </div>
+      <div id="clob-table"></div>
+    </div>
+
+    <!-- Log viewer -->
+    <div class="card log-card">
+      <div class="card-head">
+        <h3>Logs</h3>
+        <div class="tabs" id="log-tabs">
+          <button class="tab active" data-cat="all">All</button>
+          <button class="tab" data-cat="trade">Trades</button>
+          <button class="tab" data-cat="signal">Signals</button>
+          <button class="tab" data-cat="exhaust">Exhaust</button>
+          <button class="tab" data-cat="filter">Filters</button>
+          <button class="tab" data-cat="error">Errors</button>
+        </div>
+      </div>
+      <div class="log-subtitle" id="log-subtitle">
+        <span class="hb-dot stale"></span>
+        waiting for first event…
+      </div>
+      <div class="log-stream" id="log-stream"></div>
+    </div>
+
+    <!-- Settings (read-only) -->
+    <div class="card">
+      <div class="card-head">
+        <h3>Settings</h3>
+        <span class="muted">read-only (phase 1)</span>
+      </div>
+      <div id="settings-list"></div>
+    </div>
+
+  </section>
+
+</main>
+
+<!-- toast -->
+<div id="toast" class="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -42,6 +42,7 @@ class Prediction:
     stale_gap: float = 0.0
     conviction_strength: Optional[str] = None
     force_fok: bool = False
+    trend_score: float = 0.0
 
 
 # ── Normal CDF (Abramowitz & Stegun approximation, max error 1.5e-7) ──
@@ -363,8 +364,8 @@ class Predictor:
 
         # Warmup: need at least 30s of data
         warmup = getattr(config, "WARMUP_SEC", 45)
-        if window_age < 75:
-            self._diag_log(f"warmup-{coin}", f"[WARMUP] {coin}: {window_age}s < 75s hard min", 30.0)
+        if window_age < 120:
+            self._diag_log(f"warmup-{coin}", f"[WARMUP] {coin}: {window_age}s < 120s hard min", 30.0)
             return None
 
 
@@ -514,6 +515,28 @@ class Predictor:
                 )
                 return None
 
+        # ── Contrarian flip guard (added 2026-04-22) ──
+        # If recent committed signals were in the OPPOSITE
+        # direction and the current trend is weak, abstain.
+        # Prevents catching brief bounces against a strong
+        # prevailing trend (e.g. BTC UP @60c at 14:31 while
+        # BTC DOWN kept signaling seconds before).
+        try:
+            recent_hist = list(self._chop_detector._history[-4:])
+        except Exception:
+            recent_hist = []
+        if len(recent_hist) >= 3:
+            opposite = sum(1 for d in recent_hist if d and d != direction)
+            FLIP_TREND_MIN = 1.5
+            if opposite >= 3 and abs(trend_score) < FLIP_TREND_MIN:
+                self._diag_log(
+                    f"flipguard-{coin}",
+                    f"[FLIP GUARD] {coin} {direction}: recent={'->'.join(recent_hist)} "
+                    f"trend={trend_score:+.2f} — need |trend|>={FLIP_TREND_MIN} to flip",
+                    15.0,
+                )
+                return None
+
         # Entry price filters
         entry_min = getattr(config, "ENTRY_MIN", 0.10)
         entry_max = getattr(config, "ENTRY_MAX", 0.75)
@@ -585,4 +608,5 @@ class Predictor:
             mc_prob=win_prob,
             depth_ratio=depth,
             directional_edge=win_prob - 0.50,
+            trend_score=trend_score,
         )
