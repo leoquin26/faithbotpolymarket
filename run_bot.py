@@ -537,8 +537,14 @@ def main():
                                 _p.edge = _p.probability - _entry
                             # Fix F (apr21): mark dampened so order_manager cuts size 50%
                             setattr(_p, "_dampened", True)
+                            # Fix apr27 (no double penalty): when override fired, skip
+                            # the size-halving in order_manager. Override already self-
+                            # selects A-tier signals; double-penalty makes them too small.
+                            if _was_overridden:
+                                setattr(_p, "_override_full_size", True)
+                            _size_note = "(size unchanged, override A-tier)" if _was_overridden else "(size will be halved)"
                             _suffix = " [override: prob/edge unchanged]" if _was_overridden else ""
-                            logger.info(f"[EXHAUST DAMPEN] {_p.coin} {_p.direction} p={_pre:.2f}->{_p.probability:.2f} (size will be halved){_suffix}")
+                            logger.info(f"[EXHAUST DAMPEN] {_p.coin} {_p.direction} p={_pre:.2f}->{_p.probability:.2f} {_size_note}{_suffix}")
                         _kept.append(_p)
                     predictions = _kept
                 except Exception as _ex:

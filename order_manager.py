@@ -599,9 +599,14 @@ class OrderManager:
             # was pct-capped because the cap dominated.
             dampen_tag = ""
             if getattr(pred, "_dampened", False):
-                pre_dampen = size
-                size = max(kelly_min_bet, size * 0.5)
-                dampen_tag = f" dampen=50%(pre=${pre_dampen:.2f})"
+                # Fix apr27 (no double penalty): if EXHAUST OVERRIDE fired,
+                # skip the 50% size cut. Override already self-selected A-tier.
+                if getattr(pred, "_override_full_size", False):
+                    dampen_tag = " dampen=skipped(override)"
+                else:
+                    pre_dampen = size
+                    size = max(kelly_min_bet, size * 0.5)
+                    dampen_tag = f" dampen=50%(pre=${pre_dampen:.2f})"
 
             logger.info(
                 f"[KELLY] {pred.coin}: f*={full_kelly:.3f} frac={fractional:.3f} "
