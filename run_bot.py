@@ -493,6 +493,17 @@ def main():
                                 )
                         except Exception:
                             pass
+                        # ── Fix apr27: edge-priority override ──
+                        # When signal is A-tier (prob>=82% AND edge>=18%),
+                        # downgrade EXHAUST ABSTAIN -> DAMPEN. Top-tier signals
+                        # historically win 80%+; size still halved by DAMPEN flag.
+                        if _act == "ABSTAIN" and _p.probability >= 0.82 and _p.edge >= 0.18:
+                            logger.info(
+                                f"[EXHAUST OVERRIDE] {_p.coin} {_p.direction}: "
+                                f"prob={_p.probability:.0%} edge={_p.edge*100:.1f}% — "
+                                f"ABSTAIN(score={_res.get('score', 0):.2f}) -> DAMPEN"
+                            )
+                            _act = "DAMPEN"
                         if _act == "ABSTAIN":
                             # ── Fix A apr23: sticky EXHAUST ABSTAIN memory ──
                             _last_exhaust_abstain[_p.coin] = time.time()
