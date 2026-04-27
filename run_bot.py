@@ -497,13 +497,15 @@ def main():
                         # When signal is A-tier (prob>=82% AND edge>=18%),
                         # downgrade EXHAUST ABSTAIN -> DAMPEN. Top-tier signals
                         # historically win 80%+; size still halved by DAMPEN flag.
+                        _was_overridden = False
                         if _act == "ABSTAIN" and _p.probability >= 0.82 and _p.edge >= 0.18:
                             logger.info(
                                 f"[EXHAUST OVERRIDE] {_p.coin} {_p.direction}: "
                                 f"prob={_p.probability:.0%} edge={_p.edge*100:.1f}% — "
-                                f"ABSTAIN(score={_res.get('score', 0):.2f}) -> DAMPEN"
+                                f"ABSTAIN(score={_res.get('score', 0):.2f}) -> DAMPEN (no haircut)"
                             )
                             _act = "DAMPEN"
+                            _was_overridden = True
                         if _act == "ABSTAIN":
                             # ── Fix A apr23: sticky EXHAUST ABSTAIN memory ──
                             _last_exhaust_abstain[_p.coin] = time.time()
@@ -528,12 +530,15 @@ def main():
                             logger.info(f"[EXHAUST FLIP] {_p.coin} {_orig}->{_p.direction}")
                         elif _act == "DAMPEN":
                             _pre = _p.probability
-                            _p.probability = max(0.01, _p.probability * 0.85)
-                            _entry = _p.entry_price if _p.entry_price > 0.05 else _p.poly_price
-                            _p.edge = _p.probability - _entry
+                            if not _was_overridden:
+                                # Normal DAMPEN: shave probability AND halve size
+                                _p.probability = max(0.01, _p.probability * 0.85)
+                                _entry = _p.entry_price if _p.entry_price > 0.05 else _p.poly_price
+                                _p.edge = _p.probability - _entry
                             # Fix F (apr21): mark dampened so order_manager cuts size 50%
                             setattr(_p, "_dampened", True)
-                            logger.info(f"[EXHAUST DAMPEN] {_p.coin} {_p.direction} p={_pre:.2f}->{_p.probability:.2f} (size will be halved)")
+                            _suffix = " [override: prob/edge unchanged]" if _was_overridden else ""
+                            logger.info(f"[EXHAUST DAMPEN] {_p.coin} {_p.direction} p={_pre:.2f}->{_p.probability:.2f} (size will be halved){_suffix}")
                         _kept.append(_p)
                     predictions = _kept
                 except Exception as _ex:
