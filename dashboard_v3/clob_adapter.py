@@ -15,13 +15,15 @@ from typing import Any
 
 logger = logging.getLogger("dash_v3.clob")
 
+# CLOB V2 migration apr28: switched to py_clob_client_v2
+# (V2 went live 2026-04-28 11:00 UTC; V1 SDK errors out post-cutover.)
 try:
-    from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import ApiCreds
+    from py_clob_client_v2.client import ClobClient
+    from py_clob_client_v2.clob_types import ApiCreds
 except Exception as e:  # pragma: no cover
     ClobClient = None  # type: ignore
     ApiCreds = None  # type: ignore
-    logger.warning(f"py_clob_client not available: {e}")
+    logger.warning(f"py_clob_client_v2 not available: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────
