@@ -706,6 +706,22 @@ def main():
                                     f"CLOB ask={clob_ask*100:.0f}c > PM cap {config.PM_ENTRY_MAX*100:.0f}c — R:R too thin"
                                 )
                                 unlock_window(best.coin, best.market_info.window_start)
+                            elif config.TRAP_BAND_MIN <= clob_ask <= config.TRAP_BAND_MAX:
+                                # Option A apr28: 60-63c entry band has 47% WR / R:R 0.75
+                                # in our 8-day backfill — confirmed structural loser.
+                                logger.info(
+                                    f"[TRAP BAND] {best.coin} {best.direction}: "
+                                    f"CLOB ask={clob_ask*100:.0f}c in trap band "
+                                    f"{config.TRAP_BAND_MIN*100:.0f}-{config.TRAP_BAND_MAX*100:.0f}c (47% WR)"
+                                )
+                                unlock_window(best.coin, best.market_info.window_start)
+                            elif _is_afternoon and best.coin in config.PM_BLOCKED_COINS:
+                                # Option A apr28: XRP is 50% WR / -$3.80 net — skip in PM.
+                                logger.info(
+                                    f"[PM COIN BLOCK] {best.coin} {best.direction}: "
+                                    f"{best.coin} blocked in PM (50% WR / negative EV)"
+                                )
+                                unlock_window(best.coin, best.market_info.window_start)
                             else:
                                 print(
                                     f"\n[{now}] #{scan_count} TRADE -> {best.coin} {best.direction} | "

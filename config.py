@@ -50,6 +50,14 @@ ABSOLUTE_MAX_ENTRY = ENTRY_MAX
 # PM-only tighter entry cap: data shows R:R collapses above 64c in the afternoon
 PM_ENTRY_MAX = float(os.getenv("PM_ENTRY_MAX", "0.64"))
 
+# Option A apr28: data-driven trap-band cut
+# 0.60-0.63c entries had 47.1% WR / R:R 0.75 over 17 trades — confirmed loser.
+TRAP_BAND_MIN = float(os.getenv("TRAP_BAND_MIN", "0.60"))
+TRAP_BAND_MAX = float(os.getenv("TRAP_BAND_MAX", "0.63"))
+
+# Option A apr28: XRP is 50% WR / -$3.80 net — block in PM where it's worst.
+PM_BLOCKED_COINS = set(os.getenv("PM_BLOCKED_COINS", "XRP").split(","))
+
 
 # === EDGE REQUIREMENTS ===
 MIN_EDGE = float(os.getenv("MIN_EDGE_THRESHOLD", "0.05"))
