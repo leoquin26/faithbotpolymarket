@@ -459,6 +459,20 @@ def main():
                     _res = exhaust.evaluate(_p, _tk, _wt, _pp)
                     _act = _res.get("action", "CLEAN") if isinstance(_res, dict) else "CLEAN"
 
+                    # ── Fix apr28: high-entry override (Option A from audit) ──
+                    # Audit on 281 ABSTAIN events showed entries >= 63c blocked
+                    # by EXHAUST resolve 71% WIN. Only allow DAMPEN (5m uses
+                    # fixed $3 size so DAMPEN flag is informational only —
+                    # the prob haircut is the real effect).
+                    _entry_now = _p.entry_price if _p.entry_price > 0.05 else _p.poly_price
+                    if (_act == "ABSTAIN" and _entry_now >= 0.63
+                            and float(_res.get("score", 0) or 0) < 0.65):
+                        logger.info(
+                            f"[5M EXHAUST OVERRIDE-HIGH-ENTRY] {_p.coin} {_p.direction}: "
+                            f"entry={_entry_now*100:.0f}c score={_res.get('score', 0):.2f} -> DAMPEN"
+                        )
+                        _act = "DAMPEN"
+
                     if _act == "ABSTAIN":
                         logger.info(
                             f"[EXHAUST BLOCK] {_p.coin} {_p.direction} skipped "

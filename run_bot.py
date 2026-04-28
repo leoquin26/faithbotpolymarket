@@ -506,6 +506,22 @@ def main():
                             )
                             _act = "DAMPEN"
                             _was_overridden = True
+                        # ── Fix apr28: high-entry override (Option A from audit) ──
+                        # Audit on 281 ABSTAIN events showed entries >= 63c blocked
+                        # by EXHAUST resolve 71% WIN (well above 64% breakeven). The
+                        # 171 trades this rule lets through win 68% globally.
+                        # Only allows DAMPEN (half size) — not full-size — to stay
+                        # cautious. Decisive blocks (score >= 0.65) still ABSTAIN.
+                        if (_act == "ABSTAIN" and not _was_overridden
+                                and (_p.entry_price if _p.entry_price > 0.05 else _p.poly_price) >= 0.63
+                                and float(_res.get("score", 0) or 0) < 0.65):
+                            _entry_c = (_p.entry_price if _p.entry_price > 0.05 else _p.poly_price) * 100.0
+                            logger.info(
+                                f"[EXHAUST OVERRIDE-HIGH-ENTRY] {_p.coin} {_p.direction}: "
+                                f"entry={_entry_c:.0f}c score={_res.get('score', 0):.2f} "
+                                f"-> DAMPEN (half size; audit apr28 says 68% WR)"
+                            )
+                            _act = "DAMPEN"
                         if _act == "ABSTAIN":
                             # ── Fix A apr23: sticky EXHAUST ABSTAIN memory ──
                             _last_exhaust_abstain[_p.coin] = time.time()
