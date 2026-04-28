@@ -355,24 +355,30 @@ class Predictor:
         strike = info.threshold_price
         now_ts = int(time.time())
         window_start = info.window_start or 0
-        window_end = window_start + 900
+        # Apr 28 5m support: timeframe-aware window length, warmup, late-block.
+        # 15m behaviour is preserved exactly (default branch).
+        _tf = getattr(info, "timeframe", "15m")
+        _window_secs = {"5m": 300, "15m": 900, "1h": 3600}.get(_tf, 900)
+        _warmup_min  = {"5m": 30,  "15m": 120, "1h": 600}.get(_tf, 120)
+        _late_block  = {"5m": 60,  "15m": 120, "1h": 300}.get(_tf, 120)
+        window_end = window_start + _window_secs
         time_remaining = max(1.0, window_end - now_ts)
         window_age = max(0, now_ts - window_start)
 
         if current_price <= 0 or strike <= 0:
             return None
 
-        # Warmup: need at least 30s of data
+        # Warmup: need at least N seconds of data (timeframe-aware)
         warmup = getattr(config, "WARMUP_SEC", 45)
-        if window_age < 120:
-            self._diag_log(f"warmup-{coin}", f"[WARMUP] {coin}: {window_age}s < 120s hard min", 30.0)
+        if window_age < _warmup_min:
+            self._diag_log(f"warmup-{_tf}-{coin}", f"[WARMUP {_tf}] {coin}: {window_age}s < {_warmup_min}s hard min", 30.0)
             return None
 
 
 
-        # Don't trade last 60s (can't exit + resolution risk)
-        if time_remaining < 120:
-            self._diag_log(f"late-{coin}", f"[TOO LATE] {coin}: only {time_remaining:.0f}s left — need 120s+", 30.0)
+        # Don't trade in late-block window (can't exit + resolution risk)
+        if time_remaining < _late_block:
+            self._diag_log(f"late-{_tf}-{coin}", f"[TOO LATE {_tf}] {coin}: only {time_remaining:.0f}s left — need {_late_block}s+", 30.0)
             return None
 
         # Feed ticks into analyzers

@@ -36,7 +36,26 @@ except Exception:
 class OrderManager:
     """Manages order placement, GTC tracking, and window dedup."""
 
-    def __init__(self):
+    def __init__(self, traded_file: Optional[str] = None,
+                 force_size_usd: Optional[float] = None,
+                 daily_loss_cap: Optional[float] = None,
+                 bot_name: str = "15m"):
+        """Apr 28 5m support: per-bot config so 5m runner can share this class
+        with the 15m bot but keep separate state.
+
+          - traded_file: override the default data/traded_windows.json so 5m
+            bot persists separately and never overwrites 15m's lock state.
+          - force_size_usd: when set, every bet uses exactly this $ amount
+            instead of Kelly-tier sizing (used for 5m test week at ~$3).
+          - daily_loss_cap: per-bot daily loss cap; 5m bot uses smaller cap
+            ($5) than the 15m main config so a bad 5m day can't blow up 15m.
+          - bot_name: tag for log lines so [15M]/[5M] are distinguishable.
+        """
+        if traded_file is not None:
+            self._TRADED_FILE = Path(traded_file)
+        self.force_size_usd = force_size_usd
+        self.daily_loss_cap_override = daily_loss_cap
+        self.bot_name = bot_name
         self.client = self._init_client()
         self.active_gtc: Dict[str, dict] = {}
         self.traded_windows: Dict[str, str] = self._load_traded_windows()
@@ -348,7 +367,12 @@ class OrderManager:
             logger.debug(f"[SKIP] {coin}: no real asks, <3m left")
             return False
 
-        size_usd = self._calc_size(pred)
+        # Apr 28 5m support: optional fixed-size override (test mode).
+        if self.force_size_usd is not None:
+            size_usd = self.force_size_usd
+            logger.info(f"[{self.bot_name.upper()} FIXED SIZE] using ${size_usd:.2f} (test mode, Kelly bypassed)")
+        else:
+            size_usd = self._calc_size(pred)
         # Fix C: min 2 shares (was 5) so Kelly-tier sizing isn't overridden
         # by a floor that costs $3.40 at 68c. 5-share floor was fine when
         # entries were 30-50c; with 65-68c entries it blows Kelly budget.

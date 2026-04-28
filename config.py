@@ -129,3 +129,21 @@ def validate():
     if not API_KEY or not API_SECRET or not API_PASSPHRASE:
         issues.append("Missing API credentials (key/secret/passphrase)")
     return issues
+
+
+# ──────────────────────────────────────────────────────────────────
+# 5m BOT CONFIG (Apr 28) — runs in a separate process: run_brain_5m.py
+# Test week: $3 fixed bets, BTC+SOL only, morning hours only, $5/day cap
+# ──────────────────────────────────────────────────────────────────
+M5_ENABLED          = bool(int(os.getenv("M5_ENABLED", "0")))
+M5_TRADE_HOURS_START = int(os.getenv("M5_TRADE_HOURS_START", "9"))   # Lima
+M5_TRADE_HOURS_END   = int(os.getenv("M5_TRADE_HOURS_END",  "12"))   # morning only initially
+M5_COINS            = [c.strip() for c in os.getenv("M5_COINS", "BTC,SOL").split(",") if c.strip()]
+M5_TEST_SIZE_USD    = float(os.getenv("M5_TEST_SIZE_USD", "3.0"))   # fixed test-week size
+M5_DAILY_LOSS_CAP   = float(os.getenv("M5_DAILY_LOSS_CAP", "5.0"))  # hard stop per day
+M5_MIN_EDGE         = float(os.getenv("M5_MIN_EDGE", "0.15"))       # tighter than 15m
+M5_MIN_TREND        = float(os.getenv("M5_MIN_TREND", "0.80"))      # tighter than 15m
+M5_MAX_CONCURRENT   = int(os.getenv("M5_MAX_CONCURRENT", "1"))
+M5_SCAN_INTERVAL    = int(os.getenv("M5_SCAN_INTERVAL", "3"))
+M5_ENTRY_MIN        = float(os.getenv("M5_ENTRY_MIN", "0.40"))
+M5_ENTRY_MAX        = float(os.getenv("M5_ENTRY_MAX", "0.65"))      # tighter cap on 5m

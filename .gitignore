@@ -18,3 +18,8 @@ data/trade_events_backfill.jsonl
 data/analytics_report.json
 data/Polymarket-History-*.csv
 *.bak_apr23_*
+
+# 5m bot state files
+traded_windows_5m.json
+v3_bot_5m.log
+logs/bot_5m_*.log

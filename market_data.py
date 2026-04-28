@@ -253,7 +253,7 @@ def get_market_info(coin: str, timeframe: str = "15m") -> Optional[MarketInfo]:
     Extracted directly from friend_package get_market_info().
     """
     current_time = int(time.time())
-    window_seconds = {"15m": 900, "1h": 3600, "4h": 14400}.get(timeframe, 900)
+    window_seconds = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}.get(timeframe, 900)
     current_window = (current_time // window_seconds) * window_seconds
     slug = f"{coin.lower()}-updown-{timeframe}-{current_window}"
 
