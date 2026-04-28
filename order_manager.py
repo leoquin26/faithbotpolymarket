@@ -18,11 +18,13 @@ import telegram_notifier as tg
 import config
 from predictor import Prediction
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import (
+# CLOB V2 migration apr28: switched from py_clob_client to py_clob_client_v2
+# (V2 went live 2026-04-28 11:00 UTC; V1 returns order_version_mismatch.)
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.clob_types import (
     OrderArgs, OrderType, PartialCreateOrderOptions, ApiCreds,
 )
-from py_clob_client.order_builder.constants import BUY
+from py_clob_client_v2.order_builder.constants import BUY
 
 # ── analytics hook apr23 ──
 try:
