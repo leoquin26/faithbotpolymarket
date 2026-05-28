@@ -1,12 +1,12 @@
 """
-V8 Bot — Empirical Trend Trader with Atomic Dedup.
+V8 Bot ÔÇö Empirical Trend Trader with Atomic Dedup.
 
 Key changes from V5/run_bot:
 - FIX 1: Single atomic traded_this_window lock (threading.Lock + set)
          prevents machine-gunning multiple orders per coin per window.
 - FIX 5: Edge computed HERE with fresh CLOB ask at order time,
          not in predictor with stale ask from scan time.
-- Predictor is stateless — only returns direction + win_probability.
+- Predictor is stateless ÔÇö only returns direction + win_probability.
 """
 
 import os
@@ -26,7 +26,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from loguru import logger
-# ── analytics hook apr23 ──
+# ÔöÇÔöÇ analytics hook apr23 ÔöÇÔöÇ
 try:
     from analytics import event_logger as _alog
     from analytics import resolver as _aresolver
@@ -48,7 +48,7 @@ import exhaustion_detector as exhaust
 from order_manager import OrderManager
 
 logger.remove()
-# Single stderr sink — the bot is run as `python3 run_bot.py >> v3_bot.log 2>&1`,
+# Single stderr sink ÔÇö the bot is run as `python3 run_bot.py >> v3_bot.log 2>&1`,
 # so stderr is captured to v3_bot.log exactly once. Adding a loguru FileHandler
 # on top of that caused EVERY line to be written twice (fix applied 2026-04-22).
 logger.add(
@@ -262,9 +262,9 @@ def is_good_trading_hour() -> tuple:
     _is_mon_premarket = (weekday == 0) and (lima_hour < 9)
     if _is_sat_sun or _is_fri_evening or _is_mon_premarket:
         stamp = now_lima.strftime("%a %H:%M")
-        return False, f"[WEEKEND MODE] {stamp} Lima — blocked until Monday 09:00 Lima"
+        return False, f"[WEEKEND MODE] {stamp} Lima ÔÇö blocked until Monday 09:00 Lima"
     if lima_hour < 9 or lima_hour >= 17:
-        return False, f"[OFF HOURS] {lima_hour}:{now_lima.minute:02d} Lima — trade window 9am-5pm Lima (scanning active)"
+        return False, f"[OFF HOURS] {lima_hour}:{now_lima.minute:02d} Lima ÔÇö trade window 9am-5pm Lima (scanning active)"
     return True, ""
 
 
@@ -301,9 +301,17 @@ def main():
 
     binance_ws.start()
     time.sleep(2)
+    # ── [AUDIT MAY27 v7b] start Polymarket WebSocket sidecar ──
+    try:
+        import polymarket_ws as _pws
+        if _pws.is_connected() or os.getenv("POLYMARKET_WS_ENABLED", "on").lower() == "on":
+            _pws.get_singleton()  # lazy-starts the thread
+            logger.info("[POLY-WS] singleton started")
+    except Exception as _e_pws:
+        logger.warning(f"[POLY-WS] start failed: {_e_pws}")
 
     print("=" * 60)
-    print("  V11 BOT — Black-Scholes Binary Engine")
+    print("  V11 BOT ÔÇö Black-Scholes Binary Engine")
     print("=" * 60)
     print(f"  Mode:         {'DRY RUN' if config.DRY_RUN else 'LIVE TRADING'}")
     print(f"  Coins:        {', '.join(config.SYMBOLS.keys())}")
@@ -323,7 +331,27 @@ def main():
     predictor = Predictor()
     morning_pred = MorningPredictor(predictor)
     bootstrap_traded_set()
-    # ── analytics hook apr23 ── kick off resolver daemon
+    # ── [AUDIT MAY27 X1] cross-asset feature aggregator (shadow log only) ──
+    try:
+        from core.cross_asset_features import (
+            CrossAssetState as _XASState,
+            format_log_line as _xas_log,
+        )
+        _xas_state = _XASState()
+    except Exception as _e_xas_init:
+        logger.warning(f"[XASSET] init failed: {_e_xas_init}")
+        _xas_state = None
+        _xas_log = None
+
+    # [AUDIT MAY27 v4] wire xas_state into the predictor so the calibrator
+    # can read cross-asset breadth at signal-time.
+    try:
+        if _xas_state is not None and hasattr(predictor, "set_xas_state"):
+            predictor.set_xas_state(_xas_state)
+            logger.info("[XASSET] wired into predictor calibrator")
+    except Exception as _e_xas_wire:
+        logger.warning(f"[XASSET] wire failed: {_e_xas_wire}")
+    # ÔöÇÔöÇ analytics hook apr23 ÔöÇÔöÇ kick off resolver daemon
     try:
         if _aresolver is not None:
             _aresolver.start_background()
@@ -378,16 +406,16 @@ def main():
             def scan_coin(coin: str):
                 info = get_market_info(coin)
                 if not info:
-                    return None, None
+                    return None, None, None
 
                 if info.time_remaining < config.MIN_TIME_REMAINING:
-                    return info, None
+                    return info, None, None
 
                 # FIX 1: Check atomic lock BEFORE calling predictor
                 if is_window_locked(coin, info.window_start):
-                    return info, None
+                    return info, None, None
                 if orders.is_window_traded(coin, info.window_start):
-                    return info, None
+                    return info, None, None
 
                 ws_price = binance_ws.get_price(coin)
                 if ws_price and ws_price > 0:
@@ -419,13 +447,27 @@ def main():
                     realized_vol=realized_vol,
                     up_ask=up_book.get("ask") or 0.0,
                     down_ask=down_book.get("ask") or 0.0,
+                    up_bid=up_book.get("bid") or 0.0,
+                    down_bid=down_book.get("bid") or 0.0,
                     up_mid=up_book.get("mid") or 0.0,
                     down_mid=down_book.get("mid") or 0.0,
                     up_depth=up_book.get("depth_ratio", 0.0),
                     down_depth=down_book.get("depth_ratio", 0.0),
                     ticks=ticks,
                 )
-                return info, pred
+                # [AUDIT MAY27 R1] compute arb here using books we already
+                # fetched, instead of re-fetching them in the main loop below.
+                arb = None
+                if not is_window_locked(coin, info.window_start):
+                    try:
+                        arb = find_arbitrage(
+                            info,
+                            up_ask=up_book.get("ask") or 0.0,
+                            down_ask=down_book.get("ask") or 0.0,
+                        )
+                    except Exception:
+                        arb = None
+                return info, pred, arb
 
             futures_map = {executor.submit(scan_coin, c): c for c in config.SYMBOLS}
             predictions = []
@@ -434,20 +476,24 @@ def main():
             for future in as_completed(futures_map):
                 coin_name = futures_map[future]
                 try:
-                    info, pred = future.result()
-                    if info and arb_enabled and not is_window_locked(info.coin, info.window_start):
-                        try:
-                            ub = orders.get_clob_book(info.up_token_id)
-                            db = orders.get_clob_book(info.down_token_id)
-                            arb = find_arbitrage(info, up_ask=ub.get("ask") or 0, down_ask=db.get("ask") or 0)
-                            if arb:
-                                arb_candidates.append(arb)
-                        except Exception:
-                            pass
+                    info, pred, arb = future.result()
+                    if arb and arb_enabled:
+                        arb_candidates.append(arb)
                     if pred:
                         predictions.append(pred)
                 except Exception as e:
                     logger.error(f"Scan error for {coin_name}: {e}")
+
+            # ── [AUDIT MAY27 X1] cross-asset features (shadow log only) ──
+            # Runs once per scan cycle using _raw_coin_info, which now holds
+            # one (up_ask, down_ask) entry per coin. Logged only — does not
+            # affect any trade decision in this version.
+            if _xas_state is not None and _raw_coin_info:
+                try:
+                    _xas_snap = _xas_state.update(_raw_coin_info)
+                    logger.info(_xas_log(_xas_snap))
+                except Exception as _e_xas:
+                    logger.debug(f"[XASSET] tick failed: {_e_xas}")
 
             # ── Exhaustion detector (SHADOW MODE) ──
             # Evaluates every prediction for exhaustion signals. Logs only;
@@ -476,7 +522,7 @@ def main():
                         _tk = binance_ws.get_tick_history(_p.coin, 300)
                         _res = exhaust.evaluate(_p, _tk, _wt, _pp)
                         _act = _res.get("action", "CLEAN") if isinstance(_res, dict) else "CLEAN"
-                        # ── analytics hook apr23 ── EXHAUST verdict
+                        # ÔöÇÔöÇ analytics hook apr23 ÔöÇÔöÇ EXHAUST verdict
                         try:
                             if _alog is not None:
                                 _tid = _alog.new_trade_id()
@@ -493,7 +539,7 @@ def main():
                                 )
                         except Exception:
                             pass
-                        # ── Fix apr27: edge-priority override ──
+                        # ÔöÇÔöÇ Fix apr27: edge-priority override ÔöÇÔöÇ
                         # When signal is A-tier (prob>=82% AND edge>=18%),
                         # downgrade EXHAUST ABSTAIN -> DAMPEN. Top-tier signals
                         # historically win 80%+; size still halved by DAMPEN flag.
@@ -501,16 +547,16 @@ def main():
                         if _act == "ABSTAIN" and _p.probability >= 0.82 and _p.edge >= 0.18:
                             logger.info(
                                 f"[EXHAUST OVERRIDE] {_p.coin} {_p.direction}: "
-                                f"prob={_p.probability:.0%} edge={_p.edge*100:.1f}% — "
+                                f"prob={_p.probability:.0%} edge={_p.edge*100:.1f}% ÔÇö "
                                 f"ABSTAIN(score={_res.get('score', 0):.2f}) -> DAMPEN (no haircut)"
                             )
                             _act = "DAMPEN"
                             _was_overridden = True
-                        # ── Fix apr28: high-entry override (Option A from audit) ──
+                        # ÔöÇÔöÇ Fix apr28: high-entry override (Option A from audit) ÔöÇÔöÇ
                         # Audit on 281 ABSTAIN events showed entries >= 63c blocked
                         # by EXHAUST resolve 71% WIN (well above 64% breakeven). The
                         # 171 trades this rule lets through win 68% globally.
-                        # Only allows DAMPEN (half size) — not full-size — to stay
+                        # Only allows DAMPEN (half size) ÔÇö not full-size ÔÇö to stay
                         # cautious. Decisive blocks (score >= 0.65) still ABSTAIN.
                         if (_act == "ABSTAIN" and not _was_overridden
                                 and (_p.entry_price if _p.entry_price > 0.05 else _p.poly_price) >= 0.63
@@ -523,7 +569,7 @@ def main():
                             )
                             _act = "DAMPEN"
                         if _act == "ABSTAIN":
-                            # ── Fix A apr23: sticky EXHAUST ABSTAIN memory ──
+                            # ÔöÇÔöÇ Fix A apr23: sticky EXHAUST ABSTAIN memory ÔöÇÔöÇ
                             _last_exhaust_abstain[_p.coin] = time.time()
                             try:
                                 if _alog is not None:
@@ -576,7 +622,7 @@ def main():
                 time.sleep(config.SCAN_INTERVAL)
                 continue
 
-            # ── Morning strategy (9am-2pm Lima): separate, conservative predictor ──
+            # ÔöÇÔöÇ Morning strategy (9am-2pm Lima): separate, conservative predictor ÔöÇÔöÇ
             from zoneinfo import ZoneInfo as _ZI
             _lima_now = datetime.now(_ZI("America/Lima"))
             _is_morning = 9 <= _lima_now.hour < 14
@@ -589,7 +635,8 @@ def main():
             # Morning outcomes DO NOT feed predictor.record_outcome() - isolation.
             if _is_morning and can_trade and _morning_consec_losses < 2 and _morning_total_losses < MORNING_LOSS_CAP:
                 _phase = morn.get_morning_phase()
-                if _phase in (1, 3):
+                # may04: include phase 2 ÔÇö filter_morning_signal handles A-tier override there.
+                if _phase in (1, 2, 3):
                     _morning_candidates = []
                     for _p in predictions:
                         _ts = getattr(_p, "trend_score", 0.0)
@@ -600,7 +647,7 @@ def main():
                     if _morning_candidates:
                         _best_m = max(_morning_candidates, key=lambda x: x.probability)
                         _active_count = len(orders.positions) + len(orders.active_gtc)
-                        # ── Fix A apr23: sticky EXHAUST ABSTAIN memory ──
+                        # ÔöÇÔöÇ Fix A apr23: sticky EXHAUST ABSTAIN memory ÔöÇÔöÇ
                         _abstain_age = time.time() - _last_exhaust_abstain.get(_best_m.coin, 0)
                         if _abstain_age < 30:
                             try:
@@ -616,11 +663,11 @@ def main():
                                 pass
                             logger.info(
                                 f"[MORNING STICKY EXHAUST] {_best_m.coin} {_best_m.direction}: "
-                                f"ABSTAIN {_abstain_age:.0f}s ago — skipping to avoid oscillation"
+                                f"ABSTAIN {_abstain_age:.0f}s ago ÔÇö skipping to avoid oscillation"
                             )
                             time.sleep(config.SCAN_INTERVAL)
                             continue
-                        # ── Fix C apr23: tighter morning concurrency after any loss ──
+                        # ÔöÇÔöÇ Fix C apr23: tighter morning concurrency after any loss ÔöÇÔöÇ
                         # After first morning loss of the session, allow only 1 open position
                         _morning_cap = 1 if _morning_consec_losses >= 1 else 2
                         if _active_count < _morning_cap:
@@ -642,7 +689,9 @@ def main():
                                         if _success and _best_m.coin in orders.positions:
                                             # Tag position as morning for isolated resolution
                                             orders.positions[_best_m.coin]["is_morning"] = True
-                                            # ── analytics hook apr23 ── morning FIRED
+                                            # [AUDIT MAY27 T1] thread trade_id for ledger linkage
+                                            orders.positions[_best_m.coin]["trade_id"] = getattr(_best_m, "_trade_id", None)
+                                            # ÔöÇÔöÇ analytics hook apr23 ÔöÇÔöÇ morning FIRED
                                             try:
                                                 if _alog is not None:
                                                     _pos = orders.positions[_best_m.coin]
@@ -668,10 +717,10 @@ def main():
                                     finally:
                                         _os2.environ["KELLY_FRACTION"] = _orig_frac
 
-            # ── Afternoon strategy (2pm-5pm): main predictor, unchanged ──
+            # ÔöÇÔöÇ Afternoon strategy (2pm-5pm): main predictor, unchanged ÔöÇÔöÇ
             actionable = [
                 p for p in predictions
-                if p.confidence in ("HIGH", "MEDIUM")
+                if p.confidence in ("HIGH", "MEDIUM", "REGIME-INVERT", "BTC-INVERT", "TRAP-INVERT")
                 and p.edge >= config.MIN_EDGE
             ]
 
@@ -690,7 +739,7 @@ def main():
                 else:
                     best = unique[0]
 
-                    # FIX 1: Atomic lock — only one trade per coin per window
+                    # FIX 1: Atomic lock ÔÇö only one trade per coin per window
                     if not lock_window(best.coin, best.market_info.window_start):
                         logger.debug(f"[LOCKED] {best.coin} already traded this window")
                     else:
@@ -708,7 +757,9 @@ def main():
                                     f"real_edge={real_edge*100:.1f}% < {config.MIN_EDGE*100:.0f}%"
                                 )
                                 unlock_window(best.coin, best.market_info.window_start)
-                            elif clob_ask < config.ENTRY_MIN or clob_ask > config.ENTRY_MAX:
+                            # [INVERT BYPASS ENTRY_MIN] inverted trades intentionally
+                            # buy the cheap opposite side — allow ask down to 0.20 for them.
+                            elif clob_ask < (0.20 if best.confidence in ("REGIME-INVERT", "BTC-INVERT", "TRAP-INVERT") else config.ENTRY_MIN) or clob_ask > config.ENTRY_MAX:
                                 logger.info(
                                     f"[CLOB RANGE] {best.coin} {best.direction}: "
                                     f"CLOB ask={clob_ask*100:.0f}c outside "
@@ -719,20 +770,25 @@ def main():
                                 # PM R:R collapses above this price (backfill: 66-69c R:R=0.49, >=69c R:R=0.35)
                                 logger.info(
                                     f"[PM ENTRY CAP] {best.coin} {best.direction}: "
-                                    f"CLOB ask={clob_ask*100:.0f}c > PM cap {config.PM_ENTRY_MAX*100:.0f}c — R:R too thin"
+                                    f"CLOB ask={clob_ask*100:.0f}c > PM cap {config.PM_ENTRY_MAX*100:.0f}c ÔÇö R:R too thin"
                                 )
                                 unlock_window(best.coin, best.market_info.window_start)
                             elif config.TRAP_BAND_MIN <= clob_ask <= config.TRAP_BAND_MAX:
                                 # Option A apr28: 60-63c entry band has 47% WR / R:R 0.75
-                                # in our 8-day backfill — confirmed structural loser.
+                                # in our 8-day backfill ÔÇö confirmed structural loser.
                                 logger.info(
                                     f"[TRAP BAND] {best.coin} {best.direction}: "
                                     f"CLOB ask={clob_ask*100:.0f}c in trap band "
                                     f"{config.TRAP_BAND_MIN*100:.0f}-{config.TRAP_BAND_MAX*100:.0f}c (47% WR)"
                                 )
                                 unlock_window(best.coin, best.market_info.window_start)
-                            elif _is_afternoon and best.coin in config.PM_BLOCKED_COINS:
+                            elif (
+                                _is_afternoon
+                                and best.coin in config.PM_BLOCKED_COINS
+                                and best.confidence not in ("REGIME-INVERT", "BTC-INVERT", "TRAP-INVERT")
+                            ):
                                 # Option A apr28: XRP is 50% WR / -$3.80 net — skip in PM.
+                                # Inverted trap signals bypass: regime already flipped to contra side.
                                 logger.info(
                                     f"[PM COIN BLOCK] {best.coin} {best.direction}: "
                                     f"{best.coin} blocked in PM (50% WR / negative EV)"
@@ -750,6 +806,9 @@ def main():
                                 if not filled:
                                     unlock_window(best.coin, best.market_info.window_start)
                                     logger.info(f"[UNLOCK] {best.coin}: order failed, window unlocked for retry")
+                                elif best.coin in orders.positions:
+                                    # [AUDIT MAY27 T1] thread trade_id for ledger linkage
+                                    orders.positions[best.coin]["trade_id"] = getattr(best, "_trade_id", None)
                         else:
                             logger.info(f"[NO ASK] {best.coin} {best.direction}: no valid CLOB ask at execution")
                             unlock_window(best.coin, best.market_info.window_start)
@@ -816,7 +875,7 @@ def main():
                                     if isinstance(_toks, str):
                                         _toks = _ast.literal_eval(_toks)
                                     # Parse the `outcomes` list too; we resolve by position
-                                    # SIDE (UP/DOWN) matched against outcomes label — independent of
+                                    # SIDE (UP/DOWN) matched against outcomes label ÔÇö independent of
                                     # any upstream token_id bugs.
                                     _outs = _mkt.get("outcomes", [])
                                     if isinstance(_outs, str):
@@ -892,7 +951,7 @@ def main():
 
                 _is_morning_trade = pos.get("is_morning", False)
                 _tag = "MORNING" if _is_morning_trade else "PM"
-                # ── analytics hook apr23 ── RESOLVED event
+                # ÔöÇÔöÇ analytics hook apr23 ÔöÇÔöÇ RESOLVED event
                 try:
                     if _alog is not None:
                         _alog.log_resolved(
@@ -912,6 +971,20 @@ def main():
                     pnl = payout - cost
                     logger.info(f"[WIN {_tag}] {coin} {side} | +${pnl:.2f} | Entry: {entry*100:.0f}c x{shares} | Payout: ${payout:.2f}")
                     tg.notify_result(coin, side, True, cost, payout)
+                    # [REGIME-AWARE v1] update detector and persist
+                    try:
+                        if getattr(predictor, "_regime_detector", None) is not None:
+                            predictor._regime_detector.track_outcome(
+                                coin=coin, direction=side, ask=float(entry),
+                                trend=float(pos.get("trend_score", 0.0)),
+                                prob=float(pos.get("probability", 0.0)),
+                                won=True, pnl=float(pnl),
+                            )
+                            from regime_aware.persistence import save_state
+                            save_state(predictor._regime_detector)
+                            logger.info(f"[REGIME] after WIN: {predictor._regime_detector.stats_summary()}")
+                    except Exception as _re:
+                        logger.warning(f"[REGIME] WIN track failed: {_re}")
                     if _is_morning_trade:
                         _morning_consec_losses = 0
                     else:
@@ -920,6 +993,20 @@ def main():
                 else:
                     logger.info(f"[LOSS {_tag}] {coin} {side} | -${cost:.2f} | Entry: {entry*100:.0f}c x{shares}")
                     tg.notify_result(coin, side, False, cost)
+                    # [REGIME-AWARE v1] update detector and persist
+                    try:
+                        if getattr(predictor, "_regime_detector", None) is not None:
+                            predictor._regime_detector.track_outcome(
+                                coin=coin, direction=side, ask=float(entry),
+                                trend=float(pos.get("trend_score", 0.0)),
+                                prob=float(pos.get("probability", 0.0)),
+                                won=False, pnl=-float(cost),
+                            )
+                            from regime_aware.persistence import save_state
+                            save_state(predictor._regime_detector)
+                            logger.info(f"[REGIME] after LOSS: {predictor._regime_detector.stats_summary()}")
+                    except Exception as _re:
+                        logger.warning(f"[REGIME] LOSS track failed: {_re}")
                     if _is_morning_trade:
                         _morning_consec_losses += 1
                         _morning_total_losses += cost
