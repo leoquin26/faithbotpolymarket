@@ -14,6 +14,7 @@ Pipeline:
 """
 
 import math
+import os
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple
@@ -42,6 +43,7 @@ class Prediction:
     stale_gap: float = 0.0
     conviction_strength: Optional[str] = None
     force_fok: bool = False
+    trend_score: float = 0.0
 
 
 # ── Normal CDF (Abramowitz & Stegun approximation, max error 1.5e-7) ──
@@ -389,9 +391,14 @@ class Predictor:
         sigma = ewma.get_sigma()
         # Floor sigma at typical crypto minimum to prevent decay to zero
         # during low-tick periods (REST polling with identical prices)
-        SIGMA_FLOOR = 1e-05
+        SIGMA_FLOOR = 5e-04
         if sigma < SIGMA_FLOOR:
-            sigma = SIGMA_FLOOR
+            self._diag_log(
+                f"lowvol-{coin}",
+                f"[LOW VOL] {coin}: sigma={sigma:.2e} < {SIGMA_FLOOR:.2e} — abstaining",
+                15.0,
+            )
+            return None
         if not ewma._initialized:
             self._diag_log(f"nosigma-{coin}", f"[NO VOL] {coin}: not initialized", 30.0)
             return None
@@ -415,21 +422,43 @@ class Predictor:
         roc_60 = mom._roc(60)
         roc_120 = mom._roc(120)
 
-        # Cold-start guard: need real 2-min price history before trading
-        if roc_60 == 0.0 and roc_120 == 0.0 and momentum_raw == 0.0:
-            self._diag_log(f"cold-start-{coin}", f"[COLD START] {coin}: no momentum data yet — waiting for 2min+ history", 30.0)
+        # Cold-start guard: need 60s+ of tick data (not momentum values, which can be zero in flat markets)
+        mom_ticks = mom.tick_count
+        mom_span = (mom._ticks[-1][0] - mom._ticks[0][0]) if mom_ticks >= 2 else 0.0
+        if mom_span < 60.0:
+            self._diag_log(f"cold-start-{coin}", f"[COLD START] {coin}: only {mom_span:.0f}s of tick data (need 60s+, have {mom_ticks} ticks)", 30.0)
             return None
 
         # Distance from strike as percentage
         dist_pct = (current_price - strike) / strike if strike > 0 else 0.0
 
-        # Trend score: combines short-term momentum with position relative to strike
+        # Multi-timeframe ROC for direction confirmation
+        roc_300 = mom._roc(300)  # 5-minute trend (big picture)
+
+        # Trend score: combines multi-timeframe momentum with position
         # Positive = price moving UP / above strike, Negative = DOWN / below strike
         trend_score = 0.0
-        trend_score += dist_pct * 200.0        # position vs strike (strongest signal)
-        trend_score += roc_60 * 500.0          # 60s momentum
-        trend_score += roc_120 * 300.0         # 2min trend
-        trend_score += momentum_raw * 400.0    # weighted momentum (10s/30s/60s)
+        trend_score += dist_pct * 400.0        # position vs strike (primary)
+        trend_score += roc_60 * 400.0          # 60s momentum (reduced from 500)
+        trend_score += roc_120 * 350.0         # 2min trend (increased from 300)
+        trend_score += roc_300 * 250.0         # 5min trend (NEW - bigger picture)
+        trend_score += momentum_raw * 300.0    # weighted momentum (reduced from 400)
+
+        # Direction disagreement filter: if 5-min trend strongly opposes 1-min signal,
+        # the signal is likely a bounce, not a reversal. Dampen the trend score.
+        if roc_300 != 0.0 and roc_60 != 0.0:
+            short_dir = 1 if roc_60 > 0 else -1
+            long_dir = 1 if roc_300 > 0 else -1
+            if short_dir != long_dir and abs(roc_300) > abs(roc_60) * 0.3:
+                dampen = 0.50  # cut trend score in half when timeframes disagree
+                old_ts = trend_score
+                trend_score *= dampen
+                self._diag_log(
+                    f"disagree-{coin}",
+                    f"[TF DISAGREE] {coin}: roc60={roc_60*10000:+.1f}bps vs roc300={roc_300*10000:+.1f}bps "
+                    f"— dampened trend {old_ts:+.2f} -> {trend_score:+.2f}",
+                    15.0,
+                )
 
         # Regime detection: choppy vs trending
         chop = self._chop_detector
@@ -472,6 +501,19 @@ class Predictor:
         combined_prob = 0.70 * raw_prob + 0.30 * base_up_prob
         combined_prob = max(0.01, min(0.99, combined_prob))
 
+        # Distance penalty: when price is near strike, dampen confidence toward 50%
+        # abs(dist_pct) < 0.05% means price is within 0.05% of strike = coin flip territory
+        # Scale: at dist=0 -> 40% penalty, at dist=0.1% -> 0% penalty
+        DIST_THRESHOLD = 0.001  # 0.1% from strike
+        if abs(dist_pct) < DIST_THRESHOLD:
+            dist_factor = abs(dist_pct) / DIST_THRESHOLD  # 0.0 at strike, 1.0 at threshold
+            penalty = 0.40 * (1.0 - dist_factor)  # 40% pull toward 0.5 when at strike
+            combined_prob = combined_prob * (1.0 - penalty) + 0.50 * penalty
+            logger.debug(
+                f"[DIST PENALTY] {coin}: dist={dist_pct*100:+.4f}% factor={dist_factor:.2f} "
+                f"penalty={penalty:.2f} prob_adj={combined_prob:.1%}"
+            )
+
         # ── Step 3: Decide direction and evaluate ──
         is_up = combined_prob >= 0.5
         direction = "UP" if is_up else "DOWN"
@@ -480,6 +522,27 @@ class Predictor:
         mid = up_mid if is_up else down_mid
         depth = up_depth if is_up else down_depth
         token_id = info.up_token_id if is_up else info.down_token_id
+
+        # Spot vs strike: never buy DOWN above strike / UP below strike
+        try:
+            if os.getenv("STRIKE_DIRECTION_ENFORCE", "on").lower() == "on":
+                _sd_min = float(os.getenv("STRIKE_DIRECTION_MIN_DIST", "0.00015"))
+                if dist_pct >= _sd_min and direction == "DOWN":
+                    self._diag_log(
+                        f"strike-dir-{coin}",
+                        f"[STRIKE CONFLICT] {coin} DOWN: price {dist_pct*100:+.3f}% above strike — skip",
+                        15.0,
+                    )
+                    return None
+                if dist_pct <= -_sd_min and direction == "UP":
+                    self._diag_log(
+                        f"strike-dir-{coin}",
+                        f"[STRIKE CONFLICT] {coin} UP: price {dist_pct*100:+.3f}% below strike — skip",
+                        15.0,
+                    )
+                    return None
+        except Exception as _e_sd:
+            logger.debug(f"[STRIKE CONFLICT] check failed: {_e_sd}")
 
         # Cross-asset direction consistency
         if window_start != self._window_start_ts:
@@ -551,6 +614,17 @@ class Predictor:
             )
             return None
 
+        # Expensive entry needs more edge (Jun-3 audit: 66-72c @ 8% edge = -EV)
+        _hi_ask = float(os.getenv("HIGH_ASK_EDGE_MIN_ASK", "0.62"))
+        _hi_edge = float(os.getenv("HIGH_ASK_EDGE_MIN_EDGE", "0.12"))
+        if ask >= _hi_ask and edge < _hi_edge:
+            self._diag_log(
+                f"thin-{coin}-{direction}",
+                f"[THIN EDGE] {coin} {direction}: ask={ask*100:.0f}c edge={edge*100:.1f}% < {_hi_edge*100:.0f}% needed at {_hi_ask*100:.0f}c+",
+                15.0,
+            )
+            return None
+
         confidence = "HIGH" if win_prob >= 0.75 and edge >= 0.12 else "MEDIUM"
 
         reasoning = (
@@ -563,11 +637,11 @@ class Predictor:
         logger.info(
             f"[SIGNAL] {coin} {direction} | Prob={win_prob:.0%} | Ask={ask*100:.0f}c | "
             f"Edge={edge*100:.1f}% | Trend={trend_score:+.2f} Dist={dist_pct*100:+.3f}% "
-            f"ROC60={roc_60*10000:+.1f}bps σ={sigma:.2e} T={time_remaining:.0f}s"
+            f"ROC60={roc_60*10000:+.1f} ROC300={roc_300*10000:+.1f}bps σ={sigma:.2e} T={time_remaining:.0f}s"
         )
 
         self._window_direction = direction
-        self._chop_detector.record_direction(direction)
+        # ChopDetector records actual market outcome in run_bot.py, NOT bot's trade direction
         regime = "CHOPPY" if self._chop_detector.is_choppy() else "TRENDING"
         logger.debug(f"[COMMIT] {coin} {direction} | {regime} | history={self._chop_detector.summary()} | trends={dict(self._window_trends)}")
 
@@ -585,4 +659,5 @@ class Predictor:
             mc_prob=win_prob,
             depth_ratio=depth,
             directional_edge=win_prob - 0.50,
+            trend_score=trend_score,
         )

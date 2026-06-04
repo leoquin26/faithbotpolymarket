@@ -9,6 +9,10 @@ V2 changes:
 
 import os
 import time
+try:
+    import polymarket_ws as _pws
+except Exception:
+    _pws = None
 import json
 from pathlib import Path
 from typing import Optional, Dict, Set
@@ -18,11 +22,13 @@ import telegram_notifier as tg
 import config
 from predictor import Prediction
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import (
+# CLOB V2 migration apr28: switched from py_clob_client to py_clob_client_v2
+# (V2 went live 2026-04-28 11:00 UTC; V1 returns order_version_mismatch.)
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.clob_types import (
     OrderArgs, OrderType, PartialCreateOrderOptions, ApiCreds,
 )
-from py_clob_client.order_builder.constants import BUY
+from py_clob_client_v2.order_builder.constants import BUY
 
 
 class OrderManager:
@@ -32,11 +38,18 @@ class OrderManager:
         self.client = self._init_client()
         self.active_gtc: Dict[str, dict] = {}
         self.traded_windows: Dict[str, str] = self._load_traded_windows()
-        self.positions: Dict[str, dict] = {}
+        self.positions: Dict[str, dict] = self._load_positions()
         self.daily_losses = 0.0
         self.daily_wins = 0.0
         self.daily_trades = 0
         self._trading_day = ""
+        self._load_daily_pnl()
+        if self.positions:
+            coins = ", ".join(
+                f"{c} {self.positions[c].get('side', '?')}@{self.positions[c].get('entry_price', 0)*100:.0f}c"
+                for c in self.positions
+            )
+            logger.info(f"[POSITIONS] Restored {len(self.positions)} open: {coins}")
 
 
     # ------------------------------------------------------------------
@@ -119,6 +132,86 @@ class OrderManager:
         with open(self._TRADED_FILE, "w") as f:
             json.dump(self.traded_windows, f)
 
+    _POSITIONS_FILE = Path("data/open_positions.json")
+    _DAILY_PNL_FILE = Path("data/daily_pnl.json")
+
+    def _load_positions(self) -> Dict[str, dict]:
+        try:
+            if self._POSITIONS_FILE.exists():
+                with open(self._POSITIONS_FILE) as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return {k: v for k, v in data.items() if isinstance(v, dict)}
+        except Exception as e:
+            logger.warning(f"[POSITIONS] load failed: {e}")
+        return {}
+
+    def _save_positions(self):
+        try:
+            self._POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._POSITIONS_FILE, "w") as f:
+                json.dump(self.positions, f, indent=2)
+        except Exception as e:
+            logger.warning(f"[POSITIONS] save failed: {e}")
+
+    def set_position(self, coin: str, pos: dict):
+        self.positions[coin] = pos
+        self._save_positions()
+
+    def remove_position(self, coin: str) -> Optional[dict]:
+        pos = self.positions.pop(coin, None)
+        self._save_positions()
+        return pos
+
+    def _load_daily_pnl(self):
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        self._trading_day = today
+        try:
+            if self._DAILY_PNL_FILE.exists():
+                with open(self._DAILY_PNL_FILE) as f:
+                    data = json.load(f)
+                if data.get("date") == today:
+                    self.daily_losses = float(data.get("losses", 0))
+                    self.daily_wins = float(data.get("wins", 0))
+                    self.daily_trades = int(data.get("trades", 0))
+                    logger.info(
+                        f"[DAILY PNL] Restored {today}: "
+                        f"losses=${self.daily_losses:.2f} wins=${self.daily_wins:.2f} trades={self.daily_trades}"
+                    )
+                    return
+        except Exception as e:
+            logger.warning(f"[DAILY PNL] load failed: {e}")
+        self.daily_losses = 0.0
+        self.daily_wins = 0.0
+        self.daily_trades = 0
+
+    def _save_daily_pnl(self):
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        self._trading_day = today
+        try:
+            self._DAILY_PNL_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._DAILY_PNL_FILE, "w") as f:
+                json.dump({
+                    "date": today,
+                    "losses": round(self.daily_losses, 4),
+                    "wins": round(self.daily_wins, 4),
+                    "trades": self.daily_trades,
+                }, f, indent=2)
+        except Exception as e:
+            logger.warning(f"[DAILY PNL] save failed: {e}")
+
+    def record_win_pnl(self, pnl: float):
+        self.daily_wins += pnl
+        self.daily_trades += 1
+        self._save_daily_pnl()
+
+    def record_loss_pnl(self, cost: float):
+        self.daily_losses += cost
+        self.daily_trades += 1
+        self._save_daily_pnl()
+
     def is_window_traded(self, coin: str, window_start: int) -> bool:
         key = f"{coin}-{window_start}"
         return key in self.traded_windows
@@ -157,7 +250,9 @@ class OrderManager:
             self.daily_wins = 0.0
             self.daily_trades = 0
             self._trading_day = today
-        return self.daily_losses >= config.DAILY_LOSS_LIMIT
+        # Scale stop-loss with bankroll: 10% of current bankroll, min 5
+        dynamic_limit = max(config.DAILY_LOSS_LIMIT, self.get_live_bankroll() * 0.10)
+        return self.daily_losses >= dynamic_limit
 
     # ------------------------------------------------------------------
     # Order-book helpers
@@ -200,7 +295,22 @@ class OrderManager:
         return cls._direct_http
 
     def get_clob_book(self, token_id: str) -> dict:
-        """Single orderbook call via direct HTTP (bypasses Tor proxy)."""
+        """WS cache first, REST fallback."""
+        if _pws is not None:
+            try:
+                _ws_book = _pws.get_book(token_id)
+                if _ws_book and _ws_book.get("ask"):
+                    _ws_age = time.time() - _ws_book.get("ts", 0)
+                    if _ws_age <= 12.0:
+                        return {
+                            "ask": _ws_book.get("ask"),
+                            "bid": _ws_book.get("bid"),
+                            "mid": _ws_book.get("mid"),
+                            "depth_ratio": _ws_book.get("depth_ratio", 0.0),
+                            "source": "ws",
+                        }
+            except Exception:
+                pass
         result = {"ask": None, "bid": None, "mid": None, "depth_ratio": 0.0}
         try:
             http = self._get_direct_http()
@@ -405,7 +515,7 @@ class OrderManager:
 
             if matched > 0:
                 cost = matched * avg_price
-                self.positions[coin] = {
+                self.set_position(coin, {
                     "coin": coin,
                     "side": direction,
                     "entry_price": avg_price,
@@ -413,7 +523,7 @@ class OrderManager:
                     "token_id": token_id,
                     "window_start": window_start,
                     "strike": pred.market_info.threshold_price if pred and hasattr(pred, 'market_info') else 0,
-                }
+                })
                 self.daily_trades += 1
                 self.mark_window_traded(coin, window_start, direction)
                 logger.info(f"[FILLED] {coin} {direction} | {int(matched)} shares @ {avg_price*100:.0f}c = ${cost:.2f}")
@@ -449,14 +559,15 @@ class OrderManager:
 
                 if s == "FILLED" or filled_qty > 0:
                     fill_price = float(status.get("average_price", info["price"]))
-                    self.positions[info["coin"]] = {
+                    self.set_position(info["coin"], {
                         "coin": info["coin"],
                         "side": info["direction"],
                         "entry_price": fill_price,
                         "shares": int(filled_qty) if filled_qty > 0 else info["shares"],
                         "token_id": info["token_id"],
                         "window_start": info["window_start"],
-                    }
+                        "strike": info.get("strike", 0),
+                    })
                     self.daily_trades += 1
                     cost = filled_qty * fill_price
                     logger.info(f"[GTC FILLED] {info['coin']} {info['direction']} @ {fill_price*100:.0f}c ({filled_qty} shares, ${cost:.2f})")
@@ -544,7 +655,12 @@ class OrderManager:
         if use_kelly and pred.edge > 0:
             kelly_fraction = float(os.getenv("KELLY_FRACTION", "0.25"))
             kelly_min_bet = float(os.getenv("KELLY_MIN_BET", "2.0"))
-            kelly_max_bet = float(os.getenv("KELLY_MAX_BET", "5.0"))
+            kelly_max_bet_env = float(os.getenv("KELLY_MAX_BET", "0"))
+            pct_cap = bankroll * float(os.getenv("KELLY_MAX_PCT", "0.05"))
+            if kelly_max_bet_env > 0:
+                kelly_max_bet = min(kelly_max_bet_env, pct_cap) if pct_cap > 0 else kelly_max_bet_env
+            else:
+                kelly_max_bet = pct_cap if pct_cap > 0 else bankroll * 0.05
 
             entry_price = pred.entry_price if pred.entry_price > 0.05 else pred.poly_price
             if entry_price <= 0.01 or entry_price >= 0.99:

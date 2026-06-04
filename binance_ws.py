@@ -91,7 +91,19 @@ def _run_ws():
                 on_error=_on_error,
                 on_close=_on_close,
             )
-            ws.run_forever(ping_interval=20, ping_timeout=10)
+            # Jun-2: bypass Tor SOCKS for Binance hosts (proven via standalone test).
+            ws.run_forever(
+                ping_interval=20,
+                ping_timeout=10,
+                proxy_type=None,
+                http_proxy_host=None,
+                http_proxy_port=None,
+                http_no_proxy=[
+                    'stream.binance.us', 'api.binance.us',
+                    'stream.binance.com', 'fstream.binance.com',
+                    'ws-api.binance.com',
+                ],
+            )
             failures += 1
             if failures >= 3:
                 _ws_gave_up = True

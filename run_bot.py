@@ -32,8 +32,29 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import config
-from morning_predictor import MorningPredictor
+import morning_strategy as morn
 import binance_ws
+try:
+    import bybit_ws
+    _BYBIT_OK = True
+except Exception:
+    bybit_ws = None
+    _BYBIT_OK = False
+
+
+def _multi_price(coin: str):
+    p = binance_ws.get_price(coin)
+    if p and p > 0:
+        return p
+    if _BYBIT_OK and bybit_ws is not None:
+        try:
+            p2 = bybit_ws.get_price(coin)
+            if p2 and p2 > 0:
+                return p2
+        except Exception:
+            pass
+    return None
+
 from market_data import get_market_info, MarketInfo
 from predictor import Predictor, Prediction
 from order_manager import OrderManager
@@ -81,6 +102,57 @@ def is_window_locked(coin: str, window_start: int) -> bool:
         return key in _traded_set
 
 
+
+
+def resolve_expired_positions(orders, predictor, binance_ws_module):
+    """Resolve open positions whose window ended (incl. after restart)."""
+    current_time = int(time.time())
+    for coin in list(orders.positions.keys()):
+        pos = orders.positions.get(coin)
+        if not pos:
+            continue
+        ws = pos.get("window_start", 0)
+        if ws <= 0 or current_time <= ws + 900 + 60:
+            continue
+        pos = orders.remove_position(coin)
+        if not pos:
+            continue
+        side = pos.get("side", "?")
+        entry = pos.get("entry_price", 0)
+        shares = pos.get("shares", 0)
+        cost = entry * shares
+        payout = shares * 1.0
+        won = False
+        try:
+            final_price = binance_ws_module.get_price(coin)
+            strike = pos.get("strike", 0)
+            if strike > 0 and final_price > 0:
+                went_up = final_price > strike
+                won = (side == "UP" and went_up) or (side == "DOWN" and not went_up)
+        except Exception:
+            pass
+        if won:
+            pnl = payout - cost
+            orders.record_win_pnl(pnl)
+            logger.info(
+                f"[WIN] {coin} {side} | +${pnl:.2f} | Entry: {entry*100:.0f}c x{shares} | "
+                f"Payout: ${payout:.2f} (resolved on startup)"
+            )
+            predictor.record_outcome(True)
+            tg.notify_result(coin, side, True, cost, payout)
+        else:
+            orders.record_loss_pnl(cost)
+            logger.info(
+                f"[LOSS] {coin} {side} | -${cost:.2f} | Entry: {entry*100:.0f}c x{shares} | "
+                f"day_loss=${orders.daily_losses:.2f} (resolved on startup)"
+            )
+            predictor.record_outcome(False)
+            tg.notify_result(coin, side, False, cost)
+            if orders.is_daily_stop_loss_hit():
+                logger.warning(
+                    f"[DAILY STOP] Loss limit hit (${orders.daily_losses:.2f}) — no new trades today"
+                )
+
 def lock_window(coin: str, window_start: int) -> bool:
     """Try to lock this coin+window for trading. Returns True if we got the lock."""
     key = f"{coin}_{window_start}"
@@ -122,8 +194,8 @@ def is_good_trading_hour() -> tuple:
     if weekday >= 5:
         day_name = "Saturday" if weekday == 5 else "Sunday"
         return False, f"[WEEKEND] {day_name} {lima_hour}:00 Lima — no trading on weekends"
-    if lima_hour < 14 or lima_hour >= 17:
-        return False, f"[OFF HOURS] {lima_hour}:{now_lima.minute:02d} Lima — trade window 2pm-5pm Lima only (scanning active)"
+    if lima_hour < 9 or lima_hour >= 17:
+        return False, f"[OFF HOURS] {lima_hour}:{now_lima.minute:02d} Lima — trade window 9am-5pm Lima (scanning active)"
     return True, ""
 
 
@@ -159,10 +231,16 @@ def main():
         sys.exit(1)
 
     binance_ws.start()
+    if _BYBIT_OK and bybit_ws is not None:
+        try:
+            bybit_ws.start()
+            logger.info("[BYBIT-WS] started (failover)")
+        except Exception as e:
+            logger.warning(f"[BYBIT-WS] start failed: {e}")
     time.sleep(2)
 
     print("=" * 60)
-    print("  V11 BOT — Black-Scholes Binary Engine")
+    print("  V12 BOT — Black-Scholes + Morning Strategy")
     print("=" * 60)
     print(f"  Mode:         {'DRY RUN' if config.DRY_RUN else 'LIVE TRADING'}")
     print(f"  Coins:        {', '.join(config.SYMBOLS.keys())}")
@@ -180,7 +258,6 @@ def main():
     print("=" * 60)
 
     predictor = Predictor()
-    morning_pred = MorningPredictor(predictor)
     orders = OrderManager()
     executor = ThreadPoolExecutor(max_workers=4)
 
@@ -190,12 +267,16 @@ def main():
     scan_count = 0
     arb_enabled = os.getenv("ARB_ENABLED", "true").lower() == "true"
 
+    resolve_expired_positions(orders, predictor, binance_ws)
+
     try:
         while True:
             scan_count += 1
             now = datetime.now(timezone.utc).strftime("%H:%M:%S")
 
             can_trade, night_reason = is_good_trading_hour()
+            if orders.is_daily_stop_loss_hit():
+                can_trade = False
             if not can_trade and scan_count % 200 == 1:
                 print(f"[{now}] {night_reason}")
 
@@ -220,7 +301,7 @@ def main():
                 if orders.is_window_traded(coin, info.window_start):
                     return info, None
 
-                ws_price = binance_ws.get_price(coin)
+                ws_price = _multi_price(coin)
                 if ws_price and ws_price > 0:
                     info.current_crypto_price = ws_price
 
@@ -251,6 +332,18 @@ def main():
                     ticks=ticks,
                 )
                 return info, pred
+
+            try:
+                import polymarket_ws as _pws_mod
+                _batch_ids = []
+                for _c in config.SYMBOLS:
+                    _inf = get_market_info(_c)
+                    if _inf:
+                        _batch_ids.extend([_inf.up_token_id, _inf.down_token_id])
+                if _batch_ids:
+                    _pws_mod.set_subscriptions(_batch_ids)
+            except Exception:
+                pass
 
             futures_map = {executor.submit(scan_coin, c): c for c in config.SYMBOLS}
             predictions = []
@@ -284,68 +377,62 @@ def main():
                 time.sleep(config.SCAN_INTERVAL)
                 continue
 
-            # ── Morning strategy (9am-2pm Lima): separate, conservative predictor ──
+            # ── Time phase detection ──
             from zoneinfo import ZoneInfo as _ZI
             _lima_now = datetime.now(_ZI("America/Lima"))
             _is_morning = 9 <= _lima_now.hour < 14
             _is_afternoon = 14 <= _lima_now.hour < 17
 
+            # ── Morning strategy (9am-2pm): stricter filters, half Kelly ──
+            if _is_morning and can_trade and predictions:
+                morning_approved = []
+                for p in predictions:
+                    if p.confidence not in ("HIGH", "MEDIUM"):
+                        continue
+                    if p.edge < config.MIN_EDGE:
+                        continue
+                    filtered = morn.filter_morning_signal(p, p.trend_score)
+                    if filtered:
+                        morning_approved.append(filtered)
 
+                if morning_approved:
+                    active_count = len(orders.positions) + len(orders.active_gtc)
+                    if active_count < 1:  # max 1 position in morning (conservative)
+                        best_m = max(morning_approved, key=lambda x: x.probability)
+                        if not lock_window(best_m.coin, best_m.market_info.window_start):
+                            logger.debug(f"[LOCKED] {best_m.coin} already traded this window")
+                        else:
+                            clob_ask = orders.get_clob_ask(best_m.token_id)
+                            if clob_ask is not None:
+                                real_edge = best_m.probability - clob_ask
+                                best_m.entry_price = clob_ask
+                                best_m.edge = real_edge
 
-            morning_preds = []
-            if False and _is_morning and can_trade:  # morning disabled - no edge
-                for coin_name in config.SYMBOLS:
-                    try:
-                        minfo = get_market_info(coin_name)
-                        if not minfo or minfo.time_remaining < config.MIN_TIME_REMAINING:
-                            continue
-                        if is_window_locked(coin_name, minfo.window_start):
-                            continue
-                        if orders.is_window_traded(coin_name, minfo.window_start):
-                            continue
-                        if morning_pred.is_window_traded(coin_name, minfo.window_start):
-                            continue
-                        _ws = binance_ws.get_price(coin_name)
-                        if _ws and _ws > 0:
-                            minfo.current_crypto_price = _ws
-                        _ticks = binance_ws.get_tick_history(coin_name, 300)
-                        _ub = {}
-                        _db = {}
-                        try: _ub = orders.get_clob_book(minfo.up_token_id)
-                        except: pass
-                        try: _db = orders.get_clob_book(minfo.down_token_id)
-                        except: pass
-                        mp = morning_pred.predict(
-                            minfo,
-                            ws_price=minfo.current_crypto_price,
-                            up_ask=_ub.get("ask") or 0.0,
-                            down_ask=_db.get("ask") or 0.0,
-                            up_depth=_ub.get("depth_ratio", 0.0),
-                            down_depth=_db.get("depth_ratio", 0.0),
-                            ticks=_ticks,
-                        )
-                        if mp:
-                            morning_preds.append(mp)
-                    except Exception as e:
-                        logger.error(f"Morning scan error for {coin_name}: {e}")
-
-            if False and morning_preds and can_trade and _is_morning:  # morning disabled
-                active_count = len(orders.positions) + len(orders.active_gtc)
-                if active_count < 2:
-                    best_m = max(morning_preds, key=lambda x: x.probability)
-                    if not is_window_locked(best_m.coin, best_m.market_info.window_start):
-                        if lock_window(best_m.coin, best_m.market_info.window_start):
-                            logger.info(f"[MORNING TRADE] {best_m.coin} {best_m.direction} | "
-                                       f"Prob={best_m.probability:.0%} Edge={best_m.edge*100:.1f}%")
-                            # Half Kelly for morning trades
-                            import os as _os
-                            _orig_frac = _os.environ.get("KELLY_FRACTION", "0.15")
-                            _os.environ["KELLY_FRACTION"] = str(float(_orig_frac) * 0.5)
-                            filled_m = orders.place_bet(best_m)
-                            if not filled_m:
+                                if real_edge < config.MIN_EDGE:
+                                    logger.info(f"[MORNING REJECT] {best_m.coin}: edge={real_edge*100:.1f}% too low")
+                                    unlock_window(best_m.coin, best_m.market_info.window_start)
+                                elif clob_ask < config.ENTRY_MIN or clob_ask > config.ENTRY_MAX:
+                                    logger.info(f"[MORNING RANGE] {best_m.coin}: ask={clob_ask*100:.0f}c outside range")
+                                    unlock_window(best_m.coin, best_m.market_info.window_start)
+                                else:
+                                    phase = morn.get_morning_phase()
+                                    logger.info(
+                                        f"[MORNING TRADE] P{phase} {best_m.coin} {best_m.direction} | "
+                                        f"Prob={best_m.probability:.0%} | Ask={clob_ask*100:.0f}c | "
+                                        f"Edge={real_edge*100:.1f}% | {best_m.confidence}"
+                                    )
+                                    # Half Kelly for morning trades
+                                    import os as _os2
+                                    _orig_frac = _os2.environ.get("KELLY_FRACTION", "0.25")
+                                    _os2.environ["KELLY_FRACTION"] = str(float(_orig_frac) * 0.5)
+                                    filled_m = orders.place_bet(best_m)
+                                    _os2.environ["KELLY_FRACTION"] = _orig_frac
+                                    if not filled_m:
+                                        unlock_window(best_m.coin, best_m.market_info.window_start)
+                                        logger.info(f"[UNLOCK] {best_m.coin}: morning order failed")
+                            else:
+                                logger.info(f"[MORNING NO ASK] {best_m.coin}: no valid CLOB ask")
                                 unlock_window(best_m.coin, best_m.market_info.window_start)
-                                logger.info(f"[UNLOCK] {best_m.coin}: morning order failed, unlocked for retry")
-                            _os.environ["KELLY_FRACTION"] = _orig_frac
 
             # ── Afternoon strategy (2pm-5pm): main predictor, unchanged ──
             actionable = [
@@ -428,39 +515,7 @@ def main():
                         f"Trades: {orders.daily_trades}"
                     )
 
-            current_time = int(time.time())
-            expired = []
-            for coin, pos in orders.positions.items():
-                ws = pos.get("window_start", 0)
-                if ws > 0 and current_time > ws + 900 + 60:
-                    expired.append(coin)
-            for coin in expired:
-                pos = orders.positions.pop(coin)
-                side = pos.get("side", "?")
-                entry = pos.get("entry_price", 0)
-                shares = pos.get("shares", 0)
-                cost = entry * shares
-                payout = shares * 1.0
-
-                won = False
-                try:
-                    final_price = binance_ws.get_price(coin)
-                    strike = pos.get("strike", 0)
-                    if strike > 0 and final_price > 0:
-                        went_up = final_price > strike
-                        won = (side == "UP" and went_up) or (side == "DOWN" and not went_up)
-                except Exception:
-                    pass
-
-                if won:
-                    pnl = payout - cost
-                    logger.info(f"[WIN] {coin} {side} | +${pnl:.2f} | Entry: {entry*100:.0f}c x{shares} | Payout: ${payout:.2f}")
-                    predictor.record_outcome(True)
-                    tg.notify_result(coin, side, True, cost, payout)
-                else:
-                    logger.info(f"[LOSS] {coin} {side} | -${cost:.2f} | Entry: {entry*100:.0f}c x{shares}")
-                    predictor.record_outcome(False)
-                    tg.notify_result(coin, side, False, cost)
+            resolve_expired_positions(orders, predictor, binance_ws)
 
             time.sleep(config.SCAN_INTERVAL)
 
