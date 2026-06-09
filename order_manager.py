@@ -9,6 +9,7 @@ V2 changes:
 
 import os
 import time
+import threading
 try:
     import polymarket_ws as _pws
 except Exception:
@@ -33,6 +34,8 @@ from py_clob_client_v2.order_builder.constants import BUY
 
 class OrderManager:
     """Manages order placement, GTC tracking, and window dedup."""
+
+    _place_lock = threading.Lock()
 
     def __init__(self):
         self.client = self._init_client()
@@ -111,6 +114,11 @@ class OrderManager:
         else:
             client.set_api_creds(client.create_or_derive_api_creds())
             logger.warning("No API creds in .env — derived new ones")
+        try:
+            v = client.get_version()
+            logger.info(f"[CLOB] backend version={v}")
+        except Exception as e:
+            logger.warning(f"[CLOB] get_version failed: {e}")
         return client
 
     # ------------------------------------------------------------------
@@ -392,6 +400,16 @@ class OrderManager:
     # ------------------------------------------------------------------
     # MAIN: place_bet
     # ------------------------------------------------------------------
+    def _strike_fields(self, pred, window_start: int) -> dict:
+        mi = pred.market_info if pred and hasattr(pred, "market_info") else None
+        return {
+            "window_start": window_start,
+            "strike": mi.threshold_price if mi else 0,
+            "slug": getattr(mi, "slug", "") if mi else "",
+            "strike_source": getattr(mi, "strike_source", "") if mi else "",
+            "timeframe": getattr(mi, "timeframe", "15m") if mi else "15m",
+        }
+
     def place_bet(self, pred: Prediction) -> bool:
         coin = pred.coin
         direction = pred.direction
@@ -485,15 +503,31 @@ class OrderManager:
         )
 
         try:
-            options = PartialCreateOrderOptions(tick_size="0.01", neg_risk=False)
+            from py_clob_client_v2.exceptions import PolyApiException
+            options = PartialCreateOrderOptions(tick_size="0.01")
             order_args = OrderArgs(
                 price=limit_price,
                 size=shares,
                 side=BUY,
                 token_id=token_id,
             )
-            order = self.client.create_order(order_args, options)
-            result = self.client.post_order(order, order_type)
+            result = None
+            with self._place_lock:
+                for attempt in range(3):
+                    try:
+                        if attempt > 0:
+                            self.client._ClobClient__cached_version = None
+                            self.client.get_version()
+                        result = self.client.create_and_post_order(
+                            order_args, options, order_type
+                        )
+                        break
+                    except PolyApiException as e:
+                        if "order_version_mismatch" not in str(e).lower() or attempt >= 2:
+                            raise
+                        logger.warning(
+                            f"[CLOB] {coin} order_version_mismatch — retry {attempt + 2}/3"
+                        )
 
             matched, avg_price, order_id = self._parse_result(result)
 
@@ -505,8 +539,8 @@ class OrderManager:
                     "price": limit_price,
                     "shares": shares,
                     "placed_at": time.time(),
-                    "window_start": window_start,
                     "prediction": pred,
+                    **self._strike_fields(pred, window_start),
                 }
                 self.mark_window_traded(coin, window_start, direction)
                 logger.info(f"[GTC] Pending: {coin} {direction} @ {limit_price*100:.0f}c")
@@ -523,6 +557,9 @@ class OrderManager:
                     "token_id": token_id,
                     "window_start": window_start,
                     "strike": pred.market_info.threshold_price if pred and hasattr(pred, 'market_info') else 0,
+                    "slug": getattr(pred.market_info, "slug", "") if pred and hasattr(pred, 'market_info') else "",
+                    "strike_source": getattr(pred.market_info, "strike_source", "") if pred and hasattr(pred, 'market_info') else "",
+                    "timeframe": getattr(pred.market_info, "timeframe", "15m") if pred and hasattr(pred, 'market_info') else "15m",
                 })
                 self.daily_trades += 1
                 self.mark_window_traded(coin, window_start, direction)
@@ -536,6 +573,40 @@ class OrderManager:
                 return False
 
         except Exception as e:
+            err_l = str(e).lower()
+            if ("fully filled" in err_l or "killed" in err_l) and not use_gtc and time_left >= 120:
+                logger.info(f"[FOK->GTC] {coin}: FOK killed, posting GTC @ {limit_price*100:.0f}c")
+                try:
+                    gtc_result = self.client.create_and_post_order(
+                        order_args, PartialCreateOrderOptions(tick_size="0.01"), OrderType.GTC
+                    )
+                    gtc_m, gtc_p, gtc_oid = self._parse_result(gtc_result)
+                    if gtc_m > 0:
+                        cost = gtc_m * gtc_p
+                        self.set_position(coin, {
+                            "coin": coin, "side": direction, "entry_price": gtc_p,
+                            "shares": int(gtc_m), "token_id": token_id,
+                            "window_start": window_start,
+                            "strike": pred.market_info.threshold_price if pred and hasattr(pred, 'market_info') else 0,
+                            "slug": getattr(pred.market_info, "slug", "") if pred and hasattr(pred, 'market_info') else "",
+                            "strike_source": getattr(pred.market_info, "strike_source", "") if pred and hasattr(pred, 'market_info') else "",
+                            "timeframe": getattr(pred.market_info, "timeframe", "15m") if pred and hasattr(pred, 'market_info') else "15m",
+                        })
+                        self.daily_trades += 1
+                        self.mark_window_traded(coin, window_start, direction)
+                        logger.info(f"[FILLED] {coin} {direction} | {int(gtc_m)} shares @ {gtc_p*100:.0f}c (GTC)")
+                        return True
+                    self.active_gtc[gtc_oid or "unknown"] = {
+                        "coin": coin, "direction": direction, "token_id": token_id,
+                        "price": limit_price, "shares": shares, "placed_at": time.time(),
+                        "prediction": pred,
+                        **self._strike_fields(pred, window_start),
+                    }
+                    self.mark_window_traded(coin, window_start, direction)
+                    logger.info(f"[GTC] Pending after FOK miss: {coin} @ {limit_price*100:.0f}c")
+                    return True
+                except Exception as gtc_e:
+                    logger.warning(f"[FOK->GTC] {coin} fallback failed: {gtc_e}")
             logger.error(f"[ERROR] Order failed for {coin}: {e}")
             tg.notify_error(f"Order failed: {coin} {direction}\n{str(e)[:100]}")
             print(f"\n  [ERROR] {coin} order failed: {e}")
@@ -565,8 +636,11 @@ class OrderManager:
                         "entry_price": fill_price,
                         "shares": int(filled_qty) if filled_qty > 0 else info["shares"],
                         "token_id": info["token_id"],
-                        "window_start": info["window_start"],
+                        "window_start": info.get("window_start", 0),
                         "strike": info.get("strike", 0),
+                        "slug": info.get("slug", ""),
+                        "strike_source": info.get("strike_source", ""),
+                        "timeframe": info.get("timeframe", "15m"),
                     })
                     self.daily_trades += 1
                     cost = filled_qty * fill_price

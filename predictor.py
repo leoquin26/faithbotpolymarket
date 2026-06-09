@@ -21,6 +21,7 @@ from typing import Optional, Dict, List, Tuple
 from loguru import logger
 
 import config
+import session_calibration as sess_cal
 from market_data import MarketInfo
 
 
@@ -44,6 +45,9 @@ class Prediction:
     conviction_strength: Optional[str] = None
     force_fok: bool = False
     trend_score: float = 0.0
+    book_up_mid: float = 0.5
+    dir_votes_up: int = 0
+    dir_votes_down: int = 0
 
 
 # ── Normal CDF (Abramowitz & Stegun approximation, max error 1.5e-7) ──
@@ -278,6 +282,8 @@ class Predictor:
         self._diag_last: Dict[str, float] = {}
         self._last_fed_ts: Dict[str, float] = {}
         self._window_direction: Optional[str] = None
+        self._window_directions: Dict[str, str] = {}  # per-coin dir lock
+        self._engine_conviction: Dict[str, str] = {}  # mom+book agreed direction
         self._window_start_ts: int = 0
         self._window_trends: Dict[str, str] = {}
         self._chop_detector = ChopDetector(lookback=4)
@@ -353,7 +359,17 @@ class Predictor:
 
         coin = info.coin
         current_price = ws_price if ws_price > 0 else info.current_crypto_price
+        _spot_src = "binance"
+        try:
+            import chainlink_ws as _cl_spot
+            _cl_px = _cl_spot.get_price(coin)
+            if _cl_px and _cl_px > 0:
+                current_price = _cl_px
+                _spot_src = "chainlink"
+        except Exception:
+            _spot_src = "binance"
         strike = info.threshold_price
+        _strike_src = getattr(info, "strike_source", "") or "unknown"
         now_ts = int(time.time())
         window_start = info.window_start or 0
         window_end = window_start + 900
@@ -363,10 +379,14 @@ class Predictor:
         if current_price <= 0 or strike <= 0:
             return None
 
-        # Warmup: need at least 30s of data
-        warmup = getattr(config, "WARMUP_SEC", 45)
-        if window_age < 75:
-            self._diag_log(f"warmup-{coin}", f"[WARMUP] {coin}: {window_age}s < 75s hard min", 30.0)
+        # Warmup: env-driven (was hardcoded 75s — blocked first 75s every window)
+        warmup = int(os.getenv("HARD_WARMUP_15M", os.getenv("WARMUP_SEC", "90")))
+        if window_age < warmup:
+            self._diag_log(
+                f"warmup-{coin}",
+                f"[WARMUP] {coin}: {window_age}s < {warmup}s min",
+                30.0,
+            )
             return None
 
 
@@ -391,7 +411,7 @@ class Predictor:
         sigma = ewma.get_sigma()
         # Floor sigma at typical crypto minimum to prevent decay to zero
         # during low-tick periods (REST polling with identical prices)
-        SIGMA_FLOOR = 5e-04
+        SIGMA_FLOOR = float(os.getenv("SIGMA_FLOOR_MIN", "2.5e-4"))
         if sigma < SIGMA_FLOOR:
             self._diag_log(
                 f"lowvol-{coin}",
@@ -416,8 +436,7 @@ class Predictor:
         # Morning losses should never block afternoon trading
         pass  # accuracy tracking still active for morning_predictor to read
 
-        # ── Step 1: Trend-based direction (primary signal) ──
-        # Use actual price movement to determine direction, not BS math
+        # ── Step 1: Trend score (confidence only — direction set in Step 2 settlement) ──
         momentum_raw = mom.get_momentum()
         roc_60 = mom._roc(60)
         roc_120 = mom._roc(120)
@@ -435,14 +454,16 @@ class Predictor:
         # Multi-timeframe ROC for direction confirmation
         roc_300 = mom._roc(300)  # 5-minute trend (big picture)
 
-        # Trend score: combines multi-timeframe momentum with position
-        # Positive = price moving UP / above strike, Negative = DOWN / below strike
-        trend_score = 0.0
-        trend_score += dist_pct * 400.0        # position vs strike (primary)
-        trend_score += roc_60 * 400.0          # 60s momentum (reduced from 500)
-        trend_score += roc_120 * 350.0         # 2min trend (increased from 300)
-        trend_score += roc_300 * 250.0         # 5min trend (NEW - bigger picture)
-        trend_score += momentum_raw * 300.0    # weighted momentum (reduced from 400)
+        # Trend score: early window favors dist + 5m ROC over noisy 60s
+        early_window = window_age < int(os.getenv("ACCURACY_EARLY_SEC", "300"))
+        if early_window:
+            w_dist, w_r60, w_r120, w_r300, w_mom = 250.0, 400.0, 300.0, 350.0, 300.0
+        else:
+            w_dist, w_r60, w_r120, w_r300, w_mom = 200.0, 400.0, 350.0, 300.0, 300.0
+        trend_score = (
+            dist_pct * w_dist + roc_60 * w_r60 + roc_120 * w_r120
+            + roc_300 * w_r300 + momentum_raw * w_mom
+        )
 
         # Direction disagreement filter: if 5-min trend strongly opposes 1-min signal,
         # the signal is likely a bounce, not a reversal. Dampen the trend score.
@@ -482,46 +503,247 @@ class Predictor:
                     f"[FADE] {coin}: choppy market, fading trend={old_ts:+.2f} -> reversion={trend_score:+.2f}",
                     15.0,
                 )
+        # Session-calibrated trend gates
+        _session = sess_cal.get_session()
+        if is_chop:
+            _min_tr = _session.choppy_min_trend
+            _dist_clear = abs(dist_pct) >= float(os.getenv("CHOPPY_DIST_BYPASS", "0.0012"))
+            _trend_strong = abs(trend_score) >= float(os.getenv("CHOPPY_TREND_BYPASS", "0.32"))
+            if abs(trend_score) < _min_tr and not (_dist_clear and _trend_strong):
+                self._diag_log(
+                    f"chopstrict-{coin}",
+                    f"[CHOPPY STRICT] {coin}: |trend|={abs(trend_score):.3f} < {_min_tr} "
+                    f"session={_session.name} — skip",
+                    15.0,
+                )
+                return None
         else:
-            if abs(trend_score) < 0.40:
+            _min_trend = _session.min_trend
+            if abs(trend_score) < _min_trend:
                 self._diag_log(
                     f"dead-{coin}",
                     f"[WEAK TREND] {coin}: trend={trend_score:+.3f} dist={dist_pct*100:+.4f}% "
-                    f"roc60={roc_60*10000:+.1f}bps roc120={roc_120*10000:+.1f}bps — need 0.40+",
+                    f"session={_session.name} need {_min_trend:.2f}+ — skip",
                     15.0,
                 )
                 return None
 
-        # ── Step 2: Convert trend to probability using sigmoid ──
-        # Steepness controls how quickly trend translates to confidence
+        # ── Step 2: Settlement-first direction (level vs strike at expiry) ──
         base_up_prob = _bs_binary_prob(current_price, strike, sigma, time_remaining)
         raw_prob = _sigmoid(trend_score * 3.0)
 
-        # Blend: 70% trend-based, 30% BS mathematical
-        combined_prob = 0.70 * raw_prob + 0.30 * base_up_prob
+        _ua_b, _da_b = float(up_ask or 0), float(down_ask or 0)
+        if _ua_b > 0.02 and _da_b > 0.02:
+            book_up = _ua_b / (_ua_b + _da_b)
+        elif up_mid > 0.01 and down_mid > 0.01:
+            book_up = up_mid / (up_mid + down_mid)
+        elif up_mid > 0.01:
+            book_up = up_mid
+        elif down_mid > 0.01:
+            book_up = 1.0 - down_mid
+        else:
+            book_up = 0.5
+        book_up = max(0.01, min(0.99, book_up))
+
+        _near_dist = float(os.getenv("SETTLEMENT_NEAR_DIST", "0.0012"))
+        _min_roc = float(os.getenv("SETTLEMENT_MIN_ROC300", "0.00003"))
+        _book_edge = float(os.getenv("SETTLEMENT_BOOK_EDGE", "0.02"))
+        _bs_edge = float(os.getenv("SETTLEMENT_BS_EDGE", "0.02"))
+
+        def _dir_from_sign(val: float, edge: float = 0.0) -> Optional[str]:
+            if val > edge:
+                return "UP"
+            if val < -edge:
+                return "DOWN"
+            return None
+
+        settlement_dir: Optional[str] = None
+        if abs(dist_pct) < _near_dist:
+            level_dir = _dir_from_sign(dist_pct, 0.0)
+            if not level_dir:
+                self._diag_log(
+                    f"settle-atstrike-{coin}",
+                    f"[SETTLEMENT] {coin}: at strike dist={dist_pct*100:+.4f}% — abstain",
+                    12.0,
+                )
+                return None
+            roc_dir = _dir_from_sign(roc_300, _min_roc)
+            if roc_dir and roc_dir != level_dir:
+                self._diag_log(
+                    f"settle-roc-{coin}",
+                    f"[SETTLEMENT] {coin}: dist→{level_dir} roc300→{roc_dir} "
+                    f"(dist={dist_pct*100:+.3f}% roc300={roc_300*10000:+.1f}bps) — abstain",
+                    12.0,
+                )
+                return None
+            book_dir = "UP" if book_up >= (0.50 + _book_edge) else (
+                "DOWN" if book_up <= (0.50 - _book_edge) else None
+            )
+            if book_dir and book_dir != level_dir:
+                self._diag_log(
+                    f"settle-book-{coin}",
+                    f"[SETTLEMENT] {coin}: dist→{level_dir} book→{book_dir} "
+                    f"(book_up={book_up:.2f}) — abstain",
+                    12.0,
+                )
+                return None
+            bs_dir = "UP" if base_up_prob >= (0.50 + _bs_edge) else (
+                "DOWN" if base_up_prob <= (0.50 - _bs_edge) else None
+            )
+            if bs_dir and bs_dir != level_dir:
+                self._diag_log(
+                    f"settle-bs-{coin}",
+                    f"[SETTLEMENT] {coin}: dist→{level_dir} BS→{bs_dir} "
+                    f"(N(d2)={base_up_prob:.1%}) — abstain",
+                    12.0,
+                )
+                return None
+            settlement_dir = level_dir
+            combined_prob = 0.50 * base_up_prob + 0.30 * book_up + 0.20 * raw_prob
+        else:
+            bs_dir = "UP" if base_up_prob >= 0.5 else "DOWN"
+            dist_dir = "UP" if dist_pct > 0 else "DOWN"
+            if bs_dir != dist_dir:
+                self._diag_log(
+                    f"settle-far-{coin}",
+                    f"[SETTLEMENT] {coin}: BS→{bs_dir} dist→{dist_dir} "
+                    f"(dist={dist_pct*100:+.3f}% N(d2)={base_up_prob:.1%}) — abstain",
+                    12.0,
+                )
+                return None
+            settlement_dir = bs_dir
+            combined_prob = 0.55 * base_up_prob + 0.25 * raw_prob + 0.20 * book_up
+
         combined_prob = max(0.01, min(0.99, combined_prob))
 
-        # Distance penalty: when price is near strike, dampen confidence toward 50%
-        # abs(dist_pct) < 0.05% means price is within 0.05% of strike = coin flip territory
-        # Scale: at dist=0 -> 40% penalty, at dist=0.1% -> 0% penalty
-        DIST_THRESHOLD = 0.001  # 0.1% from strike
+        DIST_THRESHOLD = float(os.getenv("ACCURACY_DIST_PENALTY", "0.0008"))
         if abs(dist_pct) < DIST_THRESHOLD:
-            dist_factor = abs(dist_pct) / DIST_THRESHOLD  # 0.0 at strike, 1.0 at threshold
-            penalty = 0.40 * (1.0 - dist_factor)  # 40% pull toward 0.5 when at strike
+            dist_factor = abs(dist_pct) / DIST_THRESHOLD
+            penalty = 0.40 * (1.0 - dist_factor)
             combined_prob = combined_prob * (1.0 - penalty) + 0.50 * penalty
-            logger.debug(
-                f"[DIST PENALTY] {coin}: dist={dist_pct*100:+.4f}% factor={dist_factor:.2f} "
-                f"penalty={penalty:.2f} prob_adj={combined_prob:.1%}"
-            )
 
-        # ── Step 3: Decide direction and evaluate ──
-        is_up = combined_prob >= 0.5
-        direction = "UP" if is_up else "DOWN"
+        direction = settlement_dir
+        is_up = direction == "UP"
         win_prob = combined_prob if is_up else (1.0 - combined_prob)
+        book_side = book_up if is_up else (1.0 - book_up)
+        win_prob = max(0.01, min(0.99, 0.60 * book_side + 0.40 * win_prob))
+
+        votes_up = votes_down = 0
+        if abs(dist_pct) >= float(os.getenv("ACCURACY_VOTE_MIN_DIST", "0.00005")):
+            votes_up += 1 if dist_pct > 0 else 0
+            votes_down += 1 if dist_pct < 0 else 0
+        if abs(roc_300) >= _min_roc:
+            votes_up += 1 if roc_300 > 0 else 0
+            votes_down += 1 if roc_300 < 0 else 0
+        if book_up >= 0.52:
+            votes_up += 1
+        elif book_up <= 0.48:
+            votes_down += 1
+        vote_dir = "UP" if votes_up >= 2 else ("DOWN" if votes_down >= 2 else None)
+        if vote_dir and vote_dir != direction:
+            self._diag_log(
+                f"dirvote-{coin}",
+                f"[DIR VOTE] {coin}: settlement={direction} vote={vote_dir} "
+                f"(dist={dist_pct*100:+.3f}% roc300={roc_300*10000:+.1f}bps book={book_up:.2f} "
+                f"{votes_up}UP/{votes_down}DN) — skip",
+                12.0,
+            )
+            return None
         ask = up_ask if is_up else down_ask
         mid = up_mid if is_up else down_mid
         depth = up_depth if is_up else down_depth
         token_id = info.up_token_id if is_up else info.down_token_id
+
+        # ── Engine conviction: mom + book agree → trust engine, no dist-bounce flip ──
+        _conv_on = os.getenv("ENGINE_CONVICTION_ON", "on").lower() not in ("off", "0", "false")
+        if _conv_on:
+            _bd_gap = float(os.getenv("BOOK_DIRECTION_GAP", "0.04"))
+            _roc60_min = float(os.getenv("MOM_LOCK_MIN_ROC60", "0.00003"))
+            _roc300_min = float(os.getenv("MOM_LOCK_MIN_ROC300", "0.00003"))
+            _mom_down = roc_60 < -_roc60_min and roc_300 < -_roc300_min
+            _mom_up = roc_60 > _roc60_min and roc_300 > _roc300_min
+            _ua, _da = float(up_ask or 0), float(down_ask or 0)
+            _book_screams_down = (
+                book_up <= (0.50 - _bd_gap)
+                or (_ua > 0.05 and _da > 0.05 and _ua + _bd_gap <= _da)
+            )
+            _book_screams_up = (
+                book_up >= (0.50 + _bd_gap)
+                or (_ua > 0.05 and _da > 0.05 and _da + _bd_gap <= _ua)
+            )
+            _forced = False
+            if _mom_down and _book_screams_down and direction == "UP":
+                self._diag_log(
+                    f"engine-conv-{coin}",
+                    f"[ENGINE CONFLICT] {coin}: settlement UP vs mom+book DOWN — skip",
+                    12.0,
+                )
+                return None
+            elif _mom_up and _book_screams_up and direction == "DOWN":
+                self._diag_log(
+                    f"engine-conv-{coin}",
+                    f"[ENGINE CONFLICT] {coin}: settlement DOWN vs mom+book UP — skip",
+                    12.0,
+                )
+                return None
+            elif _mom_down and _book_screams_down:
+                self._engine_conviction[coin] = "DOWN"
+            elif _mom_up and _book_screams_up:
+                self._engine_conviction[coin] = "UP"
+
+            # Engine lock: only block weak flips (strong trend can override)
+            _prior_conv = self._engine_conviction.get(coin)
+            _eng_lock_on = os.getenv("ENGINE_LOCK_ON", "off").lower() == "on"
+            if (_eng_lock_on and not _forced and _prior_conv and direction != _prior_conv
+                    and abs(trend_score) < float(os.getenv("ENGINE_FLIP_MIN_TREND", "1.2"))):
+                self._diag_log(
+                    f"engine-lock-{coin}",
+                    f"[ENGINE LOCK] {coin} {direction}: committed {_prior_conv} "
+                    f"trend={trend_score:+.2f} too weak to flip — skip",
+                    12.0,
+                )
+                return None
+
+        # ── Minimum distance: thin dist = coin flip, not a real edge ──
+        _min_dist_up = float(os.getenv("MIN_DIST_UP_PCT", "0.0010"))
+        _min_dist_dn = float(os.getenv("MIN_DIST_DOWN_PCT", "0.0010"))
+        if direction == "UP" and dist_pct < _min_dist_up:
+            self._diag_log(
+                f"thin-dist-{coin}",
+                f"[THIN DIST] {coin} UP: dist={dist_pct*100:+.3f}% < {_min_dist_up*100:.2f}% above strike — skip",
+                12.0,
+            )
+            return None
+        if direction == "DOWN" and dist_pct > -_min_dist_dn:
+            self._diag_log(
+                f"thin-dist-{coin}",
+                f"[THIN DIST] {coin} DOWN: dist={dist_pct*100:+.3f}% > -{_min_dist_dn*100:.2f}% below strike — skip",
+                12.0,
+            )
+            return None
+
+        # ── Bounce guard: roc60 positive + thin dist below strike = dead cat, not DOWN ──
+        if (direction == "DOWN" and roc_60 > float(os.getenv("BOUNCE_ROC60_MIN", "0.00005"))
+                and dist_pct > -float(os.getenv("BOUNCE_DIST_MAX", "0.0025"))):
+            self._diag_log(
+                f"bounce-{coin}",
+                f"[BOUNCE] {coin} DOWN: roc60={roc_60*10000:+.1f}bps dist={dist_pct*100:+.3f}% — bounce, skip",
+                12.0,
+            )
+            return None
+
+        # ── Expensive DOWN needs deep dist (56-64c DOWN on -0.2% dist = today's loss) ──
+        _bk_agree = sess_cal.book_agrees(direction, book_up)
+        _exp_dn_ask = sess_cal.session_expensive_down_max_ask(_bk_agree and direction == "DOWN")
+        _exp_dn_dist = sess_cal.session_expensive_down_min_dist(_bk_agree and direction == "DOWN")
+        if direction == "DOWN" and ask >= _exp_dn_ask and abs(dist_pct) < _exp_dn_dist:
+            self._diag_log(
+                f"exp-dn-{coin}",
+                f"[EXPENSIVE DOWN] {coin}: ask={ask*100:.0f}c dist={dist_pct*100:+.3f}% "
+                f"need {_exp_dn_dist*100:.2f}%+ cushion — skip",
+                12.0,
+            )
+            return None
 
         # Spot vs strike: never buy DOWN above strike / UP below strike
         try:
@@ -544,26 +766,58 @@ class Predictor:
         except Exception as _e_sd:
             logger.debug(f"[STRIKE CONFLICT] check failed: {_e_sd}")
 
+        # Book ask gate: UP token cheap = market expects DOWN (and vice versa)
+        try:
+            if os.getenv("BOOK_DIRECTION_ENFORCE", "on").lower() == "on":
+                _bd_gap = float(os.getenv("BOOK_DIRECTION_GAP", "0.04"))
+                _ua, _da = float(up_ask or 0), float(down_ask or 0)
+                if direction == "UP" and _ua > 0.05 and _da > 0.05 and _ua + _bd_gap <= _da:
+                    self._diag_log(
+                        f"book-conflict-{coin}",
+                        f"[BOOK CONFLICT] {coin} UP: UP ask={_ua*100:.0f}c cheaper than "
+                        f"DOWN={_da*100:.0f}c — market says DOWN, skip UP",
+                        12.0,
+                    )
+                    return None
+                if direction == "DOWN" and _ua > 0.05 and _da > 0.05 and _da + _bd_gap <= _ua:
+                    self._diag_log(
+                        f"book-conflict-{coin}",
+                        f"[BOOK CONFLICT] {coin} DOWN: DOWN ask={_da*100:.0f}c cheaper than "
+                        f"UP={_ua*100:.0f}c — market says UP, skip DOWN",
+                        12.0,
+                    )
+                    return None
+        except Exception as _e_bc:
+            logger.debug(f"[BOOK CONFLICT] check failed: {_e_bc}")
+
         # Cross-asset direction consistency
         if window_start != self._window_start_ts:
             self._window_direction = None
+            self._window_directions.clear()
+            self._engine_conviction.clear()
             self._window_start_ts = window_start
             self._window_trends.clear()
         
         # Record this coin's trend for consensus
         self._window_trends[coin] = direction
         
-        # If we already committed to a direction, block contradictions
-        if self._window_direction is not None and direction != self._window_direction:
-            self._diag_log(
-                f"dirlock-{coin}",
-                f"[DIR LOCK] {coin} {direction}: committed to {self._window_direction} — skipping",
-                15.0,
-            )
-            return None
+        # Per-coin DIR LOCK: only if prior commit was strong trend
+        _commit_min = float(os.getenv("DIR_COMMIT_MIN_TREND", "0.55"))
+        prior_dir = self._window_directions.get(coin)
+        if prior_dir is not None and direction != prior_dir:
+            _prior_strong = self._window_directions.get(f"{coin}_strength", 0) >= _commit_min
+            if _prior_strong and abs(trend_score) < float(os.getenv("DIR_FLIP_MIN_TREND", "1.0")):
+                self._diag_log(
+                    f"dirlock-{coin}",
+                    f"[DIR LOCK] {coin} {direction}: committed to {prior_dir} "
+                    f"(|trend|={abs(trend_score):.2f} < flip min) — skipping",
+                    15.0,
+                )
+                return None
         
         # Consensus check: if 2+ coins have signals, check majority
-        if len(self._window_trends) >= 2:
+        _consensus_on = os.getenv("CONSENSUS_GATE_ON", "on").lower() not in ("off", "0", "false")
+        if _consensus_on and len(self._window_trends) >= 2:
             up_count = sum(1 for d in self._window_trends.values() if d == "UP")
             down_count = sum(1 for d in self._window_trends.values() if d == "DOWN")
             majority = "UP" if up_count > down_count else "DOWN" if down_count > up_count else None
@@ -577,9 +831,68 @@ class Predictor:
                 )
                 return None
 
-        # Entry price filters
-        entry_min = getattr(config, "ENTRY_MIN", 0.10)
-        entry_max = getattr(config, "ENTRY_MAX", 0.75)
+        # ── FLIP GUARD (peak): block weak direction flips ──
+        try:
+            recent_hist = list(self._chop_detector._history[-4:])
+        except Exception:
+            recent_hist = []
+        if len(recent_hist) >= 3:
+            opposite = sum(1 for d in recent_hist if d and d != direction)
+            FLIP_TREND_MIN = float(os.getenv("FLIP_TREND_MIN_15M", "0.85"))
+            if opposite >= 3 and abs(trend_score) < FLIP_TREND_MIN:
+                self._diag_log(
+                    f"flipguard-{coin}",
+                    f"[FLIP GUARD] {coin} {direction}: recent={'->'.join(recent_hist)} "
+                    f"trend={trend_score:+.2f} — need |trend|>={FLIP_TREND_MIN}",
+                    12.0,
+                )
+                return None
+
+        # ── Momentum must agree with direction ──
+        _mom_align = os.getenv("MOMENTUM_ALIGN_ON", "on").lower() not in ("off", "0", "false")
+        if _mom_align:
+            _mm = float(os.getenv("MOM_ALIGN_MIN_ROC", "0.00003"))
+            # UP: both ROC must be negative to block (keep — prevents dead-cat UP)
+            if direction == "UP" and roc_60 < -_mm and roc_300 < -_mm:
+                self._diag_log(
+                    f"mom-conflict-{coin}",
+                    f"[MOM CONFLICT] {coin} UP: roc60={roc_60*10000:+.1f}bps "
+                    f"roc300={roc_300*10000:+.1f}bps both negative — skip",
+                    12.0,
+                )
+                return None
+            # DOWN: only block if roc_300 positive AND trend weak (allow dump bounces)
+            if (direction == "DOWN" and roc_300 > _mm
+                    and abs(trend_score) < float(os.getenv("MOM_DOWN_MIN_TREND", "0.80"))):
+                self._diag_log(
+                    f"mom-conflict-{coin}",
+                    f"[MOM CONFLICT] {coin} DOWN: roc300={roc_300*10000:+.1f}bps "
+                    f"positive + weak trend={trend_score:+.2f} — skip",
+                    12.0,
+                )
+                return None
+
+        # ── Expensive UP needs real distance (Tier 1) ──
+        _exp_up_max = float(os.getenv("EXPENSIVE_UP_MAX_ASK", "0.58"))
+        _exp_up_dist = float(os.getenv("EXPENSIVE_UP_MIN_DIST", "0.0015"))
+        if direction == "UP" and ask >= _exp_up_max and abs(dist_pct) < _exp_up_dist:
+            self._diag_log(
+                f"exp-up-{coin}",
+                f"[EXPENSIVE UP] {coin}: ask={ask*100:.0f}c dist={dist_pct*100:+.3f}% "
+                f"< {_exp_up_dist*100:.2f}% — skip",
+                12.0,
+            )
+            return None
+
+        # Entry price filters — direction-aware (DOWN 90c is normal in dumps)
+        if direction == "DOWN":
+            entry_max = float(os.getenv("ENTRY_MAX_DOWN", os.getenv("ENTRY_MAX", "0.72")))
+        else:
+            entry_max = float(os.getenv("ENTRY_MAX_UP", "0.62"))
+        if early_window:
+            entry_min = float(os.getenv("EARLY_ENTRY_MIN", "0.35"))
+        else:
+            entry_min = getattr(config, "ENTRY_MIN", 0.10)
 
         if ask <= 0.01:
             self._diag_log(f"noask-{coin}-{direction}", f"[NO ASK] {coin} {direction}: ask=0", 30.0)
@@ -588,7 +901,8 @@ class Predictor:
         if ask < entry_min:
             self._diag_log(
                 f"cheap-{coin}-{direction}",
-                f"[CHEAP] {coin} {direction}: ask={ask*100:.0f}c < {entry_min*100:.0f}c", 30.0)
+                f"[CHEAP] {coin} {direction}: ask={ask*100:.0f}c < {entry_min*100:.0f}c — skip",
+                30.0)
             return None
 
         if ask > entry_max:
@@ -599,11 +913,39 @@ class Predictor:
 
         # Edge = our probability minus cost
         edge = win_prob - ask
-        min_edge = getattr(config, "MIN_EDGE", 0.05)
 
-        min_prob = getattr(config, "MIN_WIN_PROB", 0.65)
+        # Live probability calibration (regime + chop + late window)
+        _cal_live = os.getenv("CALIBRATION_LIVE", "off").lower() in ("on", "1", "true")
+        _cal_shadow = os.getenv("CALIBRATION_SHADOW", "off").lower() in ("on", "1", "true")
+        if _cal_live or _cal_shadow:
+            try:
+                from regime_aware.confidence_calibrator import calibrate as _calibrate
+                from regime_aware.confidence_calibrator import format_log_line as _cal_fmt
+                _regime = sess_cal.get_regime_label(is_chop)
+                _cal_res = _calibrate(
+                    raw_prob=win_prob,
+                    regime=_regime,
+                    trend_abs=abs(trend_score),
+                    bucket_stats=None,
+                    microstructure_features=None,
+                    reversion_risk=0.0,
+                    T_sec=float(time_remaining),
+                    xasset_features=None,
+                    direction=direction,
+                )
+                _mode = "LIVE" if _cal_live else "SHADOW"
+                logger.debug(_cal_fmt(coin, direction, _cal_res, mode=_mode))
+                if _cal_live:
+                    win_prob = float(_cal_res["calibrated_prob"])
+                    edge = win_prob - ask
+            except Exception as _cal_e:
+                logger.debug(f"[CALIBRATION] skip {coin}: {_cal_e}")
+
+        _sg = sess_cal.get_session()
+        min_edge = max(getattr(config, "MIN_EDGE", 0.05), _sg.min_edge)
+        min_prob = max(getattr(config, "MIN_WIN_PROB", 0.65), _sg.min_prob)
         if win_prob < min_prob:
-            self._diag_log(f"lowprob-{coin}", f"[LOW PROB] {coin} {direction}: prob={win_prob*100:.0f}% < {min_prob*100:.0f}%", 15.0)
+            self._diag_log(f"lowprob-{coin}", f"[LOW PROB] {coin} {direction}: prob={win_prob*100:.0f}% < {min_prob*100:.0f}% session={_sg.name}", 15.0)
             return None
 
         if edge < min_edge:
@@ -615,8 +957,8 @@ class Predictor:
             return None
 
         # Expensive entry needs more edge (Jun-3 audit: 66-72c @ 8% edge = -EV)
-        _hi_ask = float(os.getenv("HIGH_ASK_EDGE_MIN_ASK", "0.62"))
-        _hi_edge = float(os.getenv("HIGH_ASK_EDGE_MIN_EDGE", "0.12"))
+        _hi_ask = float(os.getenv("HIGH_ASK_EDGE_MIN_ASK", "0.58"))
+        _hi_edge = float(os.getenv("HIGH_ASK_EDGE_MIN_EDGE", "0.18"))
         if ask >= _hi_ask and edge < _hi_edge:
             self._diag_log(
                 f"thin-{coin}-{direction}",
@@ -637,11 +979,14 @@ class Predictor:
         logger.info(
             f"[SIGNAL] {coin} {direction} | Prob={win_prob:.0%} | Ask={ask*100:.0f}c | "
             f"Edge={edge*100:.1f}% | Trend={trend_score:+.2f} Dist={dist_pct*100:+.3f}% "
-            f"ROC60={roc_60*10000:+.1f} ROC300={roc_300*10000:+.1f}bps σ={sigma:.2e} T={time_remaining:.0f}s"
+            f"ROC60={roc_60*10000:+.1f}bps ROC300={roc_300*10000:+.1f}bps "
+            f"σ={sigma:.2e} T={time_remaining:.0f}s spot={_spot_src} strike={_strike_src}"
         )
 
-        self._window_direction = direction
-        # ChopDetector records actual market outcome in run_bot.py, NOT bot's trade direction
+        self._window_direction = direction  # legacy global
+        self._window_directions[coin] = direction
+        self._chop_detector.record_direction(direction)
+        # ChopDetector feeds FLIP GUARD history
         regime = "CHOPPY" if self._chop_detector.is_choppy() else "TRENDING"
         logger.debug(f"[COMMIT] {coin} {direction} | {regime} | history={self._chop_detector.summary()} | trends={dict(self._window_trends)}")
 
@@ -660,4 +1005,7 @@ class Predictor:
             depth_ratio=depth,
             directional_edge=win_prob - 0.50,
             trend_score=trend_score,
+            book_up_mid=book_up,
+            dir_votes_up=votes_up,
+            dir_votes_down=votes_down,
         )
