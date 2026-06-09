@@ -601,18 +601,29 @@ class Predictor:
             settlement_dir = level_dir
             combined_prob = 0.50 * base_up_prob + 0.30 * book_up + 0.20 * raw_prob
         else:
-            bs_dir = "UP" if base_up_prob >= 0.5 else "DOWN"
+            # Far from strike: level (dist) leads; BS only vetoes strong disagreement
             dist_dir = "UP" if dist_pct > 0 else "DOWN"
-            if bs_dir != dist_dir:
+            _bs_veto = float(os.getenv("SETTLEMENT_FAR_BS_VETO", "0.05"))
+            if dist_dir == "UP" and base_up_prob < (0.50 - _bs_veto):
                 self._diag_log(
                     f"settle-far-{coin}",
-                    f"[SETTLEMENT] {coin}: BS→{bs_dir} dist→{dist_dir} "
-                    f"(dist={dist_pct*100:+.3f}% N(d2)={base_up_prob:.1%}) — abstain",
+                    f"[SETTLEMENT] {coin}: dist→UP vetoed by BS={base_up_prob:.1%} "
+                    f"(dist={dist_pct*100:+.3f}%) — abstain",
                     12.0,
                 )
                 return None
-            settlement_dir = bs_dir
-            combined_prob = 0.55 * base_up_prob + 0.25 * raw_prob + 0.20 * book_up
+            if dist_dir == "DOWN" and base_up_prob > (0.50 + _bs_veto):
+                self._diag_log(
+                    f"settle-far-{coin}",
+                    f"[SETTLEMENT] {coin}: dist→DOWN vetoed by BS={base_up_prob:.1%} "
+                    f"(dist={dist_pct*100:+.3f}%) — abstain",
+                    12.0,
+                )
+                return None
+            settlement_dir = dist_dir
+            combined_prob = 0.45 * base_up_prob + 0.25 * raw_prob + 0.20 * book_up + (
+                0.10 * (base_up_prob if dist_dir == "UP" else (1.0 - base_up_prob))
+            )
 
         combined_prob = max(0.01, min(0.99, combined_prob))
 
