@@ -463,10 +463,11 @@ class OrderManager:
         # Recalculate edge against real CLOB ask if available
         actual_entry = real_ask if real_ask else poly_price
         real_edge = pred.probability - actual_entry
-        if real_edge < 0.02:
+        _min_edge = float(getattr(config, "MIN_EDGE", 0.02))
+        if real_edge < _min_edge:
             logger.info(
                 f"[EDGE GATE] {coin}: real_edge={real_edge*100:.1f}% "
-                f"(post={pred.probability*100:.0f}% - ask={actual_entry*100:.0f}c) < 2%"
+                f"(post={pred.probability*100:.0f}% - ask={actual_entry*100:.0f}c) < {_min_edge*100:.0f}%"
             )
             return False
 

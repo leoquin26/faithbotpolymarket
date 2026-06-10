@@ -567,15 +567,17 @@ class Predictor:
                     12.0,
                 )
                 return None
-            roc_dir = _dir_from_sign(roc_300, _min_roc)
-            if roc_dir and roc_dir != level_dir:
-                self._diag_log(
-                    f"settle-roc-{coin}",
-                    f"[SETTLEMENT] {coin}: dist→{level_dir} roc300→{roc_dir} "
-                    f"(dist={dist_pct*100:+.3f}% roc300={roc_300*10000:+.1f}bps) — abstain",
-                    12.0,
-                )
-                return None
+            _roc_veto = float(os.getenv("SETTLEMENT_ROC_VETO", "0.00008"))
+            if abs(roc_300) >= _roc_veto:
+                roc_dir = _dir_from_sign(roc_300, _min_roc)
+                if roc_dir and roc_dir != level_dir:
+                    self._diag_log(
+                        f"settle-roc-{coin}",
+                        f"[SETTLEMENT] {coin}: dist→{level_dir} roc300→{roc_dir} "
+                        f"(dist={dist_pct*100:+.3f}% roc300={roc_300*10000:+.1f}bps) — abstain",
+                        12.0,
+                    )
+                    return None
             book_dir = "UP" if book_up >= (0.50 + _book_edge) else (
                 "DOWN" if book_up <= (0.50 - _book_edge) else None
             )
@@ -716,8 +718,9 @@ class Predictor:
                 return None
 
         # ── Minimum distance: thin dist = coin flip, not a real edge ──
-        _min_dist_up = float(os.getenv("MIN_DIST_UP_PCT", "0.0010"))
-        _min_dist_dn = float(os.getenv("MIN_DIST_DOWN_PCT", "0.0010"))
+        _sg_dist = sess_cal.get_session()
+        _min_dist_up = _sg_dist.min_dist
+        _min_dist_dn = _sg_dist.min_dist
         if direction == "UP" and dist_pct < _min_dist_up:
             self._diag_log(
                 f"thin-dist-{coin}",
@@ -849,12 +852,17 @@ class Predictor:
             recent_hist = []
         if len(recent_hist) >= 3:
             opposite = sum(1 for d in recent_hist if d and d != direction)
-            FLIP_TREND_MIN = float(os.getenv("FLIP_TREND_MIN_15M", "0.85"))
-            if opposite >= 3 and abs(trend_score) < FLIP_TREND_MIN:
+            FLIP_TREND_MIN = float(os.getenv("FLIP_TREND_MIN_15M", "0.55"))
+            _flip_bypass_dist = float(os.getenv("FLIP_GUARD_BYPASS_DIST", "0.0012"))
+            _dist_agrees = (
+                (direction == "UP" and dist_pct >= _flip_bypass_dist)
+                or (direction == "DOWN" and dist_pct <= -_flip_bypass_dist)
+            )
+            if opposite >= 3 and abs(trend_score) < FLIP_TREND_MIN and not _dist_agrees:
                 self._diag_log(
                     f"flipguard-{coin}",
                     f"[FLIP GUARD] {coin} {direction}: recent={'->'.join(recent_hist)} "
-                    f"trend={trend_score:+.2f} — need |trend|>={FLIP_TREND_MIN}",
+                    f"trend={trend_score:+.2f} dist={dist_pct*100:+.3f}% — need |trend|>={FLIP_TREND_MIN}",
                     12.0,
                 )
                 return None
