@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>POLYBOT v3 — Audit Telemetry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+/* ── audit-page-specific styling on top of the existing app.css palette ── */
+:root {
+  --audit-bg:        #0e1116;
+  --audit-card:      #151a23;
+  --audit-card2:     #1a2030;
+  --audit-border:    #232a3a;
+  --audit-text:      #e6edf3;
+  --audit-muted:     #8b94a7;
+  --audit-accent:    #6ea8fe;
+  --audit-good:      #4ade80;
+  --audit-warn:      #fbbf24;
+  --audit-bad:       #f87171;
+  --audit-purple:    #c084fc;
+  --audit-cyan:      #5eead4;
+}
+body { background: var(--audit-bg); color: var(--audit-text); font-family: Inter, system-ui, sans-serif; }
+.audit-wrap { max-width: 1480px; margin: 0 auto; padding: 18px 22px 60px; }
+.audit-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 14px;
+}
+.card-audit {
+  background: var(--audit-card);
+  border: 1px solid var(--audit-border);
+  border-radius: 10px;
+  padding: 14px 16px 12px;
+  position: relative;
+}
+.card-audit h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--audit-muted);
+  display: flex; align-items: center; gap: 10px;
+}
+.card-audit h3 .badge {
+  background: #232a3a; color: var(--audit-accent);
+  padding: 2px 8px; border-radius: 4px; font-size: 10px;
+  letter-spacing: .04em; font-weight: 700;
+}
+.col-3  { grid-column: span 3;  }
+.col-4  { grid-column: span 4;  }
+.col-6  { grid-column: span 6;  }
+.col-8  { grid-column: span 8;  }
+.col-12 { grid-column: span 12; }
+@media (max-width: 900px) {
+  .col-3, .col-4, .col-6, .col-8 { grid-column: span 12; }
+}
+
+/* "Big number" pattern */
+.kpi { display: flex; flex-direction: column; gap: 4px; }
+.kpi .v { font-size: 28px; font-weight: 700; font-family: "JetBrains Mono", monospace; }
+.kpi .v.green { color: var(--audit-good); }
+.kpi .v.red   { color: var(--audit-bad);  }
+.kpi .v.cyan  { color: var(--audit-cyan); }
+.kpi .v.purple { color: var(--audit-purple); }
+.kpi .l { font-size: 11px; color: var(--audit-muted); }
+
+/* tables */
+.audit-tbl { width: 100%; border-collapse: collapse; font-size: 12px; font-family: "JetBrains Mono", monospace; }
+.audit-tbl th { text-align: left; color: var(--audit-muted); font-weight: 600; padding: 6px 8px 6px 0; border-bottom: 1px solid var(--audit-border); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+.audit-tbl td { padding: 5px 8px 5px 0; border-bottom: 1px solid #1a2030; }
+.audit-tbl tr:last-child td { border-bottom: none; }
+.audit-tbl tr:hover td { background: var(--audit-card2); }
+.tag { padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; letter-spacing: .04em; }
+.tag.up { background: #14302a; color: var(--audit-good); }
+.tag.down { background: #2e1820; color: var(--audit-bad); }
+.tag.win { background: #14302a; color: var(--audit-good); }
+.tag.loss { background: #2e1820; color: var(--audit-bad); }
+.tag.clean { background: #16223b; color: #93c5fd; }
+.tag.dampen { background: #3a2e0d; color: var(--audit-warn); }
+.tag.invert { background: #391233; color: var(--audit-purple); }
+.tag.trending { background: #14302a; color: var(--audit-good); }
+.tag.reverting { background: #391233; color: var(--audit-purple); }
+.tag.neutral { background: #232a3a; color: var(--audit-muted); }
+.tag.choppy { background: #3a2e0d; color: var(--audit-warn); }
+.tag.warmup { background: #232a3a; color: var(--audit-muted); }
+
+.bar-stack { display:flex; align-items:center; gap:8px; }
+.bar { height: 6px; border-radius: 3px; background: #232a3a; flex: 1; overflow: hidden; position: relative;}
+.bar > span { position: absolute; left: 0; top: 0; bottom: 0; }
+.bar .b-good   { background: var(--audit-good); }
+.bar .b-warn   { background: var(--audit-warn); }
+.bar .b-bad    { background: var(--audit-bad);  }
+.bar .b-accent { background: var(--audit-accent); }
+
+.flex-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.mini-card {
+  background: var(--audit-card2);
+  border: 1px solid var(--audit-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 90px;
+}
+.mini-card .l { color: var(--audit-muted); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+.mini-card .v { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 16px; }
+.mini-card .v.up { color: var(--audit-good); }
+.mini-card .v.down { color: var(--audit-bad); }
+.mini-card .v.cyan { color: var(--audit-cyan); }
+.muted { color: var(--audit-muted); }
+.mono { font-family: "JetBrains Mono", monospace; }
+pre.grade-out {
+  background: #0a0d12;
+  color: #c9d1d9;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-family: "JetBrains Mono", monospace;
+  white-space: pre-wrap;
+  max-height: 320px;
+  overflow: auto;
+}
+.section-title { font-size: 16px; font-weight: 800; letter-spacing: .04em; margin: 18px 0 10px; }
+.section-title small { color: var(--audit-muted); font-weight: 500; letter-spacing: .04em; }
+button.btn-tiny {
+  background: var(--audit-card2);
+  color: var(--audit-text);
+  border: 1px solid var(--audit-border);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+button.btn-tiny:hover { background: #232a3a; }
+.row-warn td { background: #1f1810; }
+.row-bad  td { background: #1f1014; }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="hdr-row">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/>
+      </svg>
+      <span>POLY<span class="accent">BOT</span></span>
+      <span class="badge-v3">audit</span>
+    </div>
+    <nav class="nav-tabs">
+      <a href="/">Dashboard</a>
+      <a href="/charts">📈 Charts</a>
+      <a href="/audit" class="active">🔬 Audit Telemetry</a>
+    </nav>
+  </div>
+</header>
+
+<main class="audit-wrap">
+
+  <div class="section-title">Top-line <small>auto-refresh every 5s</small></div>
+  <div class="audit-grid">
+
+    <div class="card-audit col-3">
+      <h3>Reversion shadow <span class="badge" id="rev-badge">SHADOW</span></h3>
+      <div class="kpi">
+        <div class="v cyan" id="kpi-rev-n">—</div>
+        <div class="l">signals today, by action below</div>
+      </div>
+      <div class="flex-row" style="margin-top: 8px;">
+        <div class="mini-card"><div class="l">CLEAN</div><div class="v" id="rev-clean">0</div></div>
+        <div class="mini-card"><div class="l">DAMPEN</div><div class="v" id="rev-dampen">0</div></div>
+        <div class="mini-card"><div class="l">INVERT</div><div class="v" id="rev-invert">0</div></div>
+      </div>
+    </div>
+
+    <div class="card-audit col-3">
+      <h3>Calibration shadow <span class="badge" id="cal-badge">SHADOW</span></h3>
+      <div class="kpi">
+        <div class="v purple" id="kpi-cal-n">—</div>
+        <div class="l">signals; avg shift <span id="kpi-cal-avg">—</span> pp</div>
+      </div>
+      <div class="flex-row" style="margin-top: 8px;">
+        <div class="mini-card"><div class="l">Max shrink</div><div class="v down" id="kpi-cal-shrink">—</div></div>
+        <div class="mini-card"><div class="l">Max lift</div><div class="v up" id="kpi-cal-lift">—</div></div>
+      </div>
+    </div>
+
+    <div class="card-audit col-3">
+      <h3>Cross-asset</h3>
+      <div class="kpi">
+        <div class="v" id="kpi-xa-breadth">—</div>
+        <div class="l">breadth (-1 = all DOWN, +1 = all UP)</div>
+      </div>
+      <div class="flex-row" style="margin-top: 8px;">
+        <div class="mini-card"><div class="l">Dominant</div><div class="v" id="kpi-xa-dom">—</div></div>
+        <div class="mini-card"><div class="l">Age</div><div class="v cyan" id="kpi-xa-age">—</div></div>
+      </div>
+    </div>
+
+    <div class="card-audit col-3">
+      <h3>Ledger</h3>
+      <div class="kpi">
+        <div class="v cyan" id="kpi-lg-trades">—</div>
+        <div class="l">trades in sqlite, events below</div>
+      </div>
+      <div class="flex-row" style="margin-top: 8px;" id="lg-event-tiles">
+        <!-- filled by JS -->
+      </div>
+    </div>
+
+  </div>
+
+  <div class="section-title">Per-coin regime <small>BTC and SOL can disagree now</small></div>
+  <div class="audit-grid">
+    <div class="card-audit col-12">
+      <table class="audit-tbl">
+        <thead><tr>
+          <th>Coin</th><th>Samples</th><th>Win-rate</th><th>HT win-rate</th><th>Regime</th>
+        </tr></thead>
+        <tbody id="pcr-tbody">
+          <tr><td colspan="5" class="muted">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-title">Microstructure latest by coin/side</div>
+  <div class="audit-grid">
+    <div class="card-audit col-12">
+      <table class="audit-tbl">
+        <thead><tr>
+          <th>Coin</th><th>Side</th><th>Time</th>
+          <th>Ask vel (cpm)</th><th>Adverse</th>
+          <th>Bid vel</th><th>Spread (bps)</th>
+          <th>Depth-skew</th><th>Depth (side)</th>
+        </tr></thead>
+        <tbody id="micro-tbody">
+          <tr><td colspan="9" class="muted">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-title">Recent trades in ledger</div>
+  <div class="audit-grid">
+    <div class="card-audit col-12">
+      <table class="audit-tbl">
+        <thead><tr>
+          <th>Placed</th><th>Resolved</th>
+          <th>Coin</th><th>Side</th>
+          <th>Entry</th><th>Shares</th>
+          <th>Prob</th><th>Edge</th>
+          <th>Regime</th><th>Reversion</th>
+          <th>Phase</th>
+          <th>Result</th><th>P&amp;L</th>
+        </tr></thead>
+        <tbody id="trades-tbody">
+          <tr><td colspan="13" class="muted">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-title">Recent reversion-risk shadows <small>most recent at top</small></div>
+  <div class="audit-grid">
+    <div class="card-audit col-6">
+      <table class="audit-tbl">
+        <thead><tr>
+          <th>Time</th><th>Coin</th><th>Side</th>
+          <th>Risk</th><th>Action</th>
+          <th>Adv (cpm)</th><th>Spike</th><th>T(s)</th>
+        </tr></thead>
+        <tbody id="rev-tbody">
+          <tr><td colspan="8" class="muted">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card-audit col-6">
+      <h3>Recent calibration shadows</h3>
+      <table class="audit-tbl">
+        <thead><tr>
+          <th>Time</th><th>Coin</th><th>Side</th>
+          <th>Raw%</th><th>Cal%</th><th>Δpp</th>
+          <th>Reg</th><th>Bkt</th><th>Mic</th><th>Rev</th><th>Late</th>
+        </tr></thead>
+        <tbody id="cal-tbody">
+          <tr><td colspan="11" class="muted">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-title">
+    Live counterfactual grading
+    <small>raw vs would-be-live P&amp;L from today's log</small>
+    <button class="btn-tiny" id="grade-btn" style="margin-left: 10px;">↻ Re-grade</button>
+  </div>
+  <div class="audit-grid">
+    <div class="card-audit col-6">
+      <h3>Reversion-risk grader</h3>
+      <pre class="grade-out" id="grade-rev">Click "Re-grade" to run.</pre>
+    </div>
+    <div class="card-audit col-6">
+      <h3>Calibration grader</h3>
+      <pre class="grade-out" id="grade-cal">Click "Re-grade" to run.</pre>
+    </div>
+  </div>
+
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmtPct = (v, dp=1) => v == null ? "—" : `${Number(v).toFixed(dp)}%`;
+const fmtSigned = (v, dp=2) => v == null ? "—" : (v > 0 ? "+" : "") + Number(v).toFixed(dp);
+const fmt0 = (v) => v == null ? "—" : `${Number(v).toFixed(0)}`;
+
+function regimeTag(r) {
+  if (!r) return "—";
+  const cls = r.toLowerCase();
+  return `<span class="tag ${cls}">${r}</span>`;
+}
+function actionTag(a) {
+  if (!a) return "—";
+  return `<span class="tag ${a.toLowerCase()}">${a}</span>`;
+}
+function sideTag(s) {
+  return `<span class="tag ${s === 'UP' ? 'up' : 'down'}">${s}</span>`;
+}
+
+function renderTopline(d) {
+  // Reversion
+  const r = d.reversion || {};
+  $("kpi-rev-n").textContent = r.n || 0;
+  $("rev-clean").textContent  = (r.by_action && r.by_action.CLEAN)  || 0;
+  $("rev-dampen").textContent = (r.by_action && r.by_action.DAMPEN) || 0;
+  $("rev-invert").textContent = (r.by_action && r.by_action.INVERT) || 0;
+
+  // Calibration
+  const c = d.calibration || {};
+  const cs = c.summary || {};
+  $("kpi-cal-n").textContent = cs.n || 0;
+  $("kpi-cal-avg").textContent = fmtSigned(cs.avg_delta_pp);
+  $("kpi-cal-shrink").textContent = fmtSigned(cs.max_shrink_pp);
+  $("kpi-cal-lift").textContent = fmtSigned(cs.max_lift_pp);
+
+  // XAsset
+  const x = (d.xasset && d.xasset.rows && d.xasset.rows.length)
+    ? d.xasset.rows[d.xasset.rows.length - 1] : null;
+  if (x) {
+    const b = Number(x.breadth || 0);
+    $("kpi-xa-breadth").textContent = (b > 0 ? "+" : "") + b.toFixed(2);
+    $("kpi-xa-breadth").style.color = b >= 0.6 ? "var(--audit-good)"
+                                    : b <= -0.6 ? "var(--audit-bad)"
+                                    : "var(--audit-muted)";
+    $("kpi-xa-dom").textContent = x.dom || "—";
+    $("kpi-xa-dom").className = "v " + (x.dom === "UP" ? "up" : x.dom === "DOWN" ? "down" : "");
+    $("kpi-xa-age").textContent = (x.age || 0) + "s";
+  } else {
+    $("kpi-xa-breadth").textContent = "—";
+    $("kpi-xa-dom").textContent = "—";
+    $("kpi-xa-age").textContent = "—";
+  }
+
+  // Ledger
+  const lg = d.ledger || {};
+  $("kpi-lg-trades").textContent = lg.n_trades || 0;
+  const evTiles = $("lg-event-tiles");
+  evTiles.innerHTML = "";
+  const evbyt = lg.events_by_type || {};
+  ["SIGNAL", "FIRED", "RESOLVED", "EXHAUST"].forEach(e => {
+    const tile = document.createElement("div");
+    tile.className = "mini-card";
+    tile.innerHTML = `<div class="l">${e}</div><div class="v">${evbyt[e] || 0}</div>`;
+    evTiles.appendChild(tile);
+  });
+}
+
+function renderPerCoinRegime(pcr) {
+  const tbody = $("pcr-tbody");
+  if (!pcr || !pcr.per_coin || !Object.keys(pcr.per_coin).length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">No coin data yet (warmup)</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = "";
+  for (const coin of ["BTC", "ETH", "SOL", "XRP"]) {
+    const row = pcr.per_coin[coin];
+    const tr = document.createElement("tr");
+    if (!row) {
+      tr.innerHTML = `<td>${coin}</td><td colspan="4" class="muted">No samples</td>`;
+    } else {
+      tr.innerHTML = `
+        <td><b>${coin}</b></td>
+        <td>${row.n}</td>
+        <td>${row.wr != null ? (row.wr*100).toFixed(0) + "%" : "—"}</td>
+        <td>${row.ht_wr != null ? (row.ht_wr*100).toFixed(0) + "%" : "—"}</td>
+        <td>${regimeTag(row.regime)}</td>`;
+    }
+    tbody.appendChild(tr);
+  }
+  // Global row
+  const g = pcr.global || {};
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td class="muted">global</td>
+    <td>${g.n || 0}</td>
+    <td>${g.wr != null ? (g.wr*100).toFixed(0) + "%" : "—"}</td>
+    <td>—</td><td>—</td>`;
+  tbody.appendChild(tr);
+}
+
+function renderMicroLatest(micro) {
+  const tbody = $("micro-tbody");
+  const latest = (micro && micro.latest_by_side) || {};
+  const keys = Object.keys(latest).sort();
+  if (!keys.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="muted">No microstructure data yet</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = "";
+  for (const k of keys) {
+    const r = latest[k];
+    const tr = document.createElement("tr");
+    const skewCls = r.depth_skew < -0.4 ? "tag down"
+                  : r.depth_skew >  0.4 ? "tag up" : "muted mono";
+    tr.innerHTML = `
+      <td><b>${r.coin}</b></td>
+      <td>${sideTag(r.direction)}</td>
+      <td class="mono">${r.time}</td>
+      <td class="mono">${fmtSigned(r.ask_vel, 0)}</td>
+      <td class="mono">${fmt0(r.adv)}</td>
+      <td class="mono">${fmtSigned(r.bid_vel, 0)}</td>
+      <td class="mono">${r.spread_bps == null ? "—" : r.spread_bps.toFixed(0)}</td>
+      <td><span class="${skewCls}">${fmtSigned(r.depth_skew, 2)}</span></td>
+      <td class="mono">${r.depth_side.toFixed(2)}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+function renderTrades(ledger) {
+  const tbody = $("trades-tbody");
+  const tr_list = (ledger && ledger.recent_trades) || [];
+  if (!tr_list.length) {
+    tbody.innerHTML = `<tr><td colspan="13" class="muted">No trades in ledger yet</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = "";
+  for (const t of tr_list) {
+    const tr = document.createElement("tr");
+    const wonTag = t.won === 1 ? `<span class="tag win">WIN</span>`
+                 : t.won === 0 ? `<span class="tag loss">LOSS</span>`
+                 : `<span class="muted">pending</span>`;
+    const pnlCls = (t.pnl == null) ? "" : (t.pnl > 0 ? "up" : t.pnl < 0 ? "down" : "");
+    tr.innerHTML = `
+      <td class="mono">${t.placed_iso || "—"}</td>
+      <td class="mono">${t.resolved_iso || "—"}</td>
+      <td><b>${t.coin}</b></td>
+      <td>${sideTag(t.side)}</td>
+      <td class="mono">${t.entry_c}c</td>
+      <td>${t.shares}</td>
+      <td>${t.prob_pct != null ? t.prob_pct.toFixed(0) + "%" : "—"}</td>
+      <td>${t.edge_pct != null ? t.edge_pct.toFixed(1) + "%" : "—"}</td>
+      <td>${regimeTag(t.regime || "")}</td>
+      <td>${actionTag(t.reversion || "")}</td>
+      <td>${t.phase || "—"}</td>
+      <td>${wonTag}</td>
+      <td class="mono ${pnlCls}">${t.pnl == null ? "—" : fmtSigned(t.pnl)}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+function renderRevLog(rev) {
+  const tbody = $("rev-tbody");
+  const rows = (rev && rev.rows) || [];
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">No reversion shadows yet</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = "";
+  for (const r of rows.slice().reverse()) {
+    const tr = document.createElement("tr");
+    const rcls = Number(r.risk) >= 0.40 ? "row-bad" : Number(r.risk) >= 0.25 ? "row-warn" : "";
+    tr.className = rcls;
+    tr.innerHTML = `
+      <td class="mono">${r.time}</td>
+      <td><b>${r.coin || ""}</b></td>
+      <td>${sideTag(r.dir || "")}</td>
+      <td class="mono">${Number(r.risk).toFixed(2)}</td>
+      <td>${actionTag(r.action)}</td>
+      <td class="mono">${fmt0(r.vel)}</td>
+      <td class="mono">${r.spike}</td>
+      <td class="mono">${r.t}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+function renderCalLog(cal) {
+  const tbody = $("cal-tbody");
+  const rows = (cal && cal.rows) || [];
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="11" class="muted">No calibration shadows yet</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = "";
+  for (const r of rows.slice().reverse()) {
+    const tr = document.createElement("tr");
+    const delta = Number(r.cal) - Number(r.raw);
+    const dcls = delta < -5 ? "down" : delta > 5 ? "up" : "muted";
+    tr.innerHTML = `
+      <td class="mono">${r.time}</td>
+      <td><b>${r.coin || ""}</b></td>
+      <td>${sideTag(r.dir || "")}</td>
+      <td class="mono">${r.raw}</td>
+      <td class="mono">${r.cal}</td>
+      <td class="mono ${dcls}">${(delta > 0 ? "+" : "") + delta}</td>
+      <td class="mono">${r.reg}</td>
+      <td class="mono">${r.bkt}</td>
+      <td class="mono">${r.mic}</td>
+      <td class="mono">${r.rev}</td>
+      <td class="mono">${r.late}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/v3/audit/snapshot");
+    const d = await r.json();
+    renderTopline(d);
+    renderPerCoinRegime(d.per_coin_regime);
+    renderMicroLatest(d.micro);
+    renderTrades(d.ledger);
+    renderRevLog(d.reversion);
+    renderCalLog(d.calibration);
+  } catch (e) {
+    console.error("audit poll error", e);
+  }
+}
+
+async function runGraders() {
+  $("grade-rev").textContent = "Running…";
+  $("grade-cal").textContent = "Running…";
+  try {
+    const r = await fetch("/api/v3/audit/grade");
+    const d = await r.json();
+    $("grade-rev").textContent = (d.reversion && d.reversion.output) || (d.reversion && d.reversion.error) || "—";
+    $("grade-cal").textContent = (d.calibration && d.calibration.output) || (d.calibration && d.calibration.error) || "—";
+  } catch (e) {
+    $("grade-rev").textContent = "Error: " + e;
+    $("grade-cal").textContent = "Error: " + e;
+  }
+}
+
+$("grade-btn").addEventListener("click", runGraders);
+
+refresh();
+setInterval(refresh, 5000);
+// Run graders once on load (cheap; ~1s)
+runGraders();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polybot · Live Charts</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  /* ═════ Charts-specific ═════ */
+  .charts-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 10px;
+    padding: 10px 14px 20px;
+    max-width: 2000px;
+    margin: 0 auto;
+    height: calc(100vh - 170px);
+    min-height: 600px;
+  }
+  @media (max-width: 1100px) {
+    .charts-layout { grid-template-columns: 1fr; grid-template-rows: repeat(4, minmax(380px, 1fr)); height: auto; }
+  }
+  .chart-card {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    box-shadow: var(--shadow);
+  }
+  .chart-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border);
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .chart-coin {
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 800; letter-spacing: .4px;
+  }
+  .coin-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--amber);
+  }
+  .coin-BTC .coin-dot { background: #f7931a; }
+  .coin-ETH .coin-dot { background: #627eea; }
+  .coin-SOL .coin-dot { background: #14f195; }
+  .coin-XRP .coin-dot { background: #25a8e0; }
+
+  .chart-price {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 800;
+    font-size: 1.05rem;
+    letter-spacing: .4px;
+  }
+  .chart-price.up   { color: var(--green); }
+  .chart-price.down { color: var(--red); }
+
+  .chart-stats {
+    display: flex; gap: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .72rem;
+  }
+  .chart-stat { display: flex; gap: 4px; align-items: center; }
+  .chart-stat .lbl { color: var(--text-2); font-size: .66rem; text-transform: uppercase; letter-spacing: .5px; }
+  .chart-stat .val { color: var(--text-1); font-weight: 700; }
+  .chart-stat .val.up   { color: var(--green); }
+  .chart-stat .val.down { color: var(--red); }
+
+  .chart-body {
+    flex: 1;
+    position: relative;
+    min-height: 300px;
+  }
+  .chart-body > div { position: absolute; inset: 0; }
+
+  /* Live dot */
+  .live-dot {
+    display: inline-block;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--red);
+    box-shadow: 0 0 8px currentColor;
+  }
+  .live-dot.connected { background: var(--green); animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse {
+    0%,100% { opacity: 1; }
+    50%     { opacity: .4; }
+  }
+
+  /* Nav */
+  .nav-tabs {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-left: 14px;
+  }
+  .nav-tabs a {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    font-size: .8rem;
+    font-weight: 700;
+    color: var(--text-2);
+    text-decoration: none;
+    border-radius: 8px;
+    transition: all .15s ease;
+  }
+  .nav-tabs a:hover { color: var(--text-1); }
+  .nav-tabs a.active {
+    background: var(--bg-3);
+    color: var(--green);
+    box-shadow: inset 0 0 0 1px rgba(0,226,154,.25);
+  }
+
+  /* Toolbar */
+  .chart-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 18px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .tlb-group {
+    display: inline-flex;
+    gap: 4px;
+    background: var(--bg-2);
+    padding: 2px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+  .tlb-btn {
+    padding: 4px 12px;
+    font-size: .74rem;
+    font-weight: 700;
+    background: transparent;
+    border: none;
+    color: var(--text-2);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .tlb-btn:hover { color: var(--text-1); }
+  .tlb-btn.active { background: var(--green-dim); color: var(--green); }
+
+  .tlb-lbl {
+    color: var(--text-2); font-size: .7rem;
+    letter-spacing: .5px; text-transform: uppercase;
+  }
+
+  .tlb-info {
+    color: var(--text-3);
+    font-size: .68rem;
+    margin-left: auto;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* Marks list (bot trades today) */
+  .marks-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 18px 10px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    max-height: 58px;
+    overflow: auto;
+  }
+  .mark-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .7rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-2);
+  }
+  .mark-chip.win  { color: var(--green); border-color: rgba(0,226,154,.3); }
+  .mark-chip.loss { color: var(--red);   border-color: rgba(255,77,109,.3); }
+  .mark-chip.order { color: #60a5fa; border-color: rgba(96,165,250,.3); }
+
+  .error-bar {
+    display: none;
+    padding: 8px 18px;
+    background: rgba(255,77,109,.12);
+    color: var(--red);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .76rem;
+    border-bottom: 1px solid rgba(255,77,109,.3);
+  }
+  .error-bar.show { display: block; }
+</style>
+</head>
+<body>
+
+<!-- ═════ Header ═════ -->
+<header class="header">
+  <div class="hdr-row">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/>
+      </svg>
+      <span>POLY<span class="accent">BOT</span></span>
+      <span class="badge-v3">v3</span>
+    </div>
+
+    <nav class="nav-tabs">
+      <a href="/">Dashboard</a>
+      <a href="/charts" class="active">📈 Charts</a>
+    </nav>
+
+    <div class="hdr-right">
+      <div class="clock" id="hdr-clock">—</div>
+      <div class="bot-status" id="hdr-bot">
+        <span class="dot" id="bot-dot"></span>
+        <span id="bot-text">—</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ═════ Toolbar ═════ -->
+<div class="chart-toolbar">
+  <span class="tlb-lbl">Interval</span>
+  <div class="tlb-group" id="interval-group">
+    <button class="tlb-btn" data-int="1m">1m</button>
+    <button class="tlb-btn" data-int="5m">5m</button>
+    <button class="tlb-btn active" data-int="15m">15m</button>
+    <button class="tlb-btn" data-int="1h">1h</button>
+    <button class="tlb-btn" data-int="4h">4h</button>
+    <button class="tlb-btn" data-int="1d">1D</button>
+  </div>
+
+  <span class="tlb-lbl">Show</span>
+  <div class="tlb-group" id="overlay-group">
+    <button class="tlb-btn active" data-ov="marks">Bot trades</button>
+    <button class="tlb-btn active" data-ov="ma">MA20/50</button>
+    <button class="tlb-btn active" data-ov="vol">Volume</button>
+  </div>
+
+  <span class="tlb-info">
+    Live data: Binance WebSocket · Charts: TradingView Lightweight Charts (MIT, ad-free)
+  </span>
+</div>
+
+<!-- Error bar shows only if Binance fetches fail -->
+<div class="error-bar" id="error-bar"></div>
+
+<!-- ═════ Bot marks bar (today's real trades from log) ═════ -->
+<div class="marks-bar" id="marks-bar">
+  <span class="mark-chip" style="color:var(--text-3)">loading trades…</span>
+</div>
+
+<!-- ═════ Charts grid ═════ -->
+<main class="charts-layout" id="charts-layout">
+  <div class="chart-card coin-BTC" data-coin="BTC">
+    <div class="chart-head">
+      <div class="chart-coin">
+        <span class="coin-dot"></span>
+        <span>BTC/USDT</span>
+        <span class="live-dot" id="live-BTC"></span>
+      </div>
+      <div class="chart-price" id="price-BTC">—</div>
+      <div class="chart-stats">
+        <div class="chart-stat"><span class="lbl">24h</span><span class="val" id="chg-BTC">—</span></div>
+        <div class="chart-stat"><span class="lbl">UP</span><span class="val" id="stat-BTC-up">—</span></div>
+        <div class="chart-stat"><span class="lbl">DN</span><span class="val" id="stat-BTC-dn">—</span></div>
+      </div>
+    </div>
+    <div class="chart-body"><div id="chart-BTC"></div></div>
+  </div>
+
+  <div class="chart-card coin-ETH" data-coin="ETH">
+    <div class="chart-head">
+      <div class="chart-coin">
+        <span class="coin-dot"></span>
+        <span>ETH/USDT</span>
+        <span class="live-dot" id="live-ETH"></span>
+      </div>
+      <div class="chart-price" id="price-ETH">—</div>
+      <div class="chart-stats">
+        <div class="chart-stat"><span class="lbl">24h</span><span class="val" id="chg-ETH">—</span></div>
+        <div class="chart-stat"><span class="lbl">UP</span><span class="val" id="stat-ETH-up">—</span></div>
+        <div class="chart-stat"><span class="lbl">DN</span><span class="val" id="stat-ETH-dn">—</span></div>
+      </div>
+    </div>
+    <div class="chart-body"><div id="chart-ETH"></div></div>
+  </div>
+
+  <div class="chart-card coin-SOL" data-coin="SOL">
+    <div class="chart-head">
+      <div class="chart-coin">
+        <span class="coin-dot"></span>
+        <span>SOL/USDT</span>
+        <span class="live-dot" id="live-SOL"></span>
+      </div>
+      <div class="chart-price" id="price-SOL">—</div>
+      <div class="chart-stats">
+        <div class="chart-stat"><span class="lbl">24h</span><span class="val" id="chg-SOL">—</span></div>
+        <div class="chart-stat"><span class="lbl">UP</span><span class="val" id="stat-SOL-up">—</span></div>
+        <div class="chart-stat"><span class="lbl">DN</span><span class="val" id="stat-SOL-dn">—</span></div>
+      </div>
+    </div>
+    <div class="chart-body"><div id="chart-SOL"></div></div>
+  </div>
+
+  <div class="chart-card coin-XRP" data-coin="XRP">
+    <div class="chart-head">
+      <div class="chart-coin">
+        <span class="coin-dot"></span>
+        <span>XRP/USDT</span>
+        <span class="live-dot" id="live-XRP"></span>
+      </div>
+      <div class="chart-price" id="price-XRP">—</div>
+      <div class="chart-stats">
+        <div class="chart-stat"><span class="lbl">24h</span><span class="val" id="chg-XRP">—</span></div>
+        <div class="chart-stat"><span class="lbl">UP</span><span class="val" id="stat-XRP-up">—</span></div>
+        <div class="chart-stat"><span class="lbl">DN</span><span class="val" id="stat-XRP-dn">—</span></div>
+      </div>
+    </div>
+    <div class="chart-body"><div id="chart-XRP"></div></div>
+  </div>
+</main>
+
+<div id="toast" class="toast"></div>
+
+<!-- Lightweight Charts (MIT, no telemetry, ad-blocker-safe) -->
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   Charts page — Lightweight Charts + Binance WebSocket direct
+   ─────────────────────────────────────────────────────────── */
+
+const COINS = ["BTC", "ETH", "SOL", "XRP"];
+const SYM = { BTC:"BTCUSDT", ETH:"ETHUSDT", SOL:"SOLUSDT", XRP:"XRPUSDT" };
+const state = {
+  interval: "15m",
+  overlays: { marks: true, ma: true, vol: true },
+};
+const charts = {};   // coin -> { chart, candle, volume, ma20, ma50, ws }
+
+const LC = window.LightweightCharts;
+if (!LC) {
+  document.getElementById("error-bar").classList.add("show");
+  document.getElementById("error-bar").textContent =
+    "Failed to load chart library (unpkg.com blocked?). Try disabling ad-blocker for this domain.";
+}
+
+/* ─── Chart factory ─── */
+function makeChart(coin) {
+  const container = document.getElementById(`chart-${coin}`);
+  const chart = LC.createChart(container, {
+    layout: {
+      background: { type: "solid", color: "#0c1118" },
+      textColor:  "#b1bacb",
+      fontFamily: "'JetBrains Mono', monospace",
+    },
+    grid: {
+      vertLines: { color: "rgba(47,58,77,.35)" },
+      horzLines: { color: "rgba(47,58,77,.35)" },
+    },
+    rightPriceScale: { borderColor: "#2f3a4d", scaleMargins: { top: .05, bottom: .25 } },
+    timeScale: {
+      borderColor: "#2f3a4d",
+      timeVisible: true,
+      secondsVisible: false,
+    },
+    crosshair: {
+      vertLine: { color: "#60a5fa", labelBackgroundColor: "#1b232f" },
+      horzLine: { color: "#60a5fa", labelBackgroundColor: "#1b232f" },
+    },
+  });
+
+  const candle = chart.addCandlestickSeries({
+    upColor:      "#00e29a",
+    downColor:    "#ff4d6d",
+    borderUpColor:   "#00e29a",
+    borderDownColor: "#ff4d6d",
+    wickUpColor:     "#00e29a",
+    wickDownColor:   "#ff4d6d",
+  });
+
+  const volume = chart.addHistogramSeries({
+    priceFormat: { type: "volume" },
+    priceScaleId: "",
+    scaleMargins: { top: .82, bottom: 0 },
+  });
+
+  const ma20 = chart.addLineSeries({
+    color: "#60a5fa",
+    lineWidth: 1,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  });
+  const ma50 = chart.addLineSeries({
+    color: "#f59e0b",
+    lineWidth: 1,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  });
+
+  const ro = new ResizeObserver(() => {
+    chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+  });
+  ro.observe(container);
+
+  return { chart, candle, volume, ma20, ma50, ro };
+}
+
+/* ─── Binance REST history ─── */
+async function loadHistory(coin) {
+  const pair = SYM[coin];
+  const url = `https://api.binance.com/api/v3/klines?symbol=${pair}&interval=${state.interval}&limit=500`;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const rows = await r.json();
+    return rows;
+  } catch (err) {
+    // Fallback to a public mirror if Binance.com is regionally blocked
+    try {
+      const r2 = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${pair}&interval=${state.interval}&limit=500`);
+      if (!r2.ok) throw new Error(`HTTP ${r2.status}`);
+      return await r2.json();
+    } catch (err2) {
+      showError(`Binance API unreachable for ${coin}: ${err2.message}`);
+      return [];
+    }
+  }
+}
+
+function showError(msg) {
+  const el = document.getElementById("error-bar");
+  el.textContent = msg;
+  el.classList.add("show");
+}
+function clearError() {
+  document.getElementById("error-bar").classList.remove("show");
+}
+
+function klineToCandle(k) {
+  return { time: Math.floor(k[0]/1000), open:+k[1], high:+k[2], low:+k[3], close:+k[4] };
+}
+function klineToVolume(k) {
+  const isUp = (+k[4]) >= (+k[1]);
+  return {
+    time: Math.floor(k[0]/1000),
+    value: +k[5],
+    color: isUp ? "rgba(0,226,154,.35)" : "rgba(255,77,109,.35)",
+  };
+}
+
+function computeMA(candles, period) {
+  if (candles.length < period) return [];
+  const out = [];
+  let sum = 0;
+  for (let i = 0; i < candles.length; i++) {
+    sum += candles[i].close;
+    if (i >= period) sum -= candles[i - period].close;
+    if (i >= period - 1) out.push({ time: candles[i].time, value: sum / period });
+  }
+  return out;
+}
+
+/* ─── Seed + subscribe for one coin ─── */
+async function bootCoin(coin) {
+  if (!charts[coin]) charts[coin] = makeChart(coin);
+  const c = charts[coin];
+
+  const rows = await loadHistory(coin);
+  const candles = rows.map(klineToCandle);
+  const vols    = rows.map(klineToVolume);
+
+  c.candle.setData(candles);
+  c.volume.setData(state.overlays.vol ? vols : []);
+  c.ma20.setData(state.overlays.ma ? computeMA(candles, 20) : []);
+  c.ma50.setData(state.overlays.ma ? computeMA(candles, 50) : []);
+  c.chart.timeScale().fitContent();
+
+  // 24h change from first-last close
+  if (candles.length >= 2) {
+    const chgPct = ((candles.at(-1).close - candles[0].close) / candles[0].close) * 100;
+    const el = document.getElementById(`chg-${coin}`);
+    el.textContent = (chgPct >= 0 ? "+" : "") + chgPct.toFixed(2) + "%";
+    el.className = "val " + (chgPct >= 0 ? "up" : "down");
+  }
+
+  // Keep candles in a ring for MA recomputation on WS updates
+  c.candles = candles;
+
+  // Subscribe to live kline
+  openWS(coin);
+
+  // Apply markers (if available)
+  if (lastMarks && lastMarks[coin]) applyMarks(coin);
+}
+
+function openWS(coin) {
+  const c = charts[coin];
+  if (c.ws) { try { c.ws.close(); } catch(e){} }
+  const pair = SYM[coin].toLowerCase();
+  const url = `wss://stream.binance.com:9443/ws/${pair}@kline_${state.interval}`;
+  const ws = new WebSocket(url);
+  c.ws = ws;
+  const dot = document.getElementById(`live-${coin}`);
+
+  ws.onopen = () => { dot.classList.add("connected"); };
+  ws.onclose = () => {
+    dot.classList.remove("connected");
+    setTimeout(() => { if (charts[coin] && charts[coin].ws === ws) openWS(coin); }, 3000);
+  };
+  ws.onerror = () => { dot.classList.remove("connected"); };
+  ws.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      const k = msg.k;
+      if (!k) return;
+      const cd = {
+        time: Math.floor(k.t/1000),
+        open:+k.o, high:+k.h, low:+k.l, close:+k.c,
+      };
+      c.candle.update(cd);
+      if (state.overlays.vol) {
+        c.volume.update({
+          time: cd.time, value: +k.v,
+          color: cd.close >= cd.open ? "rgba(0,226,154,.35)" : "rgba(255,77,109,.35)",
+        });
+      }
+
+      // Price header
+      const pEl = document.getElementById(`price-${coin}`);
+      pEl.textContent = cd.close.toLocaleString(undefined, { maximumFractionDigits: 2 });
+      pEl.className = "chart-price " + (cd.close >= cd.open ? "up" : "down");
+
+      // Update MA on close of a bar
+      if (state.overlays.ma) {
+        if (c.candles.length && c.candles.at(-1).time === cd.time) {
+          c.candles[c.candles.length - 1] = cd;
+        } else {
+          c.candles.push(cd);
+          if (c.candles.length > 800) c.candles.shift();
+        }
+        const m20 = computeMA(c.candles, 20); if (m20.length) c.ma20.update(m20.at(-1));
+        const m50 = computeMA(c.candles, 50); if (m50.length) c.ma50.update(m50.at(-1));
+      }
+    } catch (e) { /* ignore */ }
+  };
+}
+
+function destroyAll() {
+  for (const coin of COINS) {
+    const c = charts[coin];
+    if (!c) continue;
+    try { c.ws && c.ws.close(); } catch(e){}
+    try { c.ro && c.ro.disconnect(); } catch(e){}
+    try { c.chart.remove(); } catch(e){}
+    delete charts[coin];
+  }
+}
+
+async function bootAll() {
+  clearError();
+  await Promise.all(COINS.map(bootCoin));
+}
+
+async function rebootInterval() {
+  destroyAll();
+  await bootAll();
+}
+
+/* ─── Toolbar wiring ─── */
+document.getElementById("interval-group").addEventListener("click", (e) => {
+  const b = e.target.closest(".tlb-btn"); if (!b) return;
+  document.querySelectorAll("#interval-group .tlb-btn").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  state.interval = b.dataset.int;
+  rebootInterval();
+});
+document.getElementById("overlay-group").addEventListener("click", (e) => {
+  const b = e.target.closest(".tlb-btn"); if (!b) return;
+  b.classList.toggle("active");
+  const ov = b.dataset.ov;
+  state.overlays[ov] = b.classList.contains("active");
+  if (ov === "marks") {
+    COINS.forEach(applyMarks);
+  } else {
+    rebootInterval();
+  }
+});
+
+/* ─── Bot marks (from /api/v3/bot_marks) ─── */
+let lastMarks = null;
+function buildMarkers(coinTrades) {
+  return (coinTrades || [])
+    .filter(t => t.ts && ["WIN","LOSS","FILLED","ORDER"].includes(t.type))
+    .sort((a,b) => a.ts - b.ts)
+    .map(t => {
+      const isWin  = t.type === "WIN";
+      const isLoss = t.type === "LOSS";
+      const isEntry = t.type === "FILLED" || t.type === "ORDER";
+      const color  = isWin ? "#00e29a" : isLoss ? "#ff4d6d" : "#60a5fa";
+      const position =
+        isEntry ? (t.dir === "UP" ? "belowBar" : "aboveBar")
+                : (isWin ? "aboveBar" : "belowBar");
+      const shape =
+        isEntry ? (t.dir === "UP" ? "arrowUp" : "arrowDown")
+                : (isWin ? "circle" : "square");
+      const amt = t.amount != null ? `$${Math.abs(t.amount).toFixed(2)}` : "";
+      const text =
+        isWin  ? `WIN ${t.dir} +${amt}`  :
+        isLoss ? `LOSS ${t.dir} -${amt}` :
+                 `${t.type} ${t.dir}@${t.price ?? t.ask}c`;
+      return { time: t.ts, position, color, shape, text };
+    });
+}
+function applyMarks(coin) {
+  const c = charts[coin];
+  if (!c) return;
+  if (!state.overlays.marks || !lastMarks) {
+    c.candle.setMarkers([]); return;
+  }
+  c.candle.setMarkers(buildMarkers(lastMarks[coin] || []));
+}
+async function pollMarks() {
+  try {
+    const r = await fetch("/api/v3/bot_marks");
+    const d = await r.json();
+    lastMarks = d.coins || {};
+    COINS.forEach(applyMarks);
+    renderMarkChips();
+  } catch (e) { /* ignore */ }
+}
+function renderMarkChips() {
+  const bar = document.getElementById("marks-bar");
+  bar.innerHTML = "";
+  let count = 0;
+  const all = [];
+  COINS.forEach(c => (lastMarks[c] || []).forEach(t => all.push({...t, coin: c})));
+  all.sort((a,b) => (b.ts || 0) - (a.ts || 0));
+  all.forEach(t => {
+    if (!["WIN","LOSS","FILLED","ORDER"].includes(t.type)) return;
+    count++;
+    const kind =
+      t.type === "WIN"    ? "win"  :
+      t.type === "LOSS"   ? "loss" : "order";
+    const chip = document.createElement("span");
+    chip.className = `mark-chip ${kind}`;
+    let body = "";
+    if      (t.type === "WIN")    body = `+$${(t.amount||0).toFixed(2)}`;
+    else if (t.type === "LOSS")   body = `-$${(t.amount||0).toFixed(2)}`;
+    else if (t.type === "FILLED") body = `@${t.price}c x${t.shares}`;
+    else                          body = `@${t.ask}c x${t.shares}`;
+    chip.innerHTML = `<strong>${t.t}</strong> <span>${t.coin}</span> <span>${t.dir||""}</span> <span>${t.type}</span> <span>${body}</span>`;
+    bar.appendChild(chip);
+  });
+  if (!count) {
+    bar.innerHTML = '<span class="mark-chip" style="color:var(--text-3)">no trades today</span>';
+  }
+}
+
+/* ─── Live header + per-coin poly ask stats ─── */
+async function pollSnapshot() {
+  try {
+    const r = await fetch("/api/v3/snapshot");
+    const d = await r.json();
+    document.getElementById("hdr-clock").textContent =
+      (d.server_time || "").slice(11) + " (Lima)";
+    const bot = d.bot || {};
+    const box = document.getElementById("hdr-bot");
+    box.classList.toggle("running", !!bot.running);
+    document.getElementById("bot-text").textContent = bot.running
+      ? `LIVE pid=${bot.pid}` : "OFFLINE";
+
+    const coins = (d.market && d.market.coins) || [];
+    coins.forEach(c => {
+      const upEl = document.getElementById(`stat-${c.coin}-up`);
+      const dnEl = document.getElementById(`stat-${c.coin}-dn`);
+      if (upEl) { upEl.textContent = c.up ? `${c.up.ask}c` : "—"; upEl.className = "val " + (c.up ? "up":""); }
+      if (dnEl) { dnEl.textContent = c.down ? `${c.down.ask}c` : "—"; dnEl.className = "val " + (c.down ? "down":""); }
+    });
+  } catch (e) { /* ignore */ }
+}
+
+/* ─── Boot ─── */
+(async () => {
+  if (!LC) return;
+  await bootAll();
+  pollSnapshot();
+  pollMarks();
+  setInterval(pollSnapshot, 3000);
+  setInterval(pollMarks, 15000);
+})();
+</script>
+</body>
+</html>
