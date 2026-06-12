@@ -1170,10 +1170,21 @@ class Predictor:
                 _es_ad = abs(dist_pct)
                 if _es_ad < float(os.getenv("EMP_SHRINK_D1", "0.0010")):
                     _es_anchor = float(os.getenv("EMP_SHRINK_WR1", "0.52"))
+                    _es_chop_d = float(os.getenv("EMP_CHOP_DELTA1", "0.0"))
                 elif _es_ad < float(os.getenv("EMP_SHRINK_D2", "0.0015")):
                     _es_anchor = float(os.getenv("EMP_SHRINK_WR2", "0.60"))
+                    _es_chop_d = float(os.getenv("EMP_CHOP_DELTA2", "0.06"))
                 else:
                     _es_anchor = float(os.getenv("EMP_SHRINK_WR3", "0.68"))
+                    _es_chop_d = float(os.getenv("EMP_CHOP_DELTA3", "0.0"))
+                # jun12 pm audit: mid-distance leads mean-revert in chop —
+                # CHOPPY 0.10-0.15% won 40% (n=10) vs TRENDING 77.8% (n=9);
+                # 3/3 chop mid-dist momentum entries reverted today. Lower the
+                # anchor in chop so these trade only when genuinely cheap
+                # (e.g. today's 53c chop win still trades; the 57-60c chop
+                # losers reprice out). EMP_CHOP_DELTA2=0 disables.
+                if _es_chop_d and is_chop:
+                    _es_anchor -= _es_chop_d
                 _es_prob = max(float(os.getenv("EMP_SHRINK_LO", "0.35")),
                                min(float(os.getenv("EMP_SHRINK_HI", "0.82")),
                                    _es_anchor + _es_alpha * (win_prob - 0.50)))

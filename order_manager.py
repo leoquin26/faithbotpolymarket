@@ -260,6 +260,13 @@ class OrderManager:
             self._trading_day = today
         # Scale stop-loss with bankroll: 10% of current bankroll, min 5
         dynamic_limit = max(config.DAILY_LOSS_LIMIT, self.get_live_bankroll() * 0.10)
+        # jun12 audit: stop on NET drawdown (losses - wins), not gross losses.
+        # Gross halted a -$12.67 net day at $24.33 "losses" — a $20 daily
+        # stop should mean "down $20 on the day". DAILY_STOP_MODE=gross
+        # restores the old behavior.
+        import os as _os_ds
+        if _os_ds.getenv("DAILY_STOP_MODE", "net").lower() == "net":
+            return (self.daily_losses - self.daily_wins) >= dynamic_limit
         return self.daily_losses >= dynamic_limit
 
     # ------------------------------------------------------------------
@@ -426,7 +433,11 @@ class OrderManager:
                 return False
 
         if self.is_daily_stop_loss_hit():
-            logger.warning(f"[STOP] Daily loss limit reached (${self.daily_losses:.2f})")
+            logger.warning(
+                f"[STOP] Daily stop hit: gross=-${self.daily_losses:.2f} "
+                f"wins=+${self.daily_wins:.2f} "
+                f"net=-${self.daily_losses - self.daily_wins:.2f}"
+            )
             return False
 
         # Correlation limit: max 3 same-direction bets per window
@@ -518,6 +529,26 @@ class OrderManager:
         import os as _os_sz
         _hard_floor = int(_os_sz.getenv('SIZE_SH_HARD_FLOOR', '3'))
         shares = max(_hard_floor, int(size_usd / limit_price))
+        # jun12 pm audit: ANY second same-direction fill in the same window is
+        # near-duplicated exposure (BTC/ETH/SOL move together intraday — the
+        # BTC<->ETH block above missed today's simultaneous ETH+SOL UP double
+        # loss). De-size instead of blocking. CORR_SECOND_MULT=1.0 disables.
+        try:
+            _cmult = float(_os_sz.getenv("CORR_SECOND_MULT", "0.5"))
+            if _cmult < 1.0:
+                for _oc, _op in list(self.positions.items()):
+                    if (_oc != coin and _op.get("side") == direction
+                            and _op.get("window_start") == window_start):
+                        _sh_old = shares
+                        shares = max(2, int(round(shares * _cmult)))
+                        logger.info(
+                            f"[CORR DE-SIZE] {coin} {direction}: {_oc} already "
+                            f"same-dir this window — {_sh_old} -> {shares} shares "
+                            f"(x{_cmult})"
+                        )
+                        break
+        except Exception:
+            pass
 
         order_type = OrderType.GTC if use_gtc else OrderType.FOK
         order_type_name = "GTC" if use_gtc else "FOK"
