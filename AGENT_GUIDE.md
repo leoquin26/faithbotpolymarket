@@ -20,6 +20,56 @@ market* over risk-blocking.
 ---
 
 ## 1. Environment & access
+
+### Connecting to the EC2 (do this first)
+The bot runs on an AWS EC2 instance. You connect over SSH with a private key.
+
+- Host (public IP): `54.162.216.46`
+- SSH user: `ubuntu`
+- Private key: `polymarket-key.pem` (PEM, ~1.7 KB). It is NOT in git (`*.pem` is
+  gitignored). The owner must place it on the machine you run from.
+- Bot directory on the server: `/home/ubuntu/v3-bot` (a.k.a. `~/v3-bot`)
+
+```bash
+# 1) Fix key permissions (SSH refuses world/group-readable keys)
+chmod 600 polymarket-key.pem
+
+# 2) Connect
+ssh -i polymarket-key.pem ubuntu@54.162.216.46
+
+# 3) Once in, go to the bot
+cd ~/v3-bot
+```
+
+Run a single remote command without an interactive shell (how an agent should drive it):
+```bash
+ssh -o ConnectTimeout=20 -i polymarket-key.pem ubuntu@54.162.216.46   "cd ~/v3-bot && git status -s && ps aux | grep run_bot | grep -v grep"
+```
+
+Optional `~/.ssh/config` shortcut (then just `ssh faithbot`):
+```
+Host faithbot
+    HostName 54.162.216.46
+    User ubuntu
+    IdentityFile /absolute/path/to/polymarket-key.pem
+    ServerAliveInterval 30
+```
+
+View the dashboard from your laptop via an SSH tunnel (dashboard binds to port 8080):
+```bash
+ssh -i polymarket-key.pem -L 8080:localhost:8080 ubuntu@54.162.216.46
+# then open http://localhost:8080
+```
+
+Connection troubleshooting:
+- `Permission denied (publickey)` -> wrong key, wrong user (must be `ubuntu`), or key
+  perms not 600. `UNPROTECTED PRIVATE KEY` warning -> run `chmod 600`.
+- `Connection timed out` -> the EC2 security group must allow inbound TCP 22 from your IP,
+  and the instance must be running. The public IP can change if the instance is
+  stopped/started (unless an Elastic IP is attached) — re-confirm it in the AWS console.
+- Copy a file to the box: `scp -i polymarket-key.pem localfile ubuntu@54.162.216.46:~/v3-bot/`
+
+
 - Host: AWS EC2 (Ubuntu), bot dir: `~/v3-bot`.
 - Two live processes:
   - `python3 -u run_bot.py`            -> the 15m live engine

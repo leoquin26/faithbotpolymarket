@@ -7,6 +7,17 @@ description: Review and improve the FaithBot Polymarket 15m Up/Down trading bot.
 
 Use this skill to analyze and improve the FaithBot crypto Up/Down trading bot.
 
+## Step 0 — Connect to the EC2
+The bot + all logs/data live on an AWS EC2 box (logs/data are gitignored, EC2-only).
+```bash
+chmod 600 polymarket-key.pem   # key is NOT in git; owner provides it
+ssh -i polymarket-key.pem ubuntu@54.162.216.46
+cd ~/v3-bot
+```
+Drive it non-interactively: `ssh -i polymarket-key.pem ubuntu@54.162.216.46 "cd ~/v3-bot && <cmd>"`.
+Dashboard tunnel: `ssh -i polymarket-key.pem -L 8080:localhost:8080 ubuntu@54.162.216.46` -> http://localhost:8080.
+See AGENT_GUIDE.md "Connecting to the EC2" for troubleshooting.
+
 ## Step 1 — Load context (read in this order)
 1. `README.md`
 2. `FAITHBOT_DOCUMENTATION.md` (architecture + module reference)
