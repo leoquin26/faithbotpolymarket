@@ -666,3 +666,236 @@ body {
 .toast.err { border-color: rgba(255,77,109,.4); color: var(--red); }
 
 .log-card .log-stream { max-height: 280px; }
+
+/* ─────────────────────────────────────────────────────────────
+   Dual-bot logs (separate 15M / 5M cards) + 5M summary card
+   ───────────────────────────────────────────────────────────── */
+.log-card .log-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.log-card .cat-tabs {
+  margin: 6px 0 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* Slightly shorter than the previous unified panel — two cards now
+   share the right column so each gets ~half the vertical real-estate. */
+.log-stream-dual { max-height: 460px !important; min-height: 280px; }
+
+/* Bot tag chip in the card header */
+.bot-tag {
+  display: inline-block;
+  padding: 1px 7px;
+  margin-left: 6px;
+  border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: .65rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  border: 1px solid var(--border-strong);
+  vertical-align: middle;
+}
+.bot-tag.b-15m { color: var(--blue);  background: var(--blue-dim);  border-color: rgba(96,165,250,.4); }
+.bot-tag.b-5m  { color: var(--amber); background: var(--amber-dim); border-color: rgba(255,179,71,.45); }
+
+/* Coloured top border so the two log cards are visually distinct */
+.log-card-15m { border-top: 2px solid rgba(96,165,250,.45); }
+.log-card-5m  { border-top: 2px solid rgba(255,179,71,.55); }
+
+/* Header-pill 5M label */
+.bot-status .bot-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  color: var(--text-2);
+}
+
+/* ── 5M Bot summary card ── */
+.card-5m { border-color: rgba(255,179,71,.35); }
+.card-5m .card-head h3 { display: inline-flex; align-items: center; gap: 8px; }
+.badge-5m {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: .65rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  background: var(--amber-dim);
+  color: var(--amber);
+  border: 1px solid rgba(255,179,71,.4);
+  text-transform: uppercase;
+}
+
+/* ── 15M Bot summary card (mirrors the 5M card with blue accents) ── */
+.card-15m-summary { border-color: rgba(96,165,250,.35); }
+.card-15m-summary .card-head h3 { display: inline-flex; align-items: center; gap: 8px; }
+.badge-15m {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: .65rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  background: var(--blue-dim);
+  color: var(--blue);
+  border: 1px solid rgba(96,165,250,.4);
+  text-transform: uppercase;
+}
+
+.m5-pnl {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 4px 10px;
+  border-bottom: 1px dashed var(--border);
+  margin-bottom: 8px;
+}
+.m5-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+.m5-value.green { color: var(--green); }
+.m5-value.red   { color: var(--red); }
+.m5-sub {
+  display: flex;
+  gap: 14px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.m5-sub > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-weight: 700;
+  font-size: 1rem;
+}
+.m5-sub small {
+  font-family: 'Inter', sans-serif;
+  font-size: .65rem;
+  color: var(--text-3);
+  letter-spacing: .08em;
+  margin-top: 2px;
+}
+.m5-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  font-size: .82rem;
+}
+.m5-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255,255,255,.03);
+}
+.m5-row span { color: var(--text-2); }
+.m5-row strong { color: var(--text-1); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+
+.m5-trades-head {
+  margin: 12px 0 6px;
+  font-size: .72rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  font-weight: 600;
+}
+.m5-trades {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: .78rem;
+}
+.m5-trade-row {
+  display: grid;
+  grid-template-columns: 50px 60px 36px 40px 1fr 70px;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 4px;
+}
+.m5-trade-row:hover { background: rgba(255,255,255,.03); }
+.m5-trade-row.t-WIN  { color: var(--green); }
+.m5-trade-row.t-LOSS { color: var(--red); }
+.m5-trade-row .m5-t      { color: var(--text-3); font-size: .72rem; }
+.m5-trade-row .m5-type   { font-weight: 700; font-size: .7rem; }
+.m5-trade-row .m5-coin   { font-weight: 700; }
+.m5-trade-row .m5-body   { color: var(--text-2); font-size: .76rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m5-trade-row .m5-amt    { text-align: right; font-weight: 700; }
+.empty.small { font-size: .8rem; padding: 8px 0; }
+
+/* ─────────────────────────────────────────────────────────────
+   Drag-and-drop layout (SortableJS)
+   ───────────────────────────────────────────────────────────── */
+.card-head {
+  position: relative;
+}
+.drag-grip {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 2px 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: .9rem;
+  letter-spacing: -1px;
+  color: var(--text-3);
+  cursor: grab;
+  border-radius: 4px;
+  transition: background .15s, color .15s;
+  user-select: none;
+  flex-shrink: 0;
+}
+.drag-grip:hover {
+  color: var(--text-1);
+  background: rgba(255,255,255,.06);
+}
+.drag-grip:active { cursor: grabbing; }
+
+/* Card head: drag-grip on the far left, h3 next, then any subtitle/tabs
+   pushed to the right. We override the original flex layout (which used
+   `justify-content: space-between`) so the grip can sit beside h3 without
+   the gap pushing them apart. */
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-start;
+}
+.card-head h3 { flex: 0 0 auto; }
+.card-head > .muted,
+.card-head .tabs {
+  margin-left: auto;
+}
+
+/* SortableJS state hooks */
+.sortable-ghost {
+  opacity: .35;
+  background: linear-gradient(135deg, rgba(0,226,154,.12), rgba(96,165,250,.12));
+  border-style: dashed;
+  border-color: rgba(0,226,154,.5);
+  box-shadow: none;
+}
+.sortable-chosen {
+  cursor: grabbing;
+  box-shadow: var(--shadow-strong);
+}
+.sortable-drag {
+  opacity: .92;
+  transform: rotate(.6deg);
+  border-color: rgba(0,226,154,.55);
+  box-shadow: 0 30px 60px -16px rgba(0,0,0,.65);
+}
+
+/* Make the column accept drops even when empty */
+.col {
+  min-height: 80px;
+}

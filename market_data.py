@@ -29,6 +29,8 @@ class MarketInfo:
     time_remaining: int  # minutes
     window_start: int
     timeframe: str = "15m"
+    slug: str = ""
+    strike_source: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -282,11 +284,47 @@ def get_market_info(coin: str, timeframe: str = "15m") -> Optional[MarketInfo]:
         if not current_price:
             return None
 
-        threshold = get_threshold_from_binance(coin, current_window, timeframe)
-        if not threshold:
-            threshold = current_price
+        slug = f"{coin.lower()}-updown-{timeframe}-{current_window}"
+        gamma_m = None
+        try:
+            import poly_resolution as _pr
+            gamma_m = _pr.fetch_market_by_slug(slug)
+            if gamma_m:
+                ws_gamma = _pr.event_start_unix(gamma_m)
+                if ws_gamma > 0:
+                    current_window = ws_gamma
+                    slug = _pr.market_slug(coin, current_window, timeframe)
+        except Exception as _ge:
+            logger.debug(f"[GAMMA] sync window: {_ge}")
 
-        distance = (current_price - threshold) / threshold
+        threshold = 0.0
+        strike_source = "binance"
+        try:
+            import poly_resolution as _pr
+            import chainlink_ws as _cl
+            threshold, strike_source = _pr.get_strike(coin, slug, current_window, timeframe)
+        except Exception as _se:
+            logger.debug(f"[STRIKE] {coin}: {_se}")
+        if threshold <= 0:
+            threshold = get_threshold_from_binance(coin, current_window, timeframe) or current_price
+            strike_source = "binance_kline"
+
+        spot = current_price
+        try:
+            import chainlink_ws as _cl
+            cl_px = _cl.get_price(coin)
+            if not cl_px or cl_px <= 0:
+                try:
+                    import chainlink_onchain as _cl_oc2
+                    cl_px = _cl_oc2.get_price(coin)
+                except Exception:
+                    pass
+            if cl_px and cl_px > 0:
+                spot = cl_px
+        except Exception:
+            pass
+
+        distance = (spot - threshold) / threshold if threshold > 0 else 0.0
 
         end_date = market.get("endDate", "")
         try:
@@ -297,12 +335,12 @@ def get_market_info(coin: str, timeframe: str = "15m") -> Optional[MarketInfo]:
         except Exception:
             end_time = current_window + window_seconds
 
-        time_remaining = (end_time - current_time) // 60
+        time_remaining = max(0, end_time - current_time)  # seconds (was wrongly // 60)
 
         return MarketInfo(
             coin=coin,
             threshold_price=threshold,
-            current_crypto_price=current_price,
+            current_crypto_price=spot,
             distance_percent=distance,
             up_poly_price=float(prices[0]),
             down_poly_price=float(prices[1]),
@@ -311,6 +349,8 @@ def get_market_info(coin: str, timeframe: str = "15m") -> Optional[MarketInfo]:
             time_remaining=time_remaining,
             window_start=current_window,
             timeframe=timeframe,
+            slug=slug,
+            strike_source=strike_source,
         )
     except Exception as e:
         logger.debug(f"get_market_info error for {coin}: {e}")

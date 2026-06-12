@@ -39,8 +39,10 @@ from log_parser import (  # noqa: E402
     get_last_log_ts,
     get_last_file_mtime,
 )
+import log_parser_5m as parser_5m  # noqa: E402
 import clob_adapter as clob  # noqa: E402
 import state_reader as state  # noqa: E402
+import subprocess  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,10 +56,47 @@ app = Flask(
     static_folder=str(HERE / "static"),
 )
 
-# Start the log tailer as soon as the app imports.
+# Start both log tailers as soon as the app imports.
 parser_start()
+parser_5m.start()
+
+# ── [AUDIT MAY27] register the audit telemetry panels ──
+try:
+    import audit_panels as _audit_panels
+    _audit_panels.register(app)
+    logger.info("[audit_panels] registered at /audit + /api/v3/audit/*")
+except Exception as _e_ap:
+    logger.warning(f"[audit_panels] register failed: {_e_ap}")
 
 COINS = ["BTC", "ETH", "SOL", "XRP"]
+
+
+def _bot_5m_status() -> dict:
+    """Check if run_brain_5m.py is running, return PID + uptime.
+
+    Uses an anchored regex so transient bash -c lines that mention
+    `run_brain_5m.py` (e.g. during a restart) don't get matched first.
+    """
+    try:
+        out = subprocess.check_output(
+            ["pgrep", "-af", r"^python3.*run_brain_5m\.py$"],
+            text=True,
+        ).strip()
+        if not out:
+            return {"running": False, "pid": None, "uptime_sec": 0}
+        first = out.splitlines()[0].split(maxsplit=1)
+        pid = int(first[0])
+        try:
+            etimes = subprocess.check_output(
+                ["ps", "-o", "etimes=", "-p", str(pid)],
+                text=True,
+            ).strip()
+            uptime = int(etimes)
+        except Exception:
+            uptime = 0
+        return {"running": True, "pid": pid, "uptime_sec": uptime}
+    except subprocess.CalledProcessError:
+        return {"running": False, "pid": None, "uptime_sec": 0}
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -355,16 +394,94 @@ def api_exhaust_stats():
 def api_logs():
     limit = int(request.args.get("limit", 200))
     category = request.args.get("category")  # signal|trade|exhaust|risk|error|warn|info|approve
+    bot = (request.args.get("bot") or "15m").lower()  # 15m | 5m | both
     if category == "all":
         category = None
-    events = get_events(limit=limit, category=category)
-    return jsonify({"events": events, "count": len(events)})
+
+    if bot == "15m":
+        events = [{**e, "bot": "15m"} for e in get_events(limit=limit, category=category)]
+    elif bot == "5m":
+        events = parser_5m.get_events(limit=limit, category=category)
+    else:  # both — interleave by ts (newest first)
+        a = [{**e, "bot": "15m"} for e in get_events(limit=limit, category=category)]
+        b = parser_5m.get_events(limit=limit, category=category)
+        merged = a + b
+        merged.sort(key=lambda e: e.get("ts", 0), reverse=True)
+        events = merged[:limit]
+
+    return jsonify({"events": events, "count": len(events), "bot": bot})
 
 
 @app.route("/api/v3/logs/raw")
 def api_logs_raw():
     n = int(request.args.get("n", 200))
     return jsonify({"lines": state.tail_log(n=n)})
+
+
+# ─────────────────────────────────────────────────────────────────
+# 5m bot — dedicated endpoints
+# ─────────────────────────────────────────────────────────────────
+@app.route("/api/v3/5m/snapshot")
+def api_5m_snapshot():
+    """Lightweight snapshot for the 5m bot panel.
+    Returns status, today's stats, recent trades, recent events, recent signals.
+    Polled at the same cadence as the 15m snapshot.
+    """
+    try:
+        status = _bot_5m_status()
+        stats = parser_5m.get_today_stats()
+        trades = parser_5m.get_today_trades()[-25:]
+        events = parser_5m.get_events(limit=120)
+        signals = parser_5m.get_signals(limit=40)
+        heartbeat = {
+            "last_event_ts": parser_5m.get_last_log_ts(),
+            "log_mtime": parser_5m.get_last_file_mtime(),
+            "now": time.time(),
+        }
+        env = state.read_env()
+        cfg_5m = {
+            "enabled": str(env.get("M5_ENABLED", "0")).lower() in ("1", "true", "yes"),
+            "coins": env.get("M5_COINS", ""),
+            "test_size_usd": env.get("M5_TEST_SIZE_USD", ""),
+            "daily_loss_cap": env.get("M5_DAILY_LOSS_CAP", ""),
+            "trade_hours": f"{env.get('M5_TRADE_HOURS_START','?')}-{env.get('M5_TRADE_HOURS_END','?')}",
+            "min_edge": env.get("M5_MIN_EDGE", ""),
+            "min_trend": env.get("M5_MIN_TREND", ""),
+            "entry_max": env.get("M5_ENTRY_MAX", ""),
+        }
+        loss_today = -stats["pnl_usd"] if stats["pnl_usd"] < 0 else 0
+        cap = float(cfg_5m["daily_loss_cap"] or 0)
+        cap_remaining = max(0.0, cap - loss_today) if cap > 0 else None
+        return jsonify({
+            "bot": status,
+            "stats": stats,
+            "trades": trades,
+            "events": events,
+            "signals": signals,
+            "heartbeat": heartbeat,
+            "config": cfg_5m,
+            "loss_today": round(loss_today, 2),
+            "cap_remaining": round(cap_remaining, 2) if cap_remaining is not None else None,
+        })
+    except Exception as e:
+        logger.exception("5m snapshot failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v3/5m/logs")
+def api_5m_logs():
+    limit = int(request.args.get("limit", 200))
+    category = request.args.get("category")
+    if category == "all":
+        category = None
+    events = parser_5m.get_events(limit=limit, category=category)
+    return jsonify({"events": events, "count": len(events)})
+
+
+@app.route("/api/v3/5m/scanner")
+def api_5m_scanner():
+    limit = int(request.args.get("limit", 80))
+    return jsonify({"signals": parser_5m.get_signals(limit=limit)})
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -414,13 +531,19 @@ def api_snapshot():
     try:
         status = state.bot_status()
         now = datetime.now()
-        hour = now.hour
-        if 9 <= hour < 12:
-            session = "morning"
-        elif 12 <= hour < 17:
-            session = "afternoon"
-        else:
-            session = "off-hours"
+        try:
+            import session_calibration as _sess
+            sg = _sess.get_session()
+            session = sg.name.lower().replace("_", "-")
+        except Exception:
+            now = datetime.now()
+            hour = now.hour
+            if 9 <= hour < 12:
+                session = "morning"
+            elif 12 <= hour < 17:
+                session = "afternoon"
+            else:
+                session = "off-hours"
 
         stats = get_today_stats()
         env = state.read_env()
@@ -429,9 +552,18 @@ def api_snapshot():
         daily_loss_limit = float(env.get("DAILY_LOSS_LIMIT", 0) or 0)
         use_dsl = str(env.get("USE_DAILY_STOP_LOSS", "")).lower() in ("1", "true", "yes")
 
-        recent = get_today_trades()[-25:]
+        recent_15m = get_today_trades()[-25:]
+        try:
+            recent_5m = parser_5m.get_today_trades()[-25:]
+        except Exception:
+            recent_5m = []
+        recent = sorted(
+            recent_15m + recent_5m,
+            key=lambda x: float(x.get("ts", 0)),
+            reverse=True,
+        )[:25]
         signals = get_signals(limit=40)
-        events = get_events(limit=120)
+        events = [{**e, "bot": "15m"} for e in get_events(limit=120)]
 
         # Market grid
         coin_rows = {c: {
@@ -470,6 +602,26 @@ def api_snapshot():
         pnl = stats["pnl_usd"]
         loss_today = -pnl if pnl < 0 else 0
 
+        # apr28 combined P&L: dashboard hero card sums 15M + 5M
+        # so the user sees one bottom line. Per-bot breakdowns
+        # are still exposed for the individual bot cards.
+        try:
+            stats_5m = parser_5m.get_today_stats()
+        except Exception as _e:
+            logger.debug(f"[snapshot] 5m stats failed: {_e}")
+            stats_5m = {"pnl_usd": 0, "wins": 0, "losses": 0, "winrate": 0}
+        pnl_5m = float(stats_5m.get("pnl_usd", 0) or 0)
+        wins_5m = int(stats_5m.get("wins", 0) or 0)
+        losses_5m = int(stats_5m.get("losses", 0) or 0)
+        total_pnl = round(pnl + pnl_5m, 2)
+        total_wins = int(stats["wins"]) + wins_5m
+        total_losses = int(stats["losses"]) + losses_5m
+        total_settled = total_wins + total_losses
+        total_winrate = (
+            round(total_wins * 100.0 / total_settled, 1)
+            if total_settled else 0.0
+        )
+
         # Heartbeats — prove the pipeline is live even when the bot is
         # quiet (scan-only, no signals / fills).
         heartbeat = {
@@ -488,6 +640,24 @@ def api_snapshot():
                 "wins": stats["wins"],
                 "losses": stats["losses"],
                 "winrate": stats["winrate"],
+            },
+            "pnl_total": {
+                "today": total_pnl,
+                "wins": total_wins,
+                "losses": total_losses,
+                "winrate": total_winrate,
+                "bot_15m": {
+                    "pnl": round(pnl, 2),
+                    "wins": stats["wins"],
+                    "losses": stats["losses"],
+                    "winrate": stats["winrate"],
+                },
+                "bot_5m": {
+                    "pnl": round(pnl_5m, 2),
+                    "wins": wins_5m,
+                    "losses": losses_5m,
+                    "winrate": stats_5m.get("winrate", 0),
+                },
             },
             "risk": {
                 "bankroll": bankroll,
@@ -517,6 +687,14 @@ def api_snapshot():
             "trades_today": recent,
             "signals": signals,
             "events": events,
+            "bot_5m": {
+                "status": _bot_5m_status(),
+                "stats": stats_5m,
+                "heartbeat": {
+                    "last_event_ts": parser_5m.get_last_log_ts(),
+                    "log_mtime": parser_5m.get_last_file_mtime(),
+                },
+            },
         })
     except Exception as e:
         logger.exception("snapshot failed")

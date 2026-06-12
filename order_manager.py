@@ -9,6 +9,11 @@ V2 changes:
 
 import os
 import time
+import threading
+try:
+    import polymarket_ws as _pws
+except Exception:
+    _pws = None
 import json
 from pathlib import Path
 from typing import Optional, Dict, Set
@@ -26,44 +31,28 @@ from py_clob_client_v2.clob_types import (
 )
 from py_clob_client_v2.order_builder.constants import BUY
 
-# ── analytics hook apr23 ──
-try:
-    from analytics import event_logger as _alog
-except Exception:
-    _alog = None
-
 
 class OrderManager:
     """Manages order placement, GTC tracking, and window dedup."""
 
-    def __init__(self, traded_file: Optional[str] = None,
-                 force_size_usd: Optional[float] = None,
-                 daily_loss_cap: Optional[float] = None,
-                 bot_name: str = "15m"):
-        """Apr 28 5m support: per-bot config so 5m runner can share this class
-        with the 15m bot but keep separate state.
+    _place_lock = threading.Lock()
 
-          - traded_file: override the default data/traded_windows.json so 5m
-            bot persists separately and never overwrites 15m's lock state.
-          - force_size_usd: when set, every bet uses exactly this $ amount
-            instead of Kelly-tier sizing (used for 5m test week at ~$3).
-          - daily_loss_cap: per-bot daily loss cap; 5m bot uses smaller cap
-            ($5) than the 15m main config so a bad 5m day can't blow up 15m.
-          - bot_name: tag for log lines so [15M]/[5M] are distinguishable.
-        """
-        if traded_file is not None:
-            self._TRADED_FILE = Path(traded_file)
-        self.force_size_usd = force_size_usd
-        self.daily_loss_cap_override = daily_loss_cap
-        self.bot_name = bot_name
+    def __init__(self):
         self.client = self._init_client()
         self.active_gtc: Dict[str, dict] = {}
         self.traded_windows: Dict[str, str] = self._load_traded_windows()
-        self.positions: Dict[str, dict] = {}
+        self.positions: Dict[str, dict] = self._load_positions()
         self.daily_losses = 0.0
         self.daily_wins = 0.0
         self.daily_trades = 0
         self._trading_day = ""
+        self._load_daily_pnl()
+        if self.positions:
+            coins = ", ".join(
+                f"{c} {self.positions[c].get('side', '?')}@{self.positions[c].get('entry_price', 0)*100:.0f}c"
+                for c in self.positions
+            )
+            logger.info(f"[POSITIONS] Restored {len(self.positions)} open: {coins}")
 
 
     # ------------------------------------------------------------------
@@ -73,12 +62,35 @@ class OrderManager:
     _cached_balance = 0.0
 
     def get_live_bankroll(self) -> float:
-        """Static bankroll from .env BANKROLL_BALANCE. Zero API calls.
+        import time as _t
+        now = _t.time()
+        if now - OrderManager._last_balance_check < 300:
+            return OrderManager._cached_balance if OrderManager._cached_balance > 0 else config.BANKROLL_BALANCE
 
-        When wallet balance changes meaningfully, update .env and restart.
-        Having zero inline API calls here guarantees no interference with
-        the CLOB client used for order placement.
-        """
+        try:
+            http = self._get_direct_http()
+            addr = config.FUNDER_ADDRESS
+            resp = http.get(
+                f"https://clob.polymarket.com/balance?address={addr}",
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                balance = float(data) if isinstance(data, (int, float, str)) else 0.0
+                if balance <= 0 and isinstance(data, dict):
+                    balance = float(data.get("balance", 0) or data.get("amount", 0) or 0)
+                if balance > 0:
+                    old = config.BANKROLL_BALANCE
+                    config.BANKROLL_BALANCE = balance
+                    OrderManager._cached_balance = balance
+                    OrderManager._last_balance_check = now
+                    if abs(balance - old) > 0.50:
+                        logger.info(f"[BANKROLL] Updated: ${old:.2f} -> ${balance:.2f}")
+                    return balance
+        except Exception as e:
+            logger.debug(f"[BANKROLL] Balance fetch error: {e}")
+
+        OrderManager._last_balance_check = now
         return config.BANKROLL_BALANCE
 
         # ------------------------------------------------------------------
@@ -102,6 +114,11 @@ class OrderManager:
         else:
             client.set_api_creds(client.create_or_derive_api_creds())
             logger.warning("No API creds in .env — derived new ones")
+        try:
+            v = client.get_version()
+            logger.info(f"[CLOB] backend version={v}")
+        except Exception as e:
+            logger.warning(f"[CLOB] get_version failed: {e}")
         return client
 
     # ------------------------------------------------------------------
@@ -122,6 +139,86 @@ class OrderManager:
         self._TRADED_FILE.parent.mkdir(exist_ok=True)
         with open(self._TRADED_FILE, "w") as f:
             json.dump(self.traded_windows, f)
+
+    _POSITIONS_FILE = Path("data/open_positions.json")
+    _DAILY_PNL_FILE = Path("data/daily_pnl.json")
+
+    def _load_positions(self) -> Dict[str, dict]:
+        try:
+            if self._POSITIONS_FILE.exists():
+                with open(self._POSITIONS_FILE) as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return {k: v for k, v in data.items() if isinstance(v, dict)}
+        except Exception as e:
+            logger.warning(f"[POSITIONS] load failed: {e}")
+        return {}
+
+    def _save_positions(self):
+        try:
+            self._POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._POSITIONS_FILE, "w") as f:
+                json.dump(self.positions, f, indent=2)
+        except Exception as e:
+            logger.warning(f"[POSITIONS] save failed: {e}")
+
+    def set_position(self, coin: str, pos: dict):
+        self.positions[coin] = pos
+        self._save_positions()
+
+    def remove_position(self, coin: str) -> Optional[dict]:
+        pos = self.positions.pop(coin, None)
+        self._save_positions()
+        return pos
+
+    def _load_daily_pnl(self):
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        self._trading_day = today
+        try:
+            if self._DAILY_PNL_FILE.exists():
+                with open(self._DAILY_PNL_FILE) as f:
+                    data = json.load(f)
+                if data.get("date") == today:
+                    self.daily_losses = float(data.get("losses", 0))
+                    self.daily_wins = float(data.get("wins", 0))
+                    self.daily_trades = int(data.get("trades", 0))
+                    logger.info(
+                        f"[DAILY PNL] Restored {today}: "
+                        f"losses=${self.daily_losses:.2f} wins=${self.daily_wins:.2f} trades={self.daily_trades}"
+                    )
+                    return
+        except Exception as e:
+            logger.warning(f"[DAILY PNL] load failed: {e}")
+        self.daily_losses = 0.0
+        self.daily_wins = 0.0
+        self.daily_trades = 0
+
+    def _save_daily_pnl(self):
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        self._trading_day = today
+        try:
+            self._DAILY_PNL_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._DAILY_PNL_FILE, "w") as f:
+                json.dump({
+                    "date": today,
+                    "losses": round(self.daily_losses, 4),
+                    "wins": round(self.daily_wins, 4),
+                    "trades": self.daily_trades,
+                }, f, indent=2)
+        except Exception as e:
+            logger.warning(f"[DAILY PNL] save failed: {e}")
+
+    def record_win_pnl(self, pnl: float):
+        self.daily_wins += pnl
+        self.daily_trades += 1
+        self._save_daily_pnl()
+
+    def record_loss_pnl(self, cost: float):
+        self.daily_losses += cost
+        self.daily_trades += 1
+        self._save_daily_pnl()
 
     def is_window_traded(self, coin: str, window_start: int) -> bool:
         key = f"{coin}-{window_start}"
@@ -161,7 +258,9 @@ class OrderManager:
             self.daily_wins = 0.0
             self.daily_trades = 0
             self._trading_day = today
-        return self.daily_losses >= config.DAILY_LOSS_LIMIT
+        # Scale stop-loss with bankroll: 10% of current bankroll, min 5
+        dynamic_limit = max(config.DAILY_LOSS_LIMIT, self.get_live_bankroll() * 0.10)
+        return self.daily_losses >= dynamic_limit
 
     # ------------------------------------------------------------------
     # Order-book helpers
@@ -204,7 +303,22 @@ class OrderManager:
         return cls._direct_http
 
     def get_clob_book(self, token_id: str) -> dict:
-        """Single orderbook call via direct HTTP (bypasses Tor proxy)."""
+        """WS cache first, REST fallback."""
+        if _pws is not None:
+            try:
+                _ws_book = _pws.get_book(token_id)
+                if _ws_book and _ws_book.get("ask"):
+                    _ws_age = time.time() - _ws_book.get("ts", 0)
+                    if _ws_age <= 12.0:
+                        return {
+                            "ask": _ws_book.get("ask"),
+                            "bid": _ws_book.get("bid"),
+                            "mid": _ws_book.get("mid"),
+                            "depth_ratio": _ws_book.get("depth_ratio", 0.0),
+                            "source": "ws",
+                        }
+            except Exception:
+                pass
         result = {"ask": None, "bid": None, "mid": None, "depth_ratio": 0.0}
         try:
             http = self._get_direct_http()
@@ -286,6 +400,16 @@ class OrderManager:
     # ------------------------------------------------------------------
     # MAIN: place_bet
     # ------------------------------------------------------------------
+    def _strike_fields(self, pred, window_start: int) -> dict:
+        mi = pred.market_info if pred and hasattr(pred, "market_info") else None
+        return {
+            "window_start": window_start,
+            "strike": mi.threshold_price if mi else 0,
+            "slug": getattr(mi, "slug", "") if mi else "",
+            "strike_source": getattr(mi, "strike_source", "") if mi else "",
+            "timeframe": getattr(mi, "timeframe", "15m") if mi else "15m",
+        }
+
     def place_bet(self, pred: Prediction) -> bool:
         coin = pred.coin
         direction = pred.direction
@@ -314,6 +438,25 @@ class OrderManager:
             )
             return False
 
+        # jun10 fix: correlated double-up cap (BTC<->ETH).
+        # Block a 2nd same-direction bet in the same window when a highly-
+        # correlated coin already has an open position in that direction.
+        # BTC & ETH move together; 2x same-side exposure loses together when
+        # the macro tape reverses late-window (root cause of 15:33/15:34 dbl loss).
+        _corr_pairs = {("BTC", "ETH"), ("ETH", "BTC")}
+        for _other_coin, _pos in list(self.positions.items()):
+            if _other_coin == coin:
+                continue
+            if (coin, _other_coin) not in _corr_pairs:
+                continue
+            if _pos.get("side") == direction and _pos.get("window_start") == window_start:
+                logger.info(
+                    f"[CORR DOUBLE-UP] {coin} {direction}: already have "
+                    f"{_other_coin} {direction} open same window "
+                    f"(window_start={window_start}) — blocking 2x correlated exposure"
+                )
+                return False
+
         if config.DRY_RUN:
             logger.info(f"[DRY] Would bet {coin} {direction} @ ~{pred.poly_price*100:.0f}c | Edge {pred.edge*100:.1f}%")
             print(f"\n  [DRY RUN] {coin} {direction} | Edge: {pred.edge*100:.1f}% | Conf: {pred.confidence}")
@@ -339,10 +482,11 @@ class OrderManager:
         # Recalculate edge against real CLOB ask if available
         actual_entry = real_ask if real_ask else poly_price
         real_edge = pred.probability - actual_entry
-        if real_edge < 0.02:
+        _min_edge = float(getattr(config, "MIN_EDGE", 0.02))
+        if real_edge < _min_edge:
             logger.info(
                 f"[EDGE GATE] {coin}: real_edge={real_edge*100:.1f}% "
-                f"(post={pred.probability*100:.0f}% - ask={actual_entry*100:.0f}c) < 2%"
+                f"(post={pred.probability*100:.0f}% - ask={actual_entry*100:.0f}c) < {_min_edge*100:.0f}%"
             )
             return False
 
@@ -367,37 +511,48 @@ class OrderManager:
             logger.debug(f"[SKIP] {coin}: no real asks, <3m left")
             return False
 
-        # Apr 28 5m support: optional fixed-size override (test mode).
-        if self.force_size_usd is not None:
-            size_usd = self.force_size_usd
-            logger.info(f"[{self.bot_name.upper()} FIXED SIZE] using ${size_usd:.2f} (test mode, Kelly bypassed)")
-        else:
-            size_usd = self._calc_size(pred)
-        # Fix C: min 2 shares (was 5) so Kelly-tier sizing isn't overridden
-        # by a floor that costs $3.40 at 68c. 5-share floor was fine when
-        # entries were 30-50c; with 65-68c entries it blows Kelly budget.
-        shares = max(2, int(size_usd / limit_price))
-        actual_cost = shares * limit_price
+        size_usd = self._calc_size(pred)
+        # jun12: honor session/distance sizing for small bets. Old max(5,..)
+        # floor forced every reduced morning bet back to 5sh, negating the
+        # risk-down. Floor is now env-tunable (SIZE_SH_HARD_FLOOR, default 3).
+        import os as _os_sz
+        _hard_floor = int(_os_sz.getenv('SIZE_SH_HARD_FLOOR', '3'))
+        shares = max(_hard_floor, int(size_usd / limit_price))
 
         order_type = OrderType.GTC if use_gtc else OrderType.FOK
         order_type_name = "GTC" if use_gtc else "FOK"
 
         logger.info(
             f"[ORDER] {coin} {direction} | {order_type_name} @ {limit_price*100:.0f}c | "
-            f"{shares} shares (cost=${actual_cost:.2f}, sized=${size_usd:.2f}) | "
-            f"Edge {real_edge*100:.1f}%"
+            f"{shares} shares (${size_usd:.2f}) | Edge {real_edge*100:.1f}%"
         )
 
         try:
-            options = PartialCreateOrderOptions(tick_size="0.01", neg_risk=False)
+            from py_clob_client_v2.exceptions import PolyApiException
+            options = PartialCreateOrderOptions(tick_size="0.01")
             order_args = OrderArgs(
                 price=limit_price,
                 size=shares,
                 side=BUY,
                 token_id=token_id,
             )
-            order = self.client.create_order(order_args, options)
-            result = self.client.post_order(order, order_type)
+            result = None
+            with self._place_lock:
+                for attempt in range(3):
+                    try:
+                        if attempt > 0:
+                            self.client._ClobClient__cached_version = None
+                            self.client.get_version()
+                        result = self.client.create_and_post_order(
+                            order_args, options, order_type
+                        )
+                        break
+                    except PolyApiException as e:
+                        if "order_version_mismatch" not in str(e).lower() or attempt >= 2:
+                            raise
+                        logger.warning(
+                            f"[CLOB] {coin} order_version_mismatch — retry {attempt + 2}/3"
+                        )
 
             matched, avg_price, order_id = self._parse_result(result)
 
@@ -409,8 +564,8 @@ class OrderManager:
                     "price": limit_price,
                     "shares": shares,
                     "placed_at": time.time(),
-                    "window_start": window_start,
                     "prediction": pred,
+                    **self._strike_fields(pred, window_start),
                 }
                 self.mark_window_traded(coin, window_start, direction)
                 logger.info(f"[GTC] Pending: {coin} {direction} @ {limit_price*100:.0f}c")
@@ -419,7 +574,7 @@ class OrderManager:
 
             if matched > 0:
                 cost = matched * avg_price
-                self.positions[coin] = {
+                self.set_position(coin, {
                     "coin": coin,
                     "side": direction,
                     "entry_price": avg_price,
@@ -427,7 +582,10 @@ class OrderManager:
                     "token_id": token_id,
                     "window_start": window_start,
                     "strike": pred.market_info.threshold_price if pred and hasattr(pred, 'market_info') else 0,
-                }
+                    "slug": getattr(pred.market_info, "slug", "") if pred and hasattr(pred, 'market_info') else "",
+                    "strike_source": getattr(pred.market_info, "strike_source", "") if pred and hasattr(pred, 'market_info') else "",
+                    "timeframe": getattr(pred.market_info, "timeframe", "15m") if pred and hasattr(pred, 'market_info') else "15m",
+                })
                 self.daily_trades += 1
                 self.mark_window_traded(coin, window_start, direction)
                 logger.info(f"[FILLED] {coin} {direction} | {int(matched)} shares @ {avg_price*100:.0f}c = ${cost:.2f}")
@@ -440,7 +598,41 @@ class OrderManager:
                 return False
 
         except Exception as e:
-            import traceback as _tb; logger.error(f"[ERROR] Order failed for {coin}: {type(e).__name__}: {e}"); logger.error(f"[ERROR TRACE] {_tb.format_exc()}")
+            err_l = str(e).lower()
+            if ("fully filled" in err_l or "killed" in err_l) and not use_gtc and time_left >= 120:
+                logger.info(f"[FOK->GTC] {coin}: FOK killed, posting GTC @ {limit_price*100:.0f}c")
+                try:
+                    gtc_result = self.client.create_and_post_order(
+                        order_args, PartialCreateOrderOptions(tick_size="0.01"), OrderType.GTC
+                    )
+                    gtc_m, gtc_p, gtc_oid = self._parse_result(gtc_result)
+                    if gtc_m > 0:
+                        cost = gtc_m * gtc_p
+                        self.set_position(coin, {
+                            "coin": coin, "side": direction, "entry_price": gtc_p,
+                            "shares": int(gtc_m), "token_id": token_id,
+                            "window_start": window_start,
+                            "strike": pred.market_info.threshold_price if pred and hasattr(pred, 'market_info') else 0,
+                            "slug": getattr(pred.market_info, "slug", "") if pred and hasattr(pred, 'market_info') else "",
+                            "strike_source": getattr(pred.market_info, "strike_source", "") if pred and hasattr(pred, 'market_info') else "",
+                            "timeframe": getattr(pred.market_info, "timeframe", "15m") if pred and hasattr(pred, 'market_info') else "15m",
+                        })
+                        self.daily_trades += 1
+                        self.mark_window_traded(coin, window_start, direction)
+                        logger.info(f"[FILLED] {coin} {direction} | {int(gtc_m)} shares @ {gtc_p*100:.0f}c (GTC)")
+                        return True
+                    self.active_gtc[gtc_oid or "unknown"] = {
+                        "coin": coin, "direction": direction, "token_id": token_id,
+                        "price": limit_price, "shares": shares, "placed_at": time.time(),
+                        "prediction": pred,
+                        **self._strike_fields(pred, window_start),
+                    }
+                    self.mark_window_traded(coin, window_start, direction)
+                    logger.info(f"[GTC] Pending after FOK miss: {coin} @ {limit_price*100:.0f}c")
+                    return True
+                except Exception as gtc_e:
+                    logger.warning(f"[FOK->GTC] {coin} fallback failed: {gtc_e}")
+            logger.error(f"[ERROR] Order failed for {coin}: {e}")
             tg.notify_error(f"Order failed: {coin} {direction}\n{str(e)[:100]}")
             print(f"\n  [ERROR] {coin} order failed: {e}")
             return False
@@ -463,14 +655,18 @@ class OrderManager:
 
                 if s == "FILLED" or filled_qty > 0:
                     fill_price = float(status.get("average_price", info["price"]))
-                    self.positions[info["coin"]] = {
+                    self.set_position(info["coin"], {
                         "coin": info["coin"],
                         "side": info["direction"],
                         "entry_price": fill_price,
                         "shares": int(filled_qty) if filled_qty > 0 else info["shares"],
                         "token_id": info["token_id"],
-                        "window_start": info["window_start"],
-                    }
+                        "window_start": info.get("window_start", 0),
+                        "strike": info.get("strike", 0),
+                        "slug": info.get("slug", ""),
+                        "strike_source": info.get("strike_source", ""),
+                        "timeframe": info.get("timeframe", "15m"),
+                    })
                     self.daily_trades += 1
                     cost = filled_qty * fill_price
                     logger.info(f"[GTC FILLED] {info['coin']} {info['direction']} @ {fill_price*100:.0f}c ({filled_qty} shares, ${cost:.2f})")
@@ -552,15 +748,82 @@ class OrderManager:
     # ------------------------------------------------------------------
     def _calc_size(self, pred: Prediction) -> float:
         import os
-        use_kelly = os.getenv("USE_KELLY_SIZING", "false").lower() == "true"
         bankroll = self.get_live_bankroll()
+
+        # jun10 sizing fix: model probability has ~0 correlation with
+        # realized WR (slope -0.003), so Kelly-on-prob bet BIGGEST on the
+        # trades it was most wrong about (losers 7.3sh > winners 6.6sh,
+        # net -$5 vs +$25 backtest). The ONLY feature that predicts wins is
+        # |distance from strike|: sweet spot [0.10,0.20]% wins 74% vs 55%.
+        # Size by distance tier instead. Env: SIZING_MODE=distance|kelly|flat.
+        _mode = os.getenv("SIZING_MODE", "distance").lower()
+        if _mode == "distance":
+            _adist = abs(getattr(pred, "dist_pct", 0.0))  # fraction (0.0012 = 0.12%)
+            _sweet_lo = float(os.getenv("SIZE_SWEET_LO", "0.0010"))
+            _sweet_hi = float(os.getenv("SIZE_SWEET_HI", "0.0020"))
+            _ok_lo = float(os.getenv("SIZE_OK_LO", "0.0007"))
+            _ok_hi = float(os.getenv("SIZE_OK_HI", "0.0025"))
+            _sh_sweet = float(os.getenv("SIZE_SH_SWEET", "9"))
+            _sh_ok = float(os.getenv("SIZE_SH_OK", "6"))
+            _sh_tail = float(os.getenv("SIZE_SH_TAIL", "4"))
+            if _sweet_lo <= _adist < _sweet_hi:
+                _sh = _sh_sweet
+            elif _ok_lo <= _adist < _ok_hi:
+                _sh = _sh_ok
+            else:
+                _sh = _sh_tail
+            # jun11 session-weighted sizing: trade smoothly ALL day (no
+            # blocking) but lean size into when the bot actually wins.
+            # 90-trade data by ET session: PRE_OPEN 43%, US_OPEN 54%,
+            # POST_OPEN 57%, MIDDAY 57%, AFTERNOON 75%. Moderate multipliers
+            # lift PnL +$22 -> +$36 with same capital. All env-tunable.
+            if os.getenv("SESSION_SIZING_ON", "on").lower() not in ("off", "0", "false"):
+                try:
+                    import session_calibration as _sc
+                    _sname = _sc.get_session().name
+                except Exception:
+                    _sname = "AFTERNOON"
+                _smult = {
+                    "PRE_OPEN": float(os.getenv("SIZE_MULT_PRE_OPEN", "0.5")),
+                    "US_OPEN_CHOP": float(os.getenv("SIZE_MULT_US_OPEN", "0.5")),
+                    "POST_OPEN": float(os.getenv("SIZE_MULT_POST_OPEN", "0.7")),
+                    "MIDDAY": float(os.getenv("SIZE_MULT_MIDDAY", "0.85")),
+                    "AFTERNOON": float(os.getenv("SIZE_MULT_AFTERNOON", "1.4")),
+                    "OFF": float(os.getenv("SIZE_MULT_OFF", "0.5")),
+                    "WEEKEND": float(os.getenv("SIZE_MULT_OFF", "0.5")),
+                }.get(_sname, 1.0)
+                _sh_pre = _sh
+                _sh = max(float(os.getenv("SIZE_SH_FLOOR", "3")), round(_sh * _smult))
+                logger.debug(
+                    f"[SIZE-SESSION] {pred.coin}: {_sname} x{_smult:.2f} -> "
+                    f"{_sh_pre:.0f}sh becomes {_sh:.0f}sh"
+                )
+            _entry = pred.entry_price if pred.entry_price > 0.05 else (pred.poly_price or 0.55)
+            if _entry <= 0.01 or _entry >= 0.99:
+                _entry = 0.55
+            _size = _sh * _entry
+            # bankroll safety cap
+            _cap = bankroll * float(os.getenv("SIZE_MAX_PCT", "0.05"))
+            if _cap > 0:
+                _size = min(_size, _cap)
+            _size = max(float(os.getenv("SIZE_MIN_USD", "1.50")), _size)
+            logger.debug(
+                f"[SIZE-DIST] {pred.coin}: |dist|={_adist*100:.3f}% -> {_sh:.0f}sh "
+                f"@ {_entry*100:.0f}c = ${_size:.2f} (bankroll=${bankroll:.0f})"
+            )
+            return _size
+
+        use_kelly = (_mode == "kelly") or os.getenv("USE_KELLY_SIZING", "false").lower() == "true"
 
         if use_kelly and pred.edge > 0:
             kelly_fraction = float(os.getenv("KELLY_FRACTION", "0.25"))
             kelly_min_bet = float(os.getenv("KELLY_MIN_BET", "2.0"))
-            kelly_max_bet = float(os.getenv("KELLY_MAX_BET", "0"))
-            # Option B default: 10% bankroll cap (configurable via KELLY_MAX_PCT)
-            kelly_max_pct = float(os.getenv("KELLY_MAX_PCT", "0.10"))
+            kelly_max_bet_env = float(os.getenv("KELLY_MAX_BET", "0"))
+            pct_cap = bankroll * float(os.getenv("KELLY_MAX_PCT", "0.05"))
+            if kelly_max_bet_env > 0:
+                kelly_max_bet = min(kelly_max_bet_env, pct_cap) if pct_cap > 0 else kelly_max_bet_env
+            else:
+                kelly_max_bet = pct_cap if pct_cap > 0 else bankroll * 0.05
 
             entry_price = pred.entry_price if pred.entry_price > 0.05 else pred.poly_price
             if entry_price <= 0.01 or entry_price >= 0.99:
@@ -578,68 +841,14 @@ class OrderManager:
                 return kelly_min_bet
 
             fractional = full_kelly * kelly_fraction
-            # Pct-of-bankroll ceiling (primary risk control)
-            capped = min(fractional, kelly_max_pct)
+            capped = min(fractional, 0.10)
             size = bankroll * capped
-            # Apply min floor, then optional absolute dollar ceiling
-            size = max(kelly_min_bet, size)
-            if kelly_max_bet > 0:
-                size = min(size, kelly_max_bet)
+            size = max(kelly_min_bet, min(size, kelly_max_bet))
 
-            # Fix B: scale down at expensive entries (R:R asymmetry protection).
-            # At 67c entry, one loss = -67c but one win = +33c -- 2x asymmetry.
-            # Cut size so a single high-entry loss doesn't erase 2-3 wins.
-            if entry_price <= 0.55:
-                tier_mult = 1.00
-                tier_name = "A"
-            elif entry_price <= 0.60:
-                tier_mult = 0.75
-                tier_name = "B"
-            elif entry_price <= 0.65:
-                tier_mult = 0.50
-                tier_name = "C"
-            else:
-                tier_mult = 0.33
-                tier_name = "D"
-            # ── Fix B apr23: daily-loss Kelly tier cap ──
-            # After losing $5+ today in PM session, never ramp tier above C (0.50)
-            # — even if recent wins say 'go big'. Prevents the win-streak → fat-loss
-            # pattern that erased today's PM recovery.
-            try:
-                _dl = float(getattr(self, 'daily_losses', 0.0))
-            except Exception:
-                _dl = 0.0
-            if _dl >= 5.0 and tier_mult > 0.50:
-                logger.info(
-                    f"[KELLY DAILY DAMP] daily_losses=${_dl:.2f} >= $5 — "
-                    f"capping tier {tier_name}({tier_mult:.2f}) -> C(0.50)"
-                )
-                tier_mult = 0.50
-                tier_name = "C*"
-            pre_tier = size
-            size = max(kelly_min_bet, size * tier_mult)
-
-            # Fix F (apr21): if exhaustion detector DAMPEN'd this pred,
-            # cut size in half so DAMPEN actually reduces risk (not just
-            # probability). Prior to this, DAMPEN was a no-op when Kelly
-            # was pct-capped because the cap dominated.
-            dampen_tag = ""
-            if getattr(pred, "_dampened", False):
-                # Fix apr27 (no double penalty): if EXHAUST OVERRIDE fired,
-                # skip the 50% size cut. Override already self-selected A-tier.
-                if getattr(pred, "_override_full_size", False):
-                    dampen_tag = " dampen=skipped(override)"
-                else:
-                    pre_dampen = size
-                    size = max(kelly_min_bet, size * 0.5)
-                    dampen_tag = f" dampen=50%(pre=${pre_dampen:.2f})"
-
-            logger.info(
+            logger.debug(
                 f"[KELLY] {pred.coin}: f*={full_kelly:.3f} frac={fractional:.3f} "
-                f"pct_cap={kelly_max_pct:.2%} tier={tier_name}({tier_mult:.0%}){dampen_tag} "
-                f"size=${size:.2f} (pre=${pre_tier:.2f}) "
-                f"(p={p:.0%} b={b:.2f} edge={pred.edge:.1%} "
-                f"entry={entry_price:.2f} bankroll=${bankroll:.2f})"
+                f"size=${size:.2f} (p={p:.0%} b={b:.2f} edge={pred.edge:.1%} "
+                f"entry={entry_price:.2f} bankroll=${bankroll:.0f})"
             )
             return size
 
@@ -655,64 +864,22 @@ class OrderManager:
 
     @staticmethod
     def _parse_result(result) -> tuple:
-        """Fix H (apr22): only return matched>0 when the API response
-        explicitly confirms a match. Previously we read takingAmount
-        (the signed REQUEST size) and reported phantom fills when an
-        order was submitted but never settled on-chain.
-        """
         matched = 0.0
         avg_price = 0.0
         order_id = None
 
-        # Only these status values mean the order actually matched.
-        SUCCESS_STATUSES = {"matched", "FILLED", "CONFIRMED", "confirmed"}
-
         if isinstance(result, dict):
             order_id = result.get("orderID") or result.get("id")
-            status = (result.get("status") or "").strip()
-            success_flag = bool(result.get("success", False))
-
-            # Prefer explicitly-matched fields over signed-request fields.
-            matched_amount = float(
-                result.get("matchedAmount", 0)
-                or result.get("matched_amount", 0)
-                or 0
-            )
-            taking_amount = float(result.get("takingAmount", 0) or 0)
+            matched = float(result.get("takingAmount", 0) or result.get("matchedAmount", 0) or 0)
             making = float(result.get("makingAmount", 0) or 0)
-
-            if status in SUCCESS_STATUSES or success_flag:
-                # Real fill. Prefer matchedAmount if the server reports
-                # it, otherwise fall back to takingAmount (which for a
-                # matched FOK equals the fill).
-                matched = matched_amount if matched_amount > 0 else taking_amount
-                if matched > 0 and making > 0:
-                    avg_price = making / matched
-                else:
-                    avg_price = float(result.get("price", 0) or 0)
+            status = result.get("status", "")
+            if status == "matched" and matched > 0 and making > 0:
+                avg_price = making / matched
             else:
-                # Not actually filled. Force MISS path so we do not
-                # create a phantom position.
-                import logging as _log
-                _log.getLogger(__name__).warning(
-                    f"[PARSE] Order not matched: status={status!r} "
-                    f"matched_amt={matched_amount} taking={taking_amount} "
-                    f"making={making} success={success_flag} order_id={order_id}"
-                )
-                matched = 0.0
-                avg_price = 0.0
+                avg_price = float(result.get("price", 0) or 0)
         elif hasattr(result, "orderID"):
-            # Object response path (legacy): trust it as before, but log.
             order_id = result.orderID
-            status = getattr(result, "status", "") or ""
-            if status in SUCCESS_STATUSES:
-                matched = float(
-                    getattr(result, "matchedAmount", 0)
-                    or getattr(result, "takingAmount", 0)
-                    or 0
-                )
-                avg_price = float(getattr(result, "price", 0) or 0)
-            else:
-                matched = 0.0
+            matched = float(getattr(result, "takingAmount", 0) or getattr(result, "matchedAmount", 0) or 0)
+            avg_price = float(getattr(result, "price", 0) or 0)
 
         return matched, avg_price, order_id

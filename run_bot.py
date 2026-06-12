@@ -1,12 +1,12 @@
 """
-V8 Bot ÔÇö Empirical Trend Trader with Atomic Dedup.
+V8 Bot — Empirical Trend Trader with Atomic Dedup.
 
 Key changes from V5/run_bot:
 - FIX 1: Single atomic traded_this_window lock (threading.Lock + set)
          prevents machine-gunning multiple orders per coin per window.
 - FIX 5: Edge computed HERE with fresh CLOB ask at order time,
          not in predictor with stale ask from scan time.
-- Predictor is stateless ÔÇö only returns direction + win_probability.
+- Predictor is stateless — only returns direction + win_probability.
 """
 
 import os
@@ -26,35 +26,91 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from loguru import logger
-# ÔöÇÔöÇ analytics hook apr23 ÔöÇÔöÇ
-try:
-    from analytics import event_logger as _alog
-    from analytics import resolver as _aresolver
-except Exception as _e:  # analytics is optional
-    _alog = None
-    _aresolver = None
 import telegram_notifier as tg
 
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import config
-from morning_predictor import MorningPredictor
 import morning_strategy as morn
+import session_calibration as sess_cal
 import binance_ws
+try:
+    import chainlink_ws as _chainlink_ws
+    _CHAINLINK_OK = True
+    try:
+        import chainlink_onchain as _chainlink_onchain
+    except Exception:
+        _chainlink_onchain = None
+except Exception:
+    _chainlink_ws = None
+    _CHAINLINK_OK = False
+    _chainlink_onchain = None
+try:
+    import bybit_ws
+    _BYBIT_OK = True
+except Exception:
+    bybit_ws = None
+    _BYBIT_OK = False
+
+
+def _multi_price(coin: str):
+    """Chainlink first for dist vs strike (Polymarket resolves on Chainlink)."""
+    if _CHAINLINK_OK and _chainlink_ws is not None:
+        try:
+            cl = _chainlink_ws.get_price(coin)
+            if cl and cl > 0:
+                return cl
+        except Exception:
+            pass
+    # On-chain Chainlink fallback (same oracle family as settlement) before
+    # dropping to Binance/Bybit, so spot stays Chainlink when RTDS is down.
+    if _chainlink_onchain is not None:
+        try:
+            co = _chainlink_onchain.get_price(coin)
+            if co and co > 0:
+                return co
+        except Exception:
+            pass
+    p = binance_ws.get_price(coin)
+    if p and p > 0:
+        return p
+    if _BYBIT_OK and bybit_ws is not None:
+        try:
+            p2 = bybit_ws.get_price(coin)
+            if p2 and p2 > 0:
+                return p2
+        except Exception:
+            pass
+    return None
+
+
+def _chainlink_tick_history(coin: str, seconds: int = 300):
+    """(ts, price) ticks on the Chainlink feed for ROC. On-chain history
+    (RTDS keeps only latest), so ROC matches the level's feed."""
+    if _chainlink_onchain is not None:
+        try:
+            return _chainlink_onchain.tick_history(coin, seconds)
+        except Exception:
+            return None
+    return None
+
 from market_data import get_market_info, MarketInfo
 from predictor import Predictor, Prediction
-import exhaustion_detector as exhaust
 from order_manager import OrderManager
 
 logger.remove()
-# Single stderr sink ÔÇö the bot is run as `python3 run_bot.py >> v3_bot.log 2>&1`,
-# so stderr is captured to v3_bot.log exactly once. Adding a loguru FileHandler
-# on top of that caused EVERY line to be written twice (fix applied 2026-04-22).
 logger.add(
     sys.stderr,
+    level=config.LOG_LEVEL,
+    format="<green>{time:HH:mm:ss}</green> | <level>{level:<8}</level> | <level>{message}</level>",
+)
+logger.add(
+    "v3_bot.log",
     level="DEBUG",
     format="{time:HH:mm:ss} | {level:<8} | {message}",
+    rotation="10 MB",
+    retention="3 days",
 )
 
 # Persistent daily log (survives restarts, never loses data)
@@ -63,7 +119,7 @@ _log_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "logs")
 _os.makedirs(_log_dir, exist_ok=True)
 logger.add(
     _os.path.join(_log_dir, "bot_{time:YYYY-MM-DD}.log"),
-    rotation="50 MB",
+    rotation="00:00",
     retention="30 days",
     level="DEBUG",
     format="{time:HH:mm:ss} | {level:<8} | {message}",
@@ -74,25 +130,43 @@ import functools
 print = functools.partial(print, flush=True)
 
 # ======================================================================
-# FIX 1: Atomic one-trade-per-window lock  (persistent across restarts)
+# FIX 1: Atomic one-trade-per-window lock
 # ======================================================================
-import json as _json_lock
 _trade_lock = threading.Lock()
 _traded_set: set = set()
-_TRADED_SET_PATH = "/home/ubuntu/v3-bot/traded_windows.json"
+# Direction confirmation + book-aligned pick (accuracy)
+_CONFIRM_SCANS = int(os.getenv("ACCURACY_CONFIRM_SCANS", "3"))
+_last_trade_session: str | None = None
+_dir_confirm: dict = {}
 
 
-def _persist_traded_set_unlocked():
-    """Write the current _traded_set to disk. Caller holds _trade_lock."""
-    try:
-        with open(_TRADED_SET_PATH, "w") as f:
-            _json_lock.dump(sorted(_traded_set), f)
-    except Exception as e:
-        try:
-            import logging as _lg
-            _lg.getLogger(__name__).warning(f"[TRADED SET] persist failed: {e}")
-        except Exception:
-            pass
+def record_direction_confirm(coin: str, window_start: int, direction: str):
+    hist = _dir_confirm.setdefault(coin, [])
+    hist.append((window_start, direction))
+    if len(hist) > 12:
+        _dir_confirm[coin] = hist[-12:]
+
+
+def is_direction_confirmed(coin: str, window_start: int, direction: str) -> bool:
+    recent = [d for ws, d in _dir_confirm.get(coin, []) if ws == window_start]
+    if len(recent) < _CONFIRM_SCANS:
+        return False
+    tail = recent[-_CONFIRM_SCANS:]
+    return all(d == direction for d in tail)
+
+
+def _book_agrees(pred: Prediction) -> bool:
+    bu = getattr(pred, "book_up_mid", 0.5) or 0.5
+    if pred.direction == "UP":
+        return bu >= 0.52
+    return bu <= 0.48
+
+
+def pick_best_prediction(candidates: list) -> Prediction:
+    agreed = [p for p in candidates if _book_agrees(p)]
+    pool = agreed if agreed else candidates
+    return max(pool, key=lambda p: (p.edge, p.probability, -p.entry_price))
+
 
 
 def is_window_locked(coin: str, window_start: int) -> bool:
@@ -101,6 +175,119 @@ def is_window_locked(coin: str, window_start: int) -> bool:
         return key in _traded_set
 
 
+
+
+def _resolve_one_position(pos: dict, binance_ws_module) -> tuple:
+    """Return (resolved: bool, won: bool|None, resolve_src: str, detail: str)."""
+    coin = pos.get("coin", "?")
+    side = pos.get("side", "?")
+    ws = pos.get("window_start", 0)
+    tf = pos.get("timeframe", "15m")
+    try:
+        import poly_resolution as _pr
+        slug = _pr.market_slug(coin, ws, tf)
+        for attempt in range(3):
+            gamma = _pr.resolve_position(coin, side, ws, tf)
+            if gamma and gamma.get("winner"):
+                winner = gamma["winner"]
+                won = side == winner
+                return True, won, f"gamma:{slug}", f"gamma winner={winner}"
+            if attempt < 2:
+                import time as _t
+                _t.sleep(1.5)
+        market = _pr.fetch_market_by_slug(slug)
+        if market and not market.get("closed"):
+            return False, None, "pending", f"gamma market not closed yet ({slug})"
+    except Exception as _ge:
+        logger.debug(f"[RESOLVE] gamma failed {coin}: {_ge}")
+
+    try:
+        final_price = None
+        src = "unknown"
+        try:
+            import chainlink_ws as _cl
+            final_price = _cl.get_price(coin)
+            if final_price:
+                src = "chainlink_live"
+        except Exception:
+            pass
+        if not final_price:
+            final_price = binance_ws_module.get_price(coin)
+            src = "binance_live"
+        strike = pos.get("strike", 0)
+        if strike > 0 and final_price and final_price > 0:
+            went_up = final_price >= strike
+            won = (side == "UP" and went_up) or (side == "DOWN" and not went_up)
+            detail = (
+                f"{src} price=${final_price:,.2f} strike=${strike:,.2f} "
+                f"({'>=' if went_up else '<'})"
+            )
+            logger.warning(
+                f"[RESOLVE FALLBACK] {coin} {side} | {detail} — gamma unavailable, "
+                f"using live price (may disagree with Polymarket)"
+            )
+            return True, won, src, detail
+    except Exception as _e:
+        logger.debug(f"[RESOLVE] fallback failed {coin}: {_e}")
+
+    return False, None, "unknown", "no gamma outcome and no price fallback"
+
+
+def resolve_expired_positions(orders, predictor, binance_ws_module):
+    """Resolve open positions — Polymarket Gamma first; never guess LOSS if unresolved."""
+    current_time = int(time.time())
+    for coin in list(orders.positions.keys()):
+        pos = orders.positions.get(coin)
+        if not pos:
+            continue
+        ws = pos.get("window_start", 0)
+        if ws <= 0 or current_time <= ws + 900 + 60:
+            continue
+
+        resolved, won, resolve_src, detail = _resolve_one_position(pos, binance_ws_module)
+        if not resolved or won is None:
+            logger.info(
+                f"[RESOLVE PENDING] {coin} {pos.get('side', '?')} | {detail} — keeping position"
+            )
+            continue
+
+        pos = orders.remove_position(coin)
+        if not pos:
+            continue
+
+        side = pos.get("side", "?")
+        entry = pos.get("entry_price", 0)
+        shares = pos.get("shares", 0)
+        cost = entry * shares
+        payout = shares * 1.0
+
+        logger.info(
+            f"[RESOLVE] {coin} {side} | {resolve_src} {detail} | "
+            f"{'WIN' if won else 'LOSS'}"
+        )
+
+        if won:
+            pnl = payout - cost
+            orders.record_win_pnl(pnl)
+            logger.info(
+                f"[WIN] {coin} {side} | +${pnl:.2f} | Entry: {entry*100:.0f}c x{shares} | "
+                f"Payout: ${payout:.2f}"
+            )
+            predictor.record_outcome(True)
+            tg.notify_result(coin, side, True, cost, payout)
+        else:
+            orders.record_loss_pnl(cost)
+            logger.info(
+                f"[LOSS] {coin} {side} | -${cost:.2f} | Entry: {entry*100:.0f}c x{shares} | "
+                f"day_loss=${orders.daily_losses:.2f}"
+            )
+            predictor.record_outcome(False)
+            tg.notify_result(coin, side, False, cost)
+            if orders.is_daily_stop_loss_hit():
+                logger.warning(
+                    f"[DAILY STOP] Loss limit hit (${orders.daily_losses:.2f}) — no new trades today"
+                )
+
 def lock_window(coin: str, window_start: int) -> bool:
     """Try to lock this coin+window for trading. Returns True if we got the lock."""
     key = f"{coin}_{window_start}"
@@ -108,7 +295,6 @@ def lock_window(coin: str, window_start: int) -> bool:
         if key in _traded_set:
             return False
         _traded_set.add(key)
-        _persist_traded_set_unlocked()
         return True
 
 
@@ -117,7 +303,6 @@ def unlock_window(coin: str, window_start: int):
     key = f"{coin}_{window_start}"
     with _trade_lock:
         _traded_set.discard(key)
-        _persist_traded_set_unlocked()
 
 
 def cleanup_old_windows():
@@ -127,145 +312,17 @@ def cleanup_old_windows():
         stale = [k for k in _traded_set if int(k.split("_")[-1]) < now - 1200]
         for k in stale:
             _traded_set.discard(k)
-        if stale:
-            _persist_traded_set_unlocked()
-
-
-def bootstrap_traded_set():
-    """
-    Rehydrate _traded_set on startup from three sources (any is enough):
-      1. /home/ubuntu/v3-bot/traded_windows.json (previous process's state)
-      2. CLOB open positions (proxyWallet positions with slug containing a ts)
-      3. Today's [FILLED] log lines
-
-    Only windows within the last 20 minutes (still live) are loaded.
-    """
-    import logging as _lg, re, os as _os
-    _log = _lg.getLogger(__name__)
-    now = int(time.time())
-    cutoff = now - 1200  # 20 min
-
-    loaded = set()
-
-    # ---- 1. disk ----
-    try:
-        import os as _os
-        if _os.path.exists(_TRADED_SET_PATH):
-            with open(_TRADED_SET_PATH) as f:
-                keys = _json_lock.load(f) or []
-            for k in keys:
-                try:
-                    ts = int(str(k).split("_")[-1])
-                except Exception:
-                    continue
-                if ts >= cutoff:
-                    loaded.add(k)
-    except Exception as e:
-        _log.warning(f"[TRADED SET] disk load failed: {e}")
-
-    # ---- 2. CLOB open positions ----
-    try:
-        import requests as _rq
-        addr = _os.getenv("POLYMARKET_FUNDER_ADDRESS") or _os.getenv("POLY_ADDRESS") or ""
-        if addr:
-            r = _rq.get(
-                f"https://data-api.polymarket.com/positions?user={addr}&sizeThreshold=0.1",
-                timeout=10,
-            )
-            if r.ok:
-                for p in r.json() or []:
-                    slug = (p.get("slug") or "")
-                    m = re.search(r"-15m-(\d{10})$", slug)
-                    if not m:
-                        continue
-                    ws = int(m.group(1))
-                    if ws < cutoff:
-                        continue
-                    title = (p.get("title") or "").lower()
-                    coin = None
-                    for c, needles in {
-                        "BTC": ("bitcoin", "btc"),
-                        "ETH": ("ethereum", "eth"),
-                        "SOL": ("solana", "sol"),
-                        "XRP": ("xrp",),
-                    }.items():
-                        if any(n in title for n in needles):
-                            coin = c
-                            break
-                    if coin:
-                        loaded.add(f"{coin}_{ws}")
-    except Exception as e:
-        _log.warning(f"[TRADED SET] CLOB load failed: {e}")
-
-    # ---- 3. today's fill log ----
-    try:
-        import os as _os
-        logpath = "/home/ubuntu/v3-bot/v3_bot.log"
-        if _os.path.exists(logpath):
-            today_prefix = datetime.now().strftime("%Y-%m-%d")
-            # Only scan last ~500 KB; fills happen rarely
-            with open(logpath, "rb") as f:
-                f.seek(0, 2)
-                size = f.tell()
-                f.seek(max(0, size - 500_000))
-                tail = f.read().decode(errors="ignore")
-            # Parse lines like: "14:52:15 | INFO | [FILLED] BTC DOWN | ..."
-            # We need the epoch; use today + HH:MM:SS
-            for line in tail.splitlines():
-                m = re.match(r"^(\d{2}):(\d{2}):(\d{2}).*\[FILLED\]\s+(BTC|ETH|SOL|XRP)\s+(UP|DOWN)", line)
-                if not m:
-                    continue
-                hh, mm, ss, coin, _dir = m.groups()
-                try:
-                    from datetime import datetime as _dt, timezone as _tz
-                    today = _dt.now().date()
-                    lt = _dt(today.year, today.month, today.day, int(hh), int(mm), int(ss))
-                    # bot logs in server local time; approximate ws from this
-                    epoch = int(lt.timestamp())
-                except Exception:
-                    continue
-                # round down to the 15-min window
-                ws = epoch - (epoch % 900)
-                if ws >= cutoff:
-                    loaded.add(f"{coin}_{ws}")
-    except Exception as e:
-        _log.warning(f"[TRADED SET] log load failed: {e}")
-
-    with _trade_lock:
-        _traded_set.update(loaded)
-        _persist_traded_set_unlocked()
-
-    if loaded:
-        _log.info(
-            f"[TRADED SET] bootstrapped {len(loaded)} active window locks: "
-            + ", ".join(sorted(loaded))
-        )
-    else:
-        _log.info("[TRADED SET] bootstrap found no live windows to restore")
 
 
 # ======================================================================
 # Trading hour filter
 # ======================================================================
 def is_good_trading_hour() -> tuple:
-    """Returns (can_trade, message). Uses Lima time (UTC-5) directly."""
+    """Returns (can_trade, message). ET session calendar via session_calibration."""
     if not config.SKIP_NIGHT_HOURS:
         return True, ""
-    from zoneinfo import ZoneInfo
-    lima = ZoneInfo("America/Lima")
-    now_lima = datetime.now(lima)
-    lima_hour = now_lima.hour
-    weekday = now_lima.weekday()  # Mon=0, Fri=4, Sat=5, Sun=6
-    # Unified weekend mode: Fri 17:00+ -> Sat/Sun all day -> Mon <09:00 all blocked
-    _is_sat_sun      = weekday >= 5
-    _is_fri_evening  = (weekday == 4) and (lima_hour >= 17)
-    _is_mon_premarket = (weekday == 0) and (lima_hour < 9)
-    if _is_sat_sun or _is_fri_evening or _is_mon_premarket:
-        stamp = now_lima.strftime("%a %H:%M")
-        return False, f"[WEEKEND MODE] {stamp} Lima ÔÇö blocked until Monday 09:00 Lima"
-    if lima_hour < 9 or lima_hour >= 17:
-        return False, f"[OFF HOURS] {lima_hour}:{now_lima.minute:02d} Lima ÔÇö trade window 9am-5pm Lima (scanning active)"
-    return True, ""
+    import session_calibration as _sess
+    return _sess.can_trade_now()
 
 
 def find_arbitrage(info: MarketInfo, up_ask: float = 0, down_ask: float = 0) -> dict | None:
@@ -300,18 +357,28 @@ def main():
         sys.exit(1)
 
     binance_ws.start()
+    if (_CHAINLINK_OK and _chainlink_ws is not None
+            and os.getenv("CHAINLINK_WS_ENABLED", "1") == "1"):
+        try:
+            _chainlink_ws.start()
+        except Exception as _cle:
+            logger.warning(f"[CHAINLINK-WS] start failed: {_cle}")
+    if _chainlink_onchain is not None:
+        try:
+            _chainlink_onchain.start()
+            logger.info("[CHAINLINK-ONCHAIN] on-chain fallback poller started")
+        except Exception as _coe:
+            logger.warning(f"[CHAINLINK-ONCHAIN] start failed: {_coe}")
+    if _BYBIT_OK and bybit_ws is not None:
+        try:
+            bybit_ws.start()
+            logger.info("[BYBIT-WS] started (failover)")
+        except Exception as e:
+            logger.warning(f"[BYBIT-WS] start failed: {e}")
     time.sleep(2)
-    # ── [AUDIT MAY27 v7b] start Polymarket WebSocket sidecar ──
-    try:
-        import polymarket_ws as _pws
-        if _pws.is_connected() or os.getenv("POLYMARKET_WS_ENABLED", "on").lower() == "on":
-            _pws.get_singleton()  # lazy-starts the thread
-            logger.info("[POLY-WS] singleton started")
-    except Exception as _e_pws:
-        logger.warning(f"[POLY-WS] start failed: {_e_pws}")
 
     print("=" * 60)
-    print("  V11 BOT ÔÇö Black-Scholes Binary Engine")
+    print("  V12 BOT — Black-Scholes + Morning Strategy")
     print("=" * 60)
     print(f"  Mode:         {'DRY RUN' if config.DRY_RUN else 'LIVE TRADING'}")
     print(f"  Coins:        {', '.join(config.SYMBOLS.keys())}")
@@ -329,35 +396,6 @@ def main():
     print("=" * 60)
 
     predictor = Predictor()
-    morning_pred = MorningPredictor(predictor)
-    bootstrap_traded_set()
-    # ── [AUDIT MAY27 X1] cross-asset feature aggregator (shadow log only) ──
-    try:
-        from core.cross_asset_features import (
-            CrossAssetState as _XASState,
-            format_log_line as _xas_log,
-        )
-        _xas_state = _XASState()
-    except Exception as _e_xas_init:
-        logger.warning(f"[XASSET] init failed: {_e_xas_init}")
-        _xas_state = None
-        _xas_log = None
-
-    # [AUDIT MAY27 v4] wire xas_state into the predictor so the calibrator
-    # can read cross-asset breadth at signal-time.
-    try:
-        if _xas_state is not None and hasattr(predictor, "set_xas_state"):
-            predictor.set_xas_state(_xas_state)
-            logger.info("[XASSET] wired into predictor calibrator")
-    except Exception as _e_xas_wire:
-        logger.warning(f"[XASSET] wire failed: {_e_xas_wire}")
-    # ÔöÇÔöÇ analytics hook apr23 ÔöÇÔöÇ kick off resolver daemon
-    try:
-        if _aresolver is not None:
-            _aresolver.start_background()
-            logger.info('[ANALYTICS] resolver thread started')
-    except Exception as _e:
-        logger.debug(f'[ANALYTICS] resolver start failed: {_e}')
     orders = OrderManager()
     executor = ThreadPoolExecutor(max_workers=4)
 
@@ -365,13 +403,9 @@ def main():
     tg.notify_startup()
 
     scan_count = 0
-    _consec_losses = 0
-    _morning_consec_losses = 0
-    # Fix A apr23: track last EXHAUST=ABSTAIN per coin (monotonic epoch)
-    _last_exhaust_abstain: dict = {}
-    _morning_total_losses = 0.0
-    MORNING_LOSS_CAP = 12.0  # hard stop for morning; afternoon unaffected
     arb_enabled = os.getenv("ARB_ENABLED", "true").lower() == "true"
+
+    resolve_expired_positions(orders, predictor, binance_ws)
 
     try:
         while True:
@@ -379,6 +413,8 @@ def main():
             now = datetime.now(timezone.utc).strftime("%H:%M:%S")
 
             can_trade, night_reason = is_good_trading_hour()
+            if orders.is_daily_stop_loss_hit():
+                can_trade = False
             if not can_trade and scan_count % 200 == 1:
                 print(f"[{now}] {night_reason}")
 
@@ -388,36 +424,22 @@ def main():
 
             if scan_count % 100 == 0:
                 cleanup_old_windows()
-                _ws = int(time.time()) % 900
-                if _ws < 90:
-                    if _consec_losses >= 2:
-                        logger.info(f"[LOSS BREAKER RESET] New window -- resuming afternoon")
-                        _consec_losses = 0
-                    if _morning_consec_losses >= 2:
-                        logger.info(f"[MORNING BREAKER RESET] New window -- resuming morning")
-                        _morning_consec_losses = 0
-
-            # Fix A: raw cross-coin orderbook snapshot (populated inside scan_coin)
-            # Keyed by coin, value = (up_ask, down_ask). Used to feed the
-            # exhaustion detector's breadth signal with ALL coins, not just
-            # those that survived filters.
-            _raw_coin_info = {}
 
             def scan_coin(coin: str):
                 info = get_market_info(coin)
                 if not info:
-                    return None, None, None
+                    return None, None
 
                 if info.time_remaining < config.MIN_TIME_REMAINING:
-                    return info, None, None
+                    return info, None
 
                 # FIX 1: Check atomic lock BEFORE calling predictor
                 if is_window_locked(coin, info.window_start):
-                    return info, None, None
+                    return info, None
                 if orders.is_window_traded(coin, info.window_start):
-                    return info, None, None
+                    return info, None
 
-                ws_price = binance_ws.get_price(coin)
+                ws_price = _multi_price(coin)
                 if ws_price and ws_price > 0:
                     info.current_crypto_price = ws_price
 
@@ -435,39 +457,32 @@ def main():
                 except Exception:
                     pass
 
-                # Fix A: snapshot raw directional bias for exhaustion breadth
-                _raw_coin_info[coin] = (
-                    float(up_book.get("ask") or 0.0),
-                    float(down_book.get("ask") or 0.0),
-                )
-
                 pred = predictor.predict(
                     info,
                     ws_price=info.current_crypto_price,
                     realized_vol=realized_vol,
                     up_ask=up_book.get("ask") or 0.0,
                     down_ask=down_book.get("ask") or 0.0,
-                    up_bid=up_book.get("bid") or 0.0,
-                    down_bid=down_book.get("bid") or 0.0,
                     up_mid=up_book.get("mid") or 0.0,
                     down_mid=down_book.get("mid") or 0.0,
                     up_depth=up_book.get("depth_ratio", 0.0),
                     down_depth=down_book.get("depth_ratio", 0.0),
                     ticks=ticks,
+                    chainlink_ticks=_chainlink_tick_history(coin, 300),
                 )
-                # [AUDIT MAY27 R1] compute arb here using books we already
-                # fetched, instead of re-fetching them in the main loop below.
-                arb = None
-                if not is_window_locked(coin, info.window_start):
-                    try:
-                        arb = find_arbitrage(
-                            info,
-                            up_ask=up_book.get("ask") or 0.0,
-                            down_ask=down_book.get("ask") or 0.0,
-                        )
-                    except Exception:
-                        arb = None
-                return info, pred, arb
+                return info, pred
+
+            try:
+                import polymarket_ws as _pws_mod
+                _batch_ids = []
+                for _c in config.SYMBOLS:
+                    _inf = get_market_info(_c)
+                    if _inf:
+                        _batch_ids.extend([_inf.up_token_id, _inf.down_token_id])
+                if _batch_ids:
+                    _pws_mod.set_subscriptions(_batch_ids)
+            except Exception:
+                pass
 
             futures_map = {executor.submit(scan_coin, c): c for c in config.SYMBOLS}
             predictions = []
@@ -476,141 +491,20 @@ def main():
             for future in as_completed(futures_map):
                 coin_name = futures_map[future]
                 try:
-                    info, pred, arb = future.result()
-                    if arb and arb_enabled:
-                        arb_candidates.append(arb)
+                    info, pred = future.result()
+                    if info and arb_enabled and not is_window_locked(info.coin, info.window_start):
+                        try:
+                            ub = orders.get_clob_book(info.up_token_id)
+                            db = orders.get_clob_book(info.down_token_id)
+                            arb = find_arbitrage(info, up_ask=ub.get("ask") or 0, down_ask=db.get("ask") or 0)
+                            if arb:
+                                arb_candidates.append(arb)
+                        except Exception:
+                            pass
                     if pred:
                         predictions.append(pred)
                 except Exception as e:
                     logger.error(f"Scan error for {coin_name}: {e}")
-
-            # ── [AUDIT MAY27 X1] cross-asset features (shadow log only) ──
-            # Runs once per scan cycle using _raw_coin_info, which now holds
-            # one (up_ask, down_ask) entry per coin. Logged only — does not
-            # affect any trade decision in this version.
-            if _xas_state is not None and _raw_coin_info:
-                try:
-                    _xas_snap = _xas_state.update(_raw_coin_info)
-                    logger.info(_xas_log(_xas_snap))
-                except Exception as _e_xas:
-                    logger.debug(f"[XASSET] tick failed: {_e_xas}")
-
-            # ── Exhaustion detector (SHADOW MODE) ──
-            # Evaluates every prediction for exhaustion signals. Logs only;
-            # does NOT alter trade decisions while SHADOW_MODE=True.
-            if predictions:
-                try:
-                    # Fix A: build RAW cross-coin direction map using orderbook asks
-                    # (covers coins filtered by EXPENSIVE/WEAK/COLD before predictions).
-                    _wt = {}
-                    _pp = {}
-                    for _c, (_ua, _da) in _raw_coin_info.items():
-                        if _ua >= 0.60 and _ua < 0.99:
-                            _wt[_c] = "UP"
-                            _pp[_c] = _ua
-                        elif _da >= 0.60 and _da < 0.99:
-                            _wt[_c] = "DOWN"
-                            _pp[_c] = _da
-                    # Overlay predicted coins (they may be neutral in orderbook
-                    # but still have a directional signal we want to count).
-                    for _p in predictions:
-                        _wt[_p.coin] = _p.direction
-                        _pp[_p.coin] = (_p.entry_price if _p.entry_price > 0.05 else _p.poly_price)
-                    # Fix A.2: ENFORCE actions. evaluate() logs, we filter by action.
-                    _kept = []
-                    for _p in predictions:
-                        _tk = binance_ws.get_tick_history(_p.coin, 300)
-                        _res = exhaust.evaluate(_p, _tk, _wt, _pp)
-                        _act = _res.get("action", "CLEAN") if isinstance(_res, dict) else "CLEAN"
-                        # ÔöÇÔöÇ analytics hook apr23 ÔöÇÔöÇ EXHAUST verdict
-                        try:
-                            if _alog is not None:
-                                _tid = _alog.new_trade_id()
-                                setattr(_p, "_trade_id", _tid)
-                                _alog.log_signal(_tid, _p, getattr(_p, "trend_score", 0.0))
-                                _alog.log_exhaust(
-                                    _tid, _p.coin, _p.direction, _act,
-                                    float(_res.get("score", 0) or 0),
-                                    session_range=_res.get("range"),
-                                    breadth=_res.get("breadth"),
-                                    decel=_res.get("decel"),
-                                    window_start=getattr(_p.market_info, "window_start", None),
-                                    token_id=getattr(_p, "token_id", None),
-                                )
-                        except Exception:
-                            pass
-                        # ÔöÇÔöÇ Fix apr27: edge-priority override ÔöÇÔöÇ
-                        # When signal is A-tier (prob>=82% AND edge>=18%),
-                        # downgrade EXHAUST ABSTAIN -> DAMPEN. Top-tier signals
-                        # historically win 80%+; size still halved by DAMPEN flag.
-                        _was_overridden = False
-                        if _act == "ABSTAIN" and _p.probability >= 0.82 and _p.edge >= 0.18:
-                            logger.info(
-                                f"[EXHAUST OVERRIDE] {_p.coin} {_p.direction}: "
-                                f"prob={_p.probability:.0%} edge={_p.edge*100:.1f}% ÔÇö "
-                                f"ABSTAIN(score={_res.get('score', 0):.2f}) -> DAMPEN (no haircut)"
-                            )
-                            _act = "DAMPEN"
-                            _was_overridden = True
-                        # ÔöÇÔöÇ Fix apr28: high-entry override (Option A from audit) ÔöÇÔöÇ
-                        # Audit on 281 ABSTAIN events showed entries >= 63c blocked
-                        # by EXHAUST resolve 71% WIN (well above 64% breakeven). The
-                        # 171 trades this rule lets through win 68% globally.
-                        # Only allows DAMPEN (half size) ÔÇö not full-size ÔÇö to stay
-                        # cautious. Decisive blocks (score >= 0.65) still ABSTAIN.
-                        if (_act == "ABSTAIN" and not _was_overridden
-                                and (_p.entry_price if _p.entry_price > 0.05 else _p.poly_price) >= 0.63
-                                and float(_res.get("score", 0) or 0) < 0.65):
-                            _entry_c = (_p.entry_price if _p.entry_price > 0.05 else _p.poly_price) * 100.0
-                            logger.info(
-                                f"[EXHAUST OVERRIDE-HIGH-ENTRY] {_p.coin} {_p.direction}: "
-                                f"entry={_entry_c:.0f}c score={_res.get('score', 0):.2f} "
-                                f"-> DAMPEN (half size; audit apr28 says 68% WR)"
-                            )
-                            _act = "DAMPEN"
-                        if _act == "ABSTAIN":
-                            # ÔöÇÔöÇ Fix A apr23: sticky EXHAUST ABSTAIN memory ÔöÇÔöÇ
-                            _last_exhaust_abstain[_p.coin] = time.time()
-                            try:
-                                if _alog is not None:
-                                    _alog.log_blocked(
-                                        getattr(_p, "_trade_id", None),
-                                        _p.coin, _p.direction, "EXHAUST_ABSTAIN",
-                                        score=float(_res.get("score", 0) or 0),
-                                        window_start=getattr(_p.market_info, "window_start", None),
-                                    )
-                            except Exception:
-                                pass
-                            logger.info(f"[EXHAUST BLOCK] {_p.coin} {_p.direction} skipped (score={_res.get('score', 0):.2f})")
-                            continue
-                        if _act == "FLIP":
-                            _orig = _p.direction
-                            _p.direction = "DOWN" if _p.direction == "UP" else "UP"
-                            _p.probability = 1.0 - _p.probability
-                            _entry = _p.entry_price if _p.entry_price > 0.05 else _p.poly_price
-                            _p.edge = _p.probability - _entry
-                            logger.info(f"[EXHAUST FLIP] {_p.coin} {_orig}->{_p.direction}")
-                        elif _act == "DAMPEN":
-                            _pre = _p.probability
-                            if not _was_overridden:
-                                # Normal DAMPEN: shave probability AND halve size
-                                _p.probability = max(0.01, _p.probability * 0.85)
-                                _entry = _p.entry_price if _p.entry_price > 0.05 else _p.poly_price
-                                _p.edge = _p.probability - _entry
-                            # Fix F (apr21): mark dampened so order_manager cuts size 50%
-                            setattr(_p, "_dampened", True)
-                            # Fix apr27 (no double penalty): when override fired, skip
-                            # the size-halving in order_manager. Override already self-
-                            # selects A-tier signals; double-penalty makes them too small.
-                            if _was_overridden:
-                                setattr(_p, "_override_full_size", True)
-                            _size_note = "(size unchanged, override A-tier)" if _was_overridden else "(size will be halved)"
-                            _suffix = " [override: prob/edge unchanged]" if _was_overridden else ""
-                            logger.info(f"[EXHAUST DAMPEN] {_p.coin} {_p.direction} p={_pre:.2f}->{_p.probability:.2f} {_size_note}{_suffix}")
-                        _kept.append(_p)
-                    predictions = _kept
-                except Exception as _ex:
-                    logger.debug(f"[EXHAUST] eval error: {_ex}")
 
             if arb_candidates and can_trade:
                 best = max(arb_candidates, key=lambda a: a["profit_pct"])
@@ -622,106 +516,91 @@ def main():
                 time.sleep(config.SCAN_INTERVAL)
                 continue
 
-            # ÔöÇÔöÇ Morning strategy (9am-2pm Lima): separate, conservative predictor ÔöÇÔöÇ
-            from zoneinfo import ZoneInfo as _ZI
-            _lima_now = datetime.now(_ZI("America/Lima"))
-            _is_morning = 9 <= _lima_now.hour < 14
-            _is_afternoon = 14 <= _lima_now.hour < 17
+            # ── Time phase detection (ET session calendar) ──
+            import session_calibration as _sess
+            global _last_trade_session
+            _sg = _sess.get_session()
+            _is_morning = _sess.is_morning_session()
+            _is_afternoon = _sess.is_afternoon_session()
+            if _sg.name == "AFTERNOON" and _last_trade_session != "AFTERNOON":
+                try:
+                    predictor._chop_detector._history.clear()
+                    predictor._chop_detector._save()
+                    logger.info("[SESSION] Afternoon start — reset chop detector history")
+                except Exception as _e_ch:
+                    logger.debug(f"[SESSION] chop reset failed: {_e_ch}")
+            _last_trade_session = _sg.name
 
+            # ── Morning strategy (9am-2pm): stricter filters, half Kelly ──
+            if _is_morning and can_trade and predictions:
+                morning_approved = []
+                for p in predictions:
+                    if p.confidence not in ("HIGH", "MEDIUM"):
+                        continue
+                    if p.edge < config.MIN_EDGE:
+                        continue
+                    filtered = morn.filter_morning_signal(p, p.trend_score)
+                    if filtered:
+                        morning_approved.append(filtered)
 
-
-            # Morning strategy (9am-2pm Lima) - ISOLATED from afternoon
-            # Uses main predictor signals but with phase-specific filters.
-            # Morning outcomes DO NOT feed predictor.record_outcome() - isolation.
-            if _is_morning and can_trade and _morning_consec_losses < 2 and _morning_total_losses < MORNING_LOSS_CAP:
-                _phase = morn.get_morning_phase()
-                # may04: include phase 2 ÔÇö filter_morning_signal handles A-tier override there.
-                if _phase in (1, 2, 3):
-                    _morning_candidates = []
-                    for _p in predictions:
-                        _ts = getattr(_p, "trend_score", 0.0)
-                        _filtered = morn.filter_morning_signal(_p, _ts)
-                        if _filtered is not None:
-                            _morning_candidates.append(_filtered)
-
-                    if _morning_candidates:
-                        _best_m = max(_morning_candidates, key=lambda x: x.probability)
-                        _active_count = len(orders.positions) + len(orders.active_gtc)
-                        # ÔöÇÔöÇ Fix A apr23: sticky EXHAUST ABSTAIN memory ÔöÇÔöÇ
-                        _abstain_age = time.time() - _last_exhaust_abstain.get(_best_m.coin, 0)
-                        if _abstain_age < 30:
-                            try:
-                                if _alog is not None:
-                                    _alog.log_blocked(
-                                        getattr(_best_m, "_trade_id", None),
-                                        _best_m.coin, _best_m.direction,
-                                        "MORNING_STICKY_EXHAUST",
-                                        abstain_age_s=_abstain_age,
-                                        window_start=getattr(_best_m.market_info, "window_start", None),
-                                    )
-                            except Exception:
-                                pass
-                            logger.info(
-                                f"[MORNING STICKY EXHAUST] {_best_m.coin} {_best_m.direction}: "
-                                f"ABSTAIN {_abstain_age:.0f}s ago ÔÇö skipping to avoid oscillation"
+                if morning_approved:
+                    active_count = len(orders.positions) + len(orders.active_gtc)
+                    _max_morning = 2 if _sg.name == "MIDDAY" else int(os.getenv("MORNING_MAX_POSITIONS", "1"))
+                    if active_count < _max_morning:
+                        best_m = pick_best_prediction(morning_approved)
+                        for _p in morning_approved:
+                            record_direction_confirm(
+                                _p.coin, _p.market_info.window_start, _p.direction
                             )
-                            time.sleep(config.SCAN_INTERVAL)
-                            continue
-                        # ÔöÇÔöÇ Fix C apr23: tighter morning concurrency after any loss ÔöÇÔöÇ
-                        # After first morning loss of the session, allow only 1 open position
-                        _morning_cap = 1 if _morning_consec_losses >= 1 else 2
-                        if _active_count < _morning_cap:
-                            if not is_window_locked(_best_m.coin, _best_m.market_info.window_start):
-                                if lock_window(_best_m.coin, _best_m.market_info.window_start):
-                                    # CLOB re-check (same as afternoon)
-                                    _clob_ask = orders.get_clob_ask(_best_m.token_id)
-                                    if _clob_ask is not None:
-                                        _real_edge = _best_m.probability - _clob_ask
-                                        _best_m.entry_price = _clob_ask
-                                        _best_m.edge = _real_edge
+                        if not is_direction_confirmed(
+                            best_m.coin, best_m.market_info.window_start, best_m.direction
+                        ):
+                            logger.debug(
+                                f"[CONFIRM] {best_m.coin} {best_m.direction}: "
+                                f"need {_CONFIRM_SCANS} consecutive scans"
+                            )
+                        elif not lock_window(best_m.coin, best_m.market_info.window_start):
+                            logger.debug(f"[LOCKED] {best_m.coin} already traded this window")
+                        else:
+                            clob_ask = orders.get_clob_ask(best_m.token_id)
+                            if clob_ask is not None:
+                                real_edge = best_m.probability - clob_ask
+                                best_m.entry_price = clob_ask
+                                best_m.edge = real_edge
 
-                                    # Half Kelly sizing for morning (temporarily)
+                                if real_edge < config.MIN_EDGE:
+                                    logger.info(f"[MORNING REJECT] {best_m.coin}: edge={real_edge*100:.1f}% too low")
+                                    unlock_window(best_m.coin, best_m.market_info.window_start)
+                                elif clob_ask < config.ENTRY_MIN or clob_ask > config.ENTRY_MAX:
+                                    logger.info(f"[MORNING RANGE] {best_m.coin}: ask={clob_ask*100:.0f}c outside range")
+                                    unlock_window(best_m.coin, best_m.market_info.window_start)
+                                else:
+                                    phase = morn.get_morning_phase()
+                                    logger.info(
+                                        f"[MORNING TRADE] P{phase} {best_m.coin} {best_m.direction} | "
+                                        f"Prob={best_m.probability:.0%} | Ask={clob_ask*100:.0f}c | "
+                                        f"Edge={real_edge*100:.1f}% | {best_m.confidence}"
+                                    )
+                                    # Half Kelly for morning trades
                                     import os as _os2
                                     _orig_frac = _os2.environ.get("KELLY_FRACTION", "0.25")
                                     _os2.environ["KELLY_FRACTION"] = str(float(_orig_frac) * 0.5)
-                                    try:
-                                        _success = orders.place_bet(_best_m)
-                                        if _success and _best_m.coin in orders.positions:
-                                            # Tag position as morning for isolated resolution
-                                            orders.positions[_best_m.coin]["is_morning"] = True
-                                            # [AUDIT MAY27 T1] thread trade_id for ledger linkage
-                                            orders.positions[_best_m.coin]["trade_id"] = getattr(_best_m, "_trade_id", None)
-                                            # ÔöÇÔöÇ analytics hook apr23 ÔöÇÔöÇ morning FIRED
-                                            try:
-                                                if _alog is not None:
-                                                    _pos = orders.positions[_best_m.coin]
-                                                    _alog.log_fired(
-                                                        getattr(_best_m, '_trade_id', None),
-                                                        _best_m.coin, _best_m.direction,
-                                                        entry=_pos.get('entry', _best_m.entry_price),
-                                                        shares=_pos.get('shares', 0),
-                                                        cost=_pos.get('cost', 0),
-                                                        phase=f'MORNING_P{_phase}',
-                                                        window_start=getattr(_best_m.market_info, 'window_start', None),
-                                                        token_id=getattr(_best_m, 'token_id', None),
-                                                    )
-                                            except Exception:
-                                                pass
-                                            logger.info(
-                                                f"[MORNING P{_phase} TRADE] {_best_m.coin} {_best_m.direction} "
-                                                f"placed (half-Kelly)"
-                                            )
-                                        else:
-                                            unlock_window(_best_m.coin, _best_m.market_info.window_start)
-                                            logger.info(f"[MORNING UNLOCK] {_best_m.coin}: order failed")
-                                    finally:
-                                        _os2.environ["KELLY_FRACTION"] = _orig_frac
+                                    filled_m = orders.place_bet(best_m)
+                                    _os2.environ["KELLY_FRACTION"] = _orig_frac
+                                    if not filled_m:
+                                        unlock_window(best_m.coin, best_m.market_info.window_start)
+                                        logger.info(f"[UNLOCK] {best_m.coin}: morning order failed")
+                            else:
+                                logger.info(f"[MORNING NO ASK] {best_m.coin}: no valid CLOB ask")
+                                unlock_window(best_m.coin, best_m.market_info.window_start)
 
-            # ÔöÇÔöÇ Afternoon strategy (2pm-5pm): main predictor, unchanged ÔöÇÔöÇ
+            # ── Afternoon strategy (2pm-5pm): main predictor, unchanged ──
+            _pm_sess = sess_cal.get_session()
+            _pm_min_edge = max(config.MIN_EDGE, _pm_sess.min_edge)
             actionable = [
                 p for p in predictions
-                if p.confidence in ("HIGH", "MEDIUM", "REGIME-INVERT", "BTC-INVERT", "TRAP-INVERT")
-                and p.edge >= config.MIN_EDGE
+                if p.confidence in ("HIGH", "MEDIUM")
+                and p.edge >= _pm_min_edge
             ]
 
             seen_coins = set()
@@ -731,87 +610,72 @@ def main():
                     unique.append(p)
                     seen_coins.add(p.coin)
 
-            if unique and can_trade and _is_afternoon and _consec_losses < 2:
+            if unique and can_trade and _is_afternoon:
                 active_count = len(orders.positions) + len(orders.active_gtc)
                 if active_count >= 2:
                     if scan_count % 20 == 0:
                         logger.debug(f"[MAX POS] {active_count} active, skipping new trades")
                 else:
-                    best = unique[0]
-
-                    # FIX 1: Atomic lock ÔÇö only one trade per coin per window
-                    if not lock_window(best.coin, best.market_info.window_start):
-                        logger.debug(f"[LOCKED] {best.coin} already traded this window")
+                    for _c in unique:
+                        record_direction_confirm(
+                            _c.coin, _c.market_info.window_start, _c.direction
+                        )
+                    confirmed = [
+                        _c for _c in unique
+                        if is_direction_confirmed(
+                            _c.coin, _c.market_info.window_start, _c.direction
+                        )
+                    ]
+                    if not confirmed:
+                        if scan_count % 10 == 0 and unique:
+                            _u = unique[0]
+                            logger.debug(
+                                f"[CONFIRM] {_u.coin} {_u.direction}: "
+                                f"waiting {_CONFIRM_SCANS} scans"
+                            )
                     else:
-                        # FIX 5: Re-fetch CLOB ask and recompute edge with fresh price
-                        clob_ask = orders.get_clob_ask(best.token_id)
-                        if clob_ask is not None:
-                            real_edge = best.probability - clob_ask
-                            best.entry_price = clob_ask
-                            best.edge = real_edge
-
-                            if real_edge < config.MIN_EDGE:
-                                logger.info(
-                                    f"[CLOB REJECT] {best.coin} {best.direction}: "
-                                    f"CLOB ask={clob_ask*100:.0f}c prob={best.probability:.0%} "
-                                    f"real_edge={real_edge*100:.1f}% < {config.MIN_EDGE*100:.0f}%"
-                                )
-                                unlock_window(best.coin, best.market_info.window_start)
-                            # [INVERT BYPASS ENTRY_MIN] inverted trades intentionally
-                            # buy the cheap opposite side — allow ask down to 0.20 for them.
-                            elif clob_ask < (0.20 if best.confidence in ("REGIME-INVERT", "BTC-INVERT", "TRAP-INVERT") else config.ENTRY_MIN) or clob_ask > config.ENTRY_MAX:
-                                logger.info(
-                                    f"[CLOB RANGE] {best.coin} {best.direction}: "
-                                    f"CLOB ask={clob_ask*100:.0f}c outside "
-                                    f"{config.ENTRY_MIN*100:.0f}-{config.ENTRY_MAX*100:.0f}c"
-                                )
-                                unlock_window(best.coin, best.market_info.window_start)
-                            elif _is_afternoon and clob_ask > config.PM_ENTRY_MAX:
-                                # PM R:R collapses above this price (backfill: 66-69c R:R=0.49, >=69c R:R=0.35)
-                                logger.info(
-                                    f"[PM ENTRY CAP] {best.coin} {best.direction}: "
-                                    f"CLOB ask={clob_ask*100:.0f}c > PM cap {config.PM_ENTRY_MAX*100:.0f}c ÔÇö R:R too thin"
-                                )
-                                unlock_window(best.coin, best.market_info.window_start)
-                            elif config.TRAP_BAND_MIN <= clob_ask <= config.TRAP_BAND_MAX:
-                                # Option A apr28: 60-63c entry band has 47% WR / R:R 0.75
-                                # in our 8-day backfill ÔÇö confirmed structural loser.
-                                logger.info(
-                                    f"[TRAP BAND] {best.coin} {best.direction}: "
-                                    f"CLOB ask={clob_ask*100:.0f}c in trap band "
-                                    f"{config.TRAP_BAND_MIN*100:.0f}-{config.TRAP_BAND_MAX*100:.0f}c (47% WR)"
-                                )
-                                unlock_window(best.coin, best.market_info.window_start)
-                            elif (
-                                _is_afternoon
-                                and best.coin in config.PM_BLOCKED_COINS
-                                and best.confidence not in ("REGIME-INVERT", "BTC-INVERT", "TRAP-INVERT")
-                            ):
-                                # Option A apr28: XRP is 50% WR / -$3.80 net — skip in PM.
-                                # Inverted trap signals bypass: regime already flipped to contra side.
-                                logger.info(
-                                    f"[PM COIN BLOCK] {best.coin} {best.direction}: "
-                                    f"{best.coin} blocked in PM (50% WR / negative EV)"
-                                )
-                                unlock_window(best.coin, best.market_info.window_start)
-                            else:
-                                print(
-                                    f"\n[{now}] #{scan_count} TRADE -> {best.coin} {best.direction} | "
-                                    f"Prob: {best.probability:.0%} | Ask: {clob_ask*100:.0f}c | "
-                                    f"Edge: {real_edge*100:.1f}% | Depth: {best.depth_ratio:.1f}x | "
-                                    f"{best.confidence}"
-                                )
-                                print(f"  {best.reasoning}")
-                                filled = orders.place_bet(best)
-                                if not filled:
-                                    unlock_window(best.coin, best.market_info.window_start)
-                                    logger.info(f"[UNLOCK] {best.coin}: order failed, window unlocked for retry")
-                                elif best.coin in orders.positions:
-                                    # [AUDIT MAY27 T1] thread trade_id for ledger linkage
-                                    orders.positions[best.coin]["trade_id"] = getattr(best, "_trade_id", None)
+                        best = pick_best_prediction(confirmed)
+                        if not lock_window(best.coin, best.market_info.window_start):
+                            logger.debug(f"[LOCKED] {best.coin} already traded this window")
                         else:
-                            logger.info(f"[NO ASK] {best.coin} {best.direction}: no valid CLOB ask at execution")
-                            unlock_window(best.coin, best.market_info.window_start)
+                            clob_ask = orders.get_clob_ask(best.token_id)
+                            if clob_ask is not None:
+                                real_edge = best.probability - clob_ask
+                                best.entry_price = clob_ask
+                                best.edge = real_edge
+                                if real_edge < _pm_min_edge:
+                                    logger.info(
+                                        f"[CLOB REJECT] {best.coin} {best.direction}: "
+                                        f"CLOB ask={clob_ask*100:.0f}c prob={best.probability:.0%} "
+                                        f"real_edge={real_edge*100:.1f}% < {_pm_min_edge*100:.0f}%"
+                                    )
+                                    unlock_window(best.coin, best.market_info.window_start)
+                                elif clob_ask < config.ENTRY_MIN or clob_ask > config.ENTRY_MAX:
+                                    logger.info(
+                                        f"[CLOB RANGE] {best.coin} {best.direction}: "
+                                        f"CLOB ask={clob_ask*100:.0f}c outside "
+                                        f"{config.ENTRY_MIN*100:.0f}-{config.ENTRY_MAX*100:.0f}c"
+                                    )
+                                    unlock_window(best.coin, best.market_info.window_start)
+                                else:
+                                    print(
+                                        f"\n[{now}] #{scan_count} TRADE -> {best.coin} {best.direction} | "
+                                        f"Prob: {best.probability:.0%} | Ask: {clob_ask*100:.0f}c | "
+                                        f"Edge: {real_edge*100:.1f}% | Depth: {best.depth_ratio:.1f}x | "
+                                        f"{best.confidence}"
+                                    )
+                                    print(f"  {best.reasoning}")
+                                    filled = orders.place_bet(best)
+                                    if not filled:
+                                        unlock_window(best.coin, best.market_info.window_start)
+                                        logger.info(
+                                            f"[UNLOCK] {best.coin}: order failed, window unlocked for retry"
+                                        )
+                            else:
+                                logger.info(
+                                    f"[NO ASK] {best.coin} {best.direction}: no valid CLOB ask at execution"
+                                )
+                                unlock_window(best.coin, best.market_info.window_start)
             else:
                 if scan_count % 20 == 0:
                     active_pos = list(orders.positions.keys())
@@ -831,195 +695,7 @@ def main():
                         f"Trades: {orders.daily_trades}"
                     )
 
-            current_time = int(time.time())
-            expired = []
-            for coin, pos in orders.positions.items():
-                ws = pos.get("window_start", 0)
-                if ws > 0 and current_time > ws + 900 + 180:
-                    expired.append(coin)
-            for coin in expired:
-                pos = orders.positions.pop(coin)
-                side = pos.get("side", "?")
-                entry = pos.get("entry_price", 0)
-                shares = pos.get("shares", 0)
-                cost = entry * shares
-                payout = shares * 1.0
-
-                won = False
-                token_id = pos.get("token_id", "")
-                _resolved = False
-                # Defer counter: how many scan cycles we have been waiting.
-                # Stored on the position dict itself.
-                _deferred = pos.get("_resolve_deferred", 0)
-                if token_id and ws > 0:
-                    _slug = f"{coin.lower()}-updown-15m-{ws}"
-                    _http = orders._get_direct_http()
-                    import ast as _ast
-                    # Try to resolve via Gamma API. Up to 20 attempts * 30s = 10 minutes.
-                    # Decisive thresholds: > 0.98 = WIN, < 0.02 = LOSS.
-                    for _attempt in range(20):
-                        try:
-                            _resp = _http.get(
-                                f"https://gamma-api.polymarket.com/events?slug={_slug}",
-                                timeout=5,
-                            )
-                            if _resp.status_code == 200:
-                                _data = _resp.json()
-                                if _data and _data[0].get("markets"):
-                                    _mkt = _data[0]["markets"][0]
-                                    _closed = _mkt.get("closed", False)
-                                    _op = _mkt.get("outcomePrices", [])
-                                    if isinstance(_op, str):
-                                        _op = _ast.literal_eval(_op)
-                                    _toks = _mkt.get("clobTokenIds", [])
-                                    if isinstance(_toks, str):
-                                        _toks = _ast.literal_eval(_toks)
-                                    # Parse the `outcomes` list too; we resolve by position
-                                    # SIDE (UP/DOWN) matched against outcomes label ÔÇö independent of
-                                    # any upstream token_id bugs.
-                                    _outs = _mkt.get("outcomes", [])
-                                    if isinstance(_outs, str):
-                                        _outs = _ast.literal_eval(_outs)
-                                    _target_label = "Up" if side == "UP" else "Down"
-                                    _idx_by_outcome = _outs.index(_target_label) if _target_label in _outs else -1
-                                    _idx_by_token = _toks.index(token_id) if (token_id and token_id in _toks) else -1
-
-                                    # Pick the authoritative index: outcomes+side is ground truth.
-                                    # If both available, verify they agree; if they diverge log loudly
-                                    # so we can fix the upstream token_id bug.
-                                    if _idx_by_outcome >= 0 and _idx_by_token >= 0 and _idx_by_outcome != _idx_by_token:
-                                        logger.error(
-                                            f"[TOKEN MISMATCH] {coin} {side}: position token_id maps to "
-                                            f"idx={_idx_by_token} ({_outs[_idx_by_token]}) but side={side} "
-                                            f"wants idx={_idx_by_outcome} ({_target_label}). "
-                                            f"Using SIDE as truth. token={token_id[-10:]}"
-                                        )
-                                    _idx = _idx_by_outcome if _idx_by_outcome >= 0 else _idx_by_token
-
-                                    if len(_op) == 2 and _idx >= 0:
-                                        _price = float(_op[_idx])
-                                        # Accept decisive outcomes regardless of closed flag.
-                                        # Polymarket sometimes sets outcomePrices before closed=True.
-                                        if _price >= 0.98:
-                                            won = True
-                                            _resolved = True
-                                        elif _price <= 0.02:
-                                            won = False
-                                            _resolved = True
-                                        if _resolved:
-                                            logger.info(
-                                                f"[RESOLVE POLY] {coin} {side}: outcomePrice={_price:.4f} "
-                                                f"(outcomes={_outs} prices={_op}) closed={_closed} -> "
-                                                f"{'WIN' if won else 'LOSS'} (attempt {_attempt+1})"
-                                            )
-                                            break
-                                        else:
-                                            logger.debug(
-                                                f"[RESOLVE WAIT] {coin} {side}: price={_price:.4f} closed={_closed} (attempt {_attempt+1}/20)"
-                                            )
-                        except Exception as _e:
-                            logger.debug(f"[RESOLVE ERROR] {coin} attempt {_attempt+1}: {_e}")
-                        if _attempt < 19 and not _resolved:
-                            time.sleep(30)
-
-                if not _resolved:
-                    # Defer: put the position back and retry on the next expiry scan.
-                    # Only give up and use Binance fallback after 2 deferrals (~30+ min past close).
-                    if _deferred < 2:
-                        pos["_resolve_deferred"] = _deferred + 1
-                        orders.positions[coin] = pos  # put back; will retry next cycle
-                        logger.warning(
-                            f"[RESOLVE DEFERRED] {coin} {side}: Polymarket not resolved after 10min; "
-                            f"will retry (defer #{_deferred + 1})"
-                        )
-                        continue  # skip win/loss bookkeeping this round
-                    else:
-                        # Last resort after multiple deferrals: compare Binance price with strict >= tie-break.
-                        try:
-                            final_price = binance_ws.get_price(coin)
-                            strike = pos.get("strike", 0)
-                            if strike > 0 and final_price > 0:
-                                # Treat exact ties as LOSS for UP (Polymarket resolves ties to DOWN most often)
-                                went_up = final_price > strike  # strict inequality; tie = not went_up
-                                won = (side == "UP" and went_up) or (side == "DOWN" and not went_up)
-                            logger.warning(
-                                f"[RESOLVE BINANCE FALLBACK] {coin} {side}: price={final_price:.2f} "
-                                f"strike={strike:.2f} -> {'WIN' if won else 'LOSS'} (last resort)"
-                            )
-                        except Exception as _e:
-                            logger.debug(f"[RESOLVE BINANCE ERROR] {coin}: {_e}")
-
-                _is_morning_trade = pos.get("is_morning", False)
-                _tag = "MORNING" if _is_morning_trade else "PM"
-                # ÔöÇÔöÇ analytics hook apr23 ÔöÇÔöÇ RESOLVED event
-                try:
-                    if _alog is not None:
-                        _alog.log_resolved(
-                            trade_id=pos.get("trade_id"),
-                            coin=coin, side=side,
-                            window_start=int(pos.get("window_start", 0) or 0),
-                            won=bool(won),
-                            cost=float(cost or 0),
-                            payout=float(payout or 0),
-                            pnl=float((payout - cost) if won else -cost),
-                            phase=_tag,
-                            resolution_source="live",
-                        )
-                except Exception:
-                    pass
-                if won:
-                    pnl = payout - cost
-                    logger.info(f"[WIN {_tag}] {coin} {side} | +${pnl:.2f} | Entry: {entry*100:.0f}c x{shares} | Payout: ${payout:.2f}")
-                    tg.notify_result(coin, side, True, cost, payout)
-                    # [REGIME-AWARE v1] update detector and persist
-                    try:
-                        if getattr(predictor, "_regime_detector", None) is not None:
-                            predictor._regime_detector.track_outcome(
-                                coin=coin, direction=side, ask=float(entry),
-                                trend=float(pos.get("trend_score", 0.0)),
-                                prob=float(pos.get("probability", 0.0)),
-                                won=True, pnl=float(pnl),
-                            )
-                            from regime_aware.persistence import save_state
-                            save_state(predictor._regime_detector)
-                            logger.info(f"[REGIME] after WIN: {predictor._regime_detector.stats_summary()}")
-                    except Exception as _re:
-                        logger.warning(f"[REGIME] WIN track failed: {_re}")
-                    if _is_morning_trade:
-                        _morning_consec_losses = 0
-                    else:
-                        predictor.record_outcome(True)
-                        _consec_losses = 0
-                else:
-                    logger.info(f"[LOSS {_tag}] {coin} {side} | -${cost:.2f} | Entry: {entry*100:.0f}c x{shares}")
-                    tg.notify_result(coin, side, False, cost)
-                    # [REGIME-AWARE v1] update detector and persist
-                    try:
-                        if getattr(predictor, "_regime_detector", None) is not None:
-                            predictor._regime_detector.track_outcome(
-                                coin=coin, direction=side, ask=float(entry),
-                                trend=float(pos.get("trend_score", 0.0)),
-                                prob=float(pos.get("probability", 0.0)),
-                                won=False, pnl=-float(cost),
-                            )
-                            from regime_aware.persistence import save_state
-                            save_state(predictor._regime_detector)
-                            logger.info(f"[REGIME] after LOSS: {predictor._regime_detector.stats_summary()}")
-                    except Exception as _re:
-                        logger.warning(f"[REGIME] LOSS track failed: {_re}")
-                    if _is_morning_trade:
-                        _morning_consec_losses += 1
-                        _morning_total_losses += cost
-                        if _morning_total_losses >= MORNING_LOSS_CAP:
-                            logger.warning(f"[MORNING CAP] Morning loss cap hit (${_morning_total_losses:.2f}) -- morning disabled until tomorrow; afternoon UNAFFECTED")
-                        elif _morning_consec_losses >= 2:
-                            logger.warning(f"[MORNING LOSS BREAKER] {_morning_consec_losses} consecutive -- pausing morning until next window")
-                    else:
-                        predictor.record_outcome(False)
-                        orders.daily_losses += cost
-                        _consec_losses += 1
-                        if _consec_losses >= 2:
-                            logger.warning(f"[LOSS BREAKER] {_consec_losses} consecutive losses -- pausing afternoon until next window")
+            resolve_expired_positions(orders, predictor, binance_ws)
 
             time.sleep(config.SCAN_INTERVAL)
 

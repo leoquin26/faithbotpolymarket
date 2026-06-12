@@ -1,5 +1,5 @@
 """
-5-Minute Brain Bot (Apr 28) — runs alongside the 15m main bot.
+5-Minute Brain Bot (Apr 28) ÔÇö runs alongside the 15m main bot.
 
 Architecture: REUSES the same engine modules (predictor, order_manager,
 exhaustion_detector, telegram_notifier, market_data, binance_ws) so it
@@ -22,7 +22,7 @@ Process isolation:
 
 Bankroll safety:
   - All 5m bets are tagged in logs/Telegram with [5M] prefix
-  - $5 daily loss cap is a HARD STOP — when hit, loop sleeps until
+  - $5 daily loss cap is a HARD STOP ÔÇö when hit, loop sleeps until
     midnight Lima.
   - Test-week sizing is FIXED at $3, ignoring Kelly (which would be
     too aggressive on 5m's noisier signals).
@@ -32,7 +32,7 @@ Resolution: handled inline (5min + 60s grace, slug uses '5m' timeframe).
 Failure isolation:
   - 5m bot crashes do not affect 15m bot.
   - Wallet balance contention is mitigated because at $3-fixed sizing,
-    even 10 simultaneous 5m bets total $30 — well under bankroll.
+    even 10 simultaneous 5m bets total $30 ÔÇö well under bankroll.
 """
 from __future__ import annotations
 
@@ -71,10 +71,10 @@ from predictor import Predictor, Prediction
 import exhaustion_detector as exhaust
 from order_manager import OrderManager
 
-# ──────────────────────────────────────────────────────────────────
-# Logging setup — separate sinks so 5m and 15m logs are distinguishable.
+# ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# Logging setup ÔÇö separate sinks so 5m and 15m logs are distinguishable.
 # stderr goes to v3_bot_5m.log via shell redirection, just like 15m bot.
-# ──────────────────────────────────────────────────────────────────
+# ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 logger.remove()
 logger.add(
     sys.stderr,
@@ -91,17 +91,17 @@ logger.add(
     retention="14 days",
     level="DEBUG",
     format="{time:HH:mm:ss} | {level:<8} | {message}",
-    enqueue=True,
+    enqueue=False,  # apr30: sync sink ÔÇö avoid log queue stalling on low disk/IO
 )
 
 import functools
 print = functools.partial(print, flush=True)
 
 
-# ──────────────────────────────────────────────────────────────────
+# ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 # Per-coin window lock (in-memory; OrderManager handles disk persistence)
 # Same pattern as 15m bot but isolated.
-# ──────────────────────────────────────────────────────────────────
+# ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 _trade_lock = threading.Lock()
 _traded_set: set[tuple[str, int]] = set()
 
@@ -133,16 +133,16 @@ def cleanup_old_windows():
         _traded_set.difference_update(stale)
 
 
-# ──────────────────────────────────────────────────────────────────
-# Trading hours gate — 5m runs morning-only initially
-# ──────────────────────────────────────────────────────────────────
+# ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# Trading hours gate ÔÇö 5m runs morning-only initially
+# ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 def is_5m_trading_hour() -> tuple[bool, str]:
     """Return (can_trade, reason)."""
     from zoneinfo import ZoneInfo
     lima = datetime.now(ZoneInfo("America/Lima"))
     weekday = lima.weekday()  # 0=Mon, 6=Sun
 
-    # Match 15m bot's weekend rule: Fri 17:00 → Sun all → Mon <09:00 blocked.
+    # Match 15m bot's weekend rule: Fri 17:00 ÔåÆ Sun all ÔåÆ Mon <09:00 blocked.
     if weekday == 4 and lima.hour >= 17:
         return False, "weekend mode (Fri PM -> Mon)"
     if weekday in (5, 6):
@@ -156,9 +156,9 @@ def is_5m_trading_hour() -> tuple[bool, str]:
     return True, ""
 
 
-# ──────────────────────────────────────────────────────────────────
+# ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 # Inline resolution for 5m positions (5min window + 60s grace)
-# ──────────────────────────────────────────────────────────────────
+# ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 def resolve_expired_positions(orders: OrderManager, predictor: Predictor):
     import ast as _ast
     current_time = int(time.time())
@@ -185,7 +185,7 @@ def resolve_expired_positions(orders: OrderManager, predictor: Predictor):
         if token_id and ws > 0:
             _slug = f"{coin.lower()}-updown-5m-{ws}"
             _http = orders._get_direct_http()
-            for _attempt in range(8):  # 8 * 30s = 4 min max wait (vs 10 for 15m)
+            for _attempt in range(24):  # 24 * 30s = 12 min Poly-only polling
                 try:
                     _resp = _http.get(
                         f"https://gamma-api.polymarket.com/events?slug={_slug}",
@@ -221,28 +221,24 @@ def resolve_expired_positions(orders: OrderManager, predictor: Predictor):
                                     break
                 except Exception as _e:
                     logger.debug(f"[RESOLVE ERROR] {coin} attempt {_attempt+1}: {_e}")
-                if _attempt < 7 and not _resolved:
+                if _attempt < 23 and not _resolved:
                     time.sleep(30)
 
         if not _resolved:
-            if _deferred < 1:
+            if _deferred < 2:
                 pos["_resolve_deferred"] = _deferred + 1
                 orders.positions[coin] = pos
-                logger.warning(f"[RESOLVE DEFERRED] {coin} {side}: not resolved after 4min (defer #1)")
+                logger.warning(
+                    f"[RESOLVE DEFERRED] {coin} {side}: Polymarket unresolved after 12min Gamma poll "
+                    f"(defer #{_deferred + 1}/2)"
+                )
                 continue
             else:
-                try:
-                    final_price = binance_ws.get_price(coin)
-                    strike = pos.get("strike", 0)
-                    if strike > 0 and final_price > 0:
-                        went_up = final_price > strike
-                        won = (side == "UP" and went_up) or (side == "DOWN" and not went_up)
-                    logger.warning(
-                        f"[RESOLVE BINANCE FALLBACK] {coin} {side}: price={final_price:.2f} "
-                        f"strike={strike:.2f} -> {'WIN' if won else 'LOSS'} (last resort)"
-                    )
-                except Exception:
-                    pass
+                logger.error(
+                    f"[RESOLVE ABANDONED] {coin} {side}: still unclear after defers ÔÇö "
+                    f"NOT updating daily PnL; reconcile via CSV/on-chain"
+                )
+                continue
 
         # Analytics
         try:
@@ -272,12 +268,12 @@ def resolve_expired_positions(orders: OrderManager, predictor: Predictor):
             orders.daily_losses += cost
 
 
-# ──────────────────────────────────────────────────────────────────
+# ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 # Main loop
-# ──────────────────────────────────────────────────────────────────
+# ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 def main():
     if not config.M5_ENABLED:
-        print("[5M] M5_ENABLED=0 — exiting. Set M5_ENABLED=1 in .env to enable.")
+        print("[5M] M5_ENABLED=0 ÔÇö exiting. Set M5_ENABLED=1 in .env to enable.")
         sys.exit(0)
 
     issues = config.validate()
@@ -290,7 +286,7 @@ def main():
     time.sleep(2)
 
     print("=" * 60)
-    print("  5M BOT — Test Week ($3 fixed sizing)")
+    print("  5M BOT ÔÇö Test Week ($3 fixed sizing)")
     print("=" * 60)
     print(f"  Coins:        {', '.join(config.M5_COINS)}")
     print(f"  Hours:        {config.M5_TRADE_HOURS_START:02d}:00-{config.M5_TRADE_HOURS_END:02d}:00 Lima")
@@ -311,7 +307,7 @@ def main():
     )
     executor = ThreadPoolExecutor(max_workers=len(config.M5_COINS))
 
-    tg._send("[5M] Bot started — test mode, $3 fixed size")
+    tg._send("[5M] Bot started ÔÇö test mode, $3 fixed size")
 
     scan_count = 0
     daily_loss_alerted = False
@@ -321,15 +317,27 @@ def main():
             scan_count += 1
             now = datetime.now(timezone.utc).strftime("%H:%M:%S")
 
-            # ── Daily loss hard stop ──
+            if scan_count % 60 == 1:
+                _th, _r5 = is_5m_trading_hour()
+                logger.info(
+                    f"HEARTBEAT scan={scan_count} hours_ok={_th} "
+                    f"loss=${orders.daily_losses:.2f}/{config.M5_DAILY_LOSS_CAP:.0f} "
+                    f"pos={len(orders.positions)} gtc={len(orders.active_gtc)}"
+                )
+
+            # ÔöÇÔöÇ Daily loss hard stop ÔöÇÔöÇ
             if orders.daily_losses >= config.M5_DAILY_LOSS_CAP:
                 if not daily_loss_alerted:
                     logger.warning(
                         f"[5M DAILY STOP] losses=${orders.daily_losses:.2f} "
-                        f">= cap=${config.M5_DAILY_LOSS_CAP:.2f} — sleeping until tomorrow"
+                        f">= cap=${config.M5_DAILY_LOSS_CAP:.2f} ÔÇö sleeping until tomorrow"
                     )
                     tg._send(f"[5M] Daily loss cap hit (${orders.daily_losses:.2f}). Bot paused for the day.")
                     daily_loss_alerted = True
+                else:
+                    logger.info(
+                        f"[5M DAILY STOP] still paused losses=${orders.daily_losses:.2f} ÔÇö sleep 300s"
+                    )
                 time.sleep(300)
                 # Reset at midnight Lima
                 from zoneinfo import ZoneInfo
@@ -342,26 +350,26 @@ def main():
                     logger.info("[5M DAILY RESET] new day, counters reset")
                 continue
 
-            # ── Hours gate ──
+            # ÔöÇÔöÇ Hours gate ÔöÇÔöÇ
             can_trade, reason = is_5m_trading_hour()
             if not can_trade:
                 if scan_count % 200 == 1:
                     print(f"[{now}] {reason}")
 
-            # ── Periodic housekeeping ──
+            # ÔöÇÔöÇ Periodic housekeeping ÔöÇÔöÇ
             if scan_count % 100 == 0:
                 cleanup_old_windows()
 
-            # ── Resolve expired positions every loop ──
+            # ÔöÇÔöÇ Resolve expired positions every loop ÔöÇÔöÇ
             if orders.positions:
                 resolve_expired_positions(orders, predictor)
 
-            # ── Don't fire new bets when blocked ──
+            # ÔöÇÔöÇ Don't fire new bets when blocked ÔöÇÔöÇ
             if not can_trade:
                 time.sleep(config.M5_SCAN_INTERVAL)
                 continue
 
-            # ── Concurrency cap ──
+            # ÔöÇÔöÇ Concurrency cap ÔöÇÔöÇ
             active_count = len(orders.positions) + len(orders.active_gtc)
             if active_count >= config.M5_MAX_CONCURRENT:
                 if scan_count % 30 == 0:
@@ -369,7 +377,7 @@ def main():
                 time.sleep(config.M5_SCAN_INTERVAL)
                 continue
 
-            # ── Scan markets ──
+            # ÔöÇÔöÇ Scan markets ÔöÇÔöÇ
             _raw_coin_info = {}
 
             def scan_coin(coin: str):
@@ -428,9 +436,11 @@ def main():
             for future in as_completed(futures_map):
                 coin_name = futures_map[future]
                 try:
-                    _info, pred = future.result()
+                    _info, pred = future.result(timeout=45)
                     if pred:
                         predictions.append(pred)
+                except TimeoutError:
+                    logger.error(f"[5M SCAN TIMEOUT] {coin_name}: scan_coin >45s")
                 except Exception as e:
                     logger.error(f"[5M scan error] {coin_name}: {e}")
 
@@ -438,7 +448,7 @@ def main():
                 time.sleep(config.M5_SCAN_INTERVAL)
                 continue
 
-            # ── EXHAUST detector (same engine as 15m) ──
+            # ÔöÇÔöÇ EXHAUST detector (same engine as 15m) ÔöÇÔöÇ
             try:
                 _wt = {}
                 _pp = {}
@@ -459,10 +469,10 @@ def main():
                     _res = exhaust.evaluate(_p, _tk, _wt, _pp)
                     _act = _res.get("action", "CLEAN") if isinstance(_res, dict) else "CLEAN"
 
-                    # ── Fix apr28: high-entry override (Option A from audit) ──
+                    # ÔöÇÔöÇ Fix apr28: high-entry override (Option A from audit) ÔöÇÔöÇ
                     # Audit on 281 ABSTAIN events showed entries >= 63c blocked
                     # by EXHAUST resolve 71% WIN. Only allow DAMPEN (5m uses
-                    # fixed $3 size so DAMPEN flag is informational only —
+                    # fixed $3 size so DAMPEN flag is informational only ÔÇö
                     # the prob haircut is the real effect).
                     _entry_now = _p.entry_price if _p.entry_price > 0.05 else _p.poly_price
                     if (_act == "ABSTAIN" and _entry_now >= 0.63
@@ -492,7 +502,7 @@ def main():
                         _entry = _p.entry_price if _p.entry_price > 0.05 else _p.poly_price
                         _p.edge = _p.probability - _entry
                         # NOTE: 5m bot uses fixed sizing, so DAMPEN affects probability
-                        # only — order_manager's dampen-size cut is a no-op when
+                        # only ÔÇö order_manager's dampen-size cut is a no-op when
                         # force_size_usd is set.
                         logger.info(f"[EXHAUST DAMPEN] {_p.coin} {_p.direction} p={_pre:.2f}->{_p.probability:.2f}")
                     _kept.append(_p)
@@ -500,7 +510,7 @@ def main():
             except Exception as _ex:
                 logger.debug(f"[EXHAUST] eval error: {_ex}")
 
-            # ── Filter: tighter thresholds for 5m (noise is higher) ──
+            # ÔöÇÔöÇ Filter: tighter thresholds for 5m (noise is higher) ÔöÇÔöÇ
             actionable = [
                 p for p in predictions
                 if p.confidence in ("HIGH", "MEDIUM")
@@ -525,7 +535,7 @@ def main():
                 time.sleep(config.M5_SCAN_INTERVAL)
                 continue
 
-            # ── CLOB re-check + 5m-specific gates ──
+            # ÔöÇÔöÇ CLOB re-check + 5m-specific gates ÔöÇÔöÇ
             clob_ask = orders.get_clob_ask(best.token_id)
             if clob_ask is None:
                 unlock_window(best.coin, best.market_info.window_start)
@@ -551,7 +561,7 @@ def main():
             elif config.TRAP_BAND_MIN <= clob_ask <= config.TRAP_BAND_MAX:
                 logger.info(
                     f"[TRAP BAND] {best.coin} {best.direction}: "
-                    f"ask={clob_ask*100:.0f}c in 60-63c trap band — skip"
+                    f"ask={clob_ask*100:.0f}c in 60-63c trap band ÔÇö skip"
                 )
                 unlock_window(best.coin, best.market_info.window_start)
             else:

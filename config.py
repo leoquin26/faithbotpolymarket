@@ -37,6 +37,16 @@ SYMBOLS = {
     "XRP": "XRPUSDT",
 }
 
+# ÔöÇÔöÇ Growth Mode (May 13, 2026): coin whitelist (15m bot) ÔöÇÔöÇ
+# 30-day data: BTC +$68 / SOL ~$0 / ETH -$19 / XRP -$14.
+# Default whitelist drops ETH+XRP; full set with BOT_COIN_WHITELIST="BTC,ETH,SOL,XRP".
+_coin_whitelist_raw = os.getenv("BOT_COIN_WHITELIST", "BTC,SOL")
+BOT_COIN_WHITELIST = set(
+    c.strip().upper() for c in _coin_whitelist_raw.split(",") if c.strip()
+)
+if BOT_COIN_WHITELIST:
+    SYMBOLS = {k: v for k, v in SYMBOLS.items() if k in BOT_COIN_WHITELIST}
+
 # === POSITION SIZING ===
 DEFAULT_POSITION_SIZE = float(os.getenv("DEFAULT_POSITION_SIZE", "5"))
 MAX_SINGLE_TRADE = float(os.getenv("MAX_SINGLE_TRADE", "10"))
@@ -51,11 +61,11 @@ ABSOLUTE_MAX_ENTRY = ENTRY_MAX
 PM_ENTRY_MAX = float(os.getenv("PM_ENTRY_MAX", "0.64"))
 
 # Option A apr28: data-driven trap-band cut
-# 0.60-0.63c entries had 47.1% WR / R:R 0.75 over 17 trades — confirmed loser.
+# 0.60-0.63c entries had 47.1% WR / R:R 0.75 over 17 trades ÔÇö confirmed loser.
 TRAP_BAND_MIN = float(os.getenv("TRAP_BAND_MIN", "0.60"))
 TRAP_BAND_MAX = float(os.getenv("TRAP_BAND_MAX", "0.63"))
 
-# Option A apr28: XRP is 50% WR / -$3.80 net — block in PM where it's worst.
+# Option A apr28: XRP is 50% WR / -$3.80 net ÔÇö block in PM where it's worst.
 PM_BLOCKED_COINS = set(os.getenv("PM_BLOCKED_COINS", "XRP").split(","))
 
 
@@ -67,6 +77,32 @@ MAX_EDGE = float(os.getenv("MAX_EDGE_THRESHOLD", "0.50"))
 MIN_DIRECTIONAL_EDGE = float(os.getenv("MIN_DIRECTIONAL_EDGE", "0.05"))
 MIN_CONVICTION = float(os.getenv("MIN_CONVICTION", "0.55"))
 MIN_WINDOW_AGE = int(os.getenv("MIN_WINDOW_AGE", "60"))
+
+# ÔöÇÔöÇ Phase A restoration (May 13, 2026): re-add peak quality gates ÔöÇÔöÇ
+# Choppy-strict gate: if chop detector is on AND |trend| below this,
+# abstain. Peak engine (Apr 21 ÔåÆ May 5 $90ÔåÆ$199 run) had this; it
+# was lost during May 12 V6/V8/Phase-2 deployments.
+CHOPPY_MIN_TREND_ABS = float(os.getenv("CHOPPY_MIN_TREND_ABS", "0.48"))
+
+# Per-timeframe flip-guard threshold. 5m needs stricter (peak: 2.0) to
+# stop fast micro-reversal self-hedging. V7 Phase-1 had lowered to 1.2.
+FLIP_TREND_MIN_5M = float(os.getenv("FLIP_TREND_MIN_5M", "2.0"))
+FLIP_TREND_MIN_15M = float(os.getenv("FLIP_TREND_MIN_15M", "1.5"))
+
+# Trap-band memory: once ask touched 60-64c this window for a
+# (coin, dir), don't chase a lower retry unless prob >= TRAP_BAND_OVERRIDE_PROB
+# AND edge >= TRAP_BAND_OVERRIDE_EDGE (A-tier override).
+TRAP_BAND_OVERRIDE_PROB = float(os.getenv("TRAP_BAND_OVERRIDE_PROB", "0.85"))
+TRAP_BAND_OVERRIDE_EDGE = float(os.getenv("TRAP_BAND_OVERRIDE_EDGE", "0.18"))
+
+# ÔöÇÔöÇ Phase B (May 13, 2026): Order Book Imbalance directional gate ÔöÇÔöÇ
+# depth_ratio = bid_total / ask_total of the token we're buying.
+# < OBI_HARD_MIN  ÔåÆ abstain (very weak demand for our direction)
+# < OBI_SOFT_MIN  ÔåÆ require edge >= MIN_EDGE + OBI_SOFT_EDGE_BOOST
+# Kill switch: OBI_GATE=off in .env disables both layers.
+OBI_HARD_MIN = float(os.getenv("OBI_HARD_MIN", "0.30"))
+OBI_SOFT_MIN = float(os.getenv("OBI_SOFT_MIN", "0.50"))
+OBI_SOFT_EDGE_BOOST = float(os.getenv("OBI_SOFT_EDGE_BOOST", "0.05"))
 
 # === SCAN TIMING ===
 SCAN_INTERVAL = 3
@@ -131,10 +167,10 @@ def validate():
     return issues
 
 
-# ──────────────────────────────────────────────────────────────────
-# 5m BOT CONFIG (Apr 28) — runs in a separate process: run_brain_5m.py
+# ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# 5m BOT CONFIG (Apr 28) ÔÇö runs in a separate process: run_brain_5m.py
 # Test week: $3 fixed bets, BTC+SOL only, morning hours only, $5/day cap
-# ──────────────────────────────────────────────────────────────────
+# ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 M5_ENABLED          = bool(int(os.getenv("M5_ENABLED", "0")))
 M5_TRADE_HOURS_START = int(os.getenv("M5_TRADE_HOURS_START", "9"))   # Lima
 M5_TRADE_HOURS_END   = int(os.getenv("M5_TRADE_HOURS_END",  "12"))   # morning only initially

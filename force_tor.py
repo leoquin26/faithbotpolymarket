@@ -68,6 +68,7 @@ if USE_TOR:
         'telegram.org',
         # Polymarket WebSocket (doesn't work through Tor)
         'ws-live-data.polymarket.com',
+        'ws-subscriptions-clob.polymarket.com',
     ]
     os.environ['NO_PROXY'] = ','.join(no_proxy_domains)
     

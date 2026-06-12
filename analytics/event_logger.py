@@ -71,6 +71,18 @@ def log(event: str, **fields: Any) -> None:
     Always adds `ts` (ISO8601 UTC) and `ts_epoch` (int seconds).
     """
     if not _ENABLED:
+        # Even if JSONL is disabled, the sqlite ledger may be enabled.
+        try:
+            from . import ledger as _ledger  # type: ignore
+            if _ledger.is_enabled():
+                _ledger.log_event_dict({
+                    "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "ts_epoch": int(time.time()),
+                    "event": event,
+                    **fields,
+                })
+        except Exception:
+            pass
         return
 
     row: dict[str, Any] = {
@@ -90,6 +102,13 @@ def log(event: str, **fields: Any) -> None:
         with _LOCK:
             with open(EVENTS_PATH, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
+        # [AUDIT MAY27 L1] mirror to sqlite ledger if enabled
+        try:
+            from . import ledger as _ledger  # type: ignore
+            if _ledger.is_enabled():
+                _ledger.log_event_dict(row)
+        except Exception:
+            pass
     except Exception as e:
         _warn_once(f"[ANALYTICS] write failed: {e}")
 

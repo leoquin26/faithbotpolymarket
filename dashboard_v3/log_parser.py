@@ -21,11 +21,51 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("dash_v3.parser")
+# Gamma-truth reconciliation (Polymarket official outcomes)
+try:
+    from dashboard_v3.trade_reconciler import reconcile_today as _reconcile_today
+except Exception:
+    try:
+        from trade_reconciler import reconcile_today as _reconcile_today
+    except Exception:
+        _reconcile_today = None
+
+
 
 # ─────────────────────────────────────────────────────────────────
 # Ring buffers + counters
 # ─────────────────────────────────────────────────────────────────
-LOG_FILE = Path("/home/ubuntu/v3-bot/v3_bot.log")
+# [DASH-PATH-FIX 2026-05-08] Bot writes logs/bot_YYYY-MM-DD.log via loguru
+# midnight rotation. Resolve today's path on each tail iteration so the
+# parser switches files automatically at midnight.
+_LEGACY_LOG_FILE = Path("/home/ubuntu/v3-bot/v3_bot.log")
+_LOG_DIR = Path("/home/ubuntu/v3-bot/logs")
+
+RE_STATS_DAY = re.compile(r"^bot_(\d{4}-\d{2}-\d{2})\.log$")
+_tail_stats_date: str | None = None
+
+
+def _active_log_path() -> Path:
+    """Today's log, or latest bot_YYYY-MM-DD.log with data (loguru date frozen at bot start)."""
+    today = _LOG_DIR / f"bot_{datetime.now().strftime('%Y-%m-%d')}.log"
+    if today.exists() and today.stat().st_size > 0:
+        return today
+    candidates = []
+    for p in _LOG_DIR.glob("bot_*.log"):
+        if RE_STATS_DAY.match(p.name) and p.stat().st_size > 0:
+            candidates.append(p)
+    if candidates:
+        return max(candidates, key=lambda x: x.stat().st_mtime)
+    return today
+
+
+# Backwards-compatible alias used elsewhere in this module.
+def _log_file() -> Path:
+    return _active_log_path()
+
+
+# Kept for any external code that still imports LOG_FILE.
+LOG_FILE = _LEGACY_LOG_FILE
 
 # Every parsed line (bounded). Most recent at right; we iterate in reverse
 # for "latest first" consumption.
@@ -86,7 +126,13 @@ RE_EXHAUST_FLIP = re.compile(
 
 RE_ORDER = re.compile(
     r"\[ORDER\]\s+(?P<coin>\w+)\s+(?P<dir>UP|DOWN)\s+\|\s+FOK\s+@\s+(?P<ask>\d+)c\s+\|\s+"
-    r"(?P<shares>\d+)\s+shares\s+\((?:cost=\$(?P<cost>[\d\.]+),\s+sized=\$(?P<sized>[\d\.]+)|\$(?P<sized_only>[\d\.]+))\)"
+    r"(?P<shares>\d+)\s+shares\s+\("
+    r"(?:cost=\$(?P<cost>[\d\.]+),\s+sized=\$(?P<sized>[\d\.]+)|\$(?P<size>[\d\.]+))\)"
+)
+
+RE_GTC_FILLED = re.compile(
+    r"\[GTC FILLED\]\s+(?P<coin>\w+)\s+(?P<dir>UP|DOWN)\s+@\s+(?P<ask>\d+)c\s+"
+    r"\((?P<shares>[\d\.]+)\s+shares,\s+\$(?P<cost>[\d\.]+)\)"
 )
 
 RE_FILLED = re.compile(
@@ -96,13 +142,13 @@ RE_FILLED = re.compile(
 RE_MISS = re.compile(r"\[MISS\]\s+(?P<coin>\w+)\s+(?P<dir>UP|DOWN)")
 
 RE_WIN = re.compile(
-    r"\[WIN\s+(?P<session>\w+)\]\s+(?P<coin>\w+)\s+(?P<dir>UP|DOWN)\s+\|\s+"
-    r"\+\$(?P<amount>[\d\.]+)\s+\|\s+Entry:\s+(?P<entry>\d+)c\s+x(?P<shares>\d+)"
+    r"\[WIN(?:\s+(?P<session>\w+))?\]\s+(?P<coin>\w+)\s+(?P<dir>UP|DOWN)\s+\|\s+"
+    r"\+\$(?P<amount>[\d\.]+)(?:\s+\|\s+Entry:\s+(?P<entry>\d+)c\s+x(?P<shares>\d+))?"
 )
 
 RE_LOSS = re.compile(
-    r"\[LOSS\s+(?P<session>\w+)\]\s+(?P<coin>\w+)\s+(?P<dir>UP|DOWN)\s+\|\s+"
-    r"-\$(?P<amount>[\d\.]+)\s+\|\s+Entry:\s+(?P<entry>\d+)c\s+x(?P<shares>\d+)"
+    r"\[LOSS(?:\s+(?P<session>\w+))?\]\s+(?P<coin>\w+)\s+(?P<dir>UP|DOWN)\s+\|\s+"
+    r"-\$(?P<amount>[\d\.]+)(?:\s+\|\s+Entry:\s+(?P<entry>\d+)c\s+x(?P<shares>\d+))?"
 )
 
 RE_KELLY = re.compile(
@@ -146,7 +192,7 @@ def _classify(level: str, msg: str) -> str:
         return "exhaust"
     if "[ORDER]" in msg or "[FILLED]" in msg or "[MISS]" in msg:
         return "trade"
-    if "[WIN " in msg or "[LOSS " in msg:
+    if "[WIN" in msg or "[LOSS" in msg:
         return "trade"
     if "[KELLY]" in msg:
         return "trade"
@@ -213,7 +259,7 @@ def _parse_line(raw: str):
     # Proper timestamp derived from the log line itself (not parse time).
     log_ts = _log_hms_to_epoch(t)
 
-    today = _today_key()
+    stats_day = datetime.fromtimestamp(log_ts).strftime("%Y-%m-%d")
 
     with _lock:
         events_ring.append({
@@ -224,7 +270,7 @@ def _parse_line(raw: str):
             "ts": log_ts,
         })
 
-        counters = _today_counters[today]
+        counters = _today_counters[stats_day]
         counters["total"] += 1
 
         # ───── structured parse ─────
@@ -266,7 +312,7 @@ def _parse_line(raw: str):
         if bm:
             coin = bm["coin"]
             counters["blocks"] += 1
-            _today_block_by_coin[today][coin] += 1
+            _today_block_by_coin[stats_day][coin] += 1
             signals_ring.append({
                 "t": t,
                 "kind": "BLOCK",
@@ -303,9 +349,10 @@ def _parse_line(raw: str):
         om = RE_ORDER.search(msg)
         if om:
             counters["orders"] += 1
-            size_usd = float(om["sized"] or om["sized_only"] or 0)
+            size_usd = float(om["sized"] or om["size"] or om["sized_only"] or 0)
             cost = float(om["cost"] or size_usd)
             _today_trades.append({
+                "day": stats_day,
                 "t": t,
                 "type": "ORDER",
                 "coin": om["coin"],
@@ -318,10 +365,28 @@ def _parse_line(raw: str):
             })
             return
 
+
+        gtc = RE_GTC_FILLED.search(msg)
+        if gtc:
+            counters["fills"] += 1
+            _today_trades.append({
+                "day": stats_day,
+                "t": t,
+                "type": "FILLED",
+                "coin": gtc["coin"],
+                "dir": gtc["dir"],
+                "shares": int(float(gtc["shares"])),
+                "price": int(gtc["ask"]),
+                "cost": float(gtc["cost"]),
+                "ts": log_ts,
+            })
+            return
+
         flm = RE_FILLED.search(msg)
         if flm:
             counters["fills"] += 1
             _today_trades.append({
+                "day": stats_day,
                 "t": t,
                 "type": "FILLED",
                 "coin": flm["coin"],
@@ -338,14 +403,15 @@ def _parse_line(raw: str):
             counters["wins"] += 1
             counters["pnl_cents"] += int(float(wm["amount"]) * 100)
             _today_trades.append({
+                "day": stats_day,
                 "t": t,
                 "type": "WIN",
                 "coin": wm["coin"],
                 "dir": wm["dir"],
                 "amount": float(wm["amount"]),
-                "entry": int(wm["entry"]),
-                "shares": int(wm["shares"]),
-                "session": wm["session"],
+                "entry": int(wm["entry"] or 0),
+                "shares": int(wm["shares"] or 0),
+                "session": wm.group("session") or "15M",
                 "ts": log_ts,
             })
             return
@@ -355,14 +421,15 @@ def _parse_line(raw: str):
             counters["losses"] += 1
             counters["pnl_cents"] -= int(float(lm["amount"]) * 100)
             _today_trades.append({
+                "day": stats_day,
                 "t": t,
                 "type": "LOSS",
                 "coin": lm["coin"],
                 "dir": lm["dir"],
                 "amount": float(lm["amount"]),
-                "entry": int(lm["entry"]),
-                "shares": int(lm["shares"]),
-                "session": lm["session"],
+                "entry": int(lm["entry"] or 0),
+                "shares": int(lm["shares"] or 0),
+                "session": lm.group("session") or "15M",
                 "ts": log_ts,
             })
             return
@@ -389,37 +456,57 @@ def _parse_line(raw: str):
 # Tailer thread
 # ─────────────────────────────────────────────────────────────────
 def _tail_loop(bootstrap_lines: int = 2000, poll_interval: float = 0.5):
-    """Run forever. Handles log rotation by detecting inode change."""
+    """Run forever. Handles log rotation by detecting inode change AND
+    by detecting that the active log path itself changed (date rollover)."""
     global _file_pos, _file_inode
-    logger.info(f"tailer starting on {LOG_FILE} (bootstrap={bootstrap_lines})")
+    current_path = _active_log_path()
+    logger.info(f"tailer starting on {current_path} (bootstrap={bootstrap_lines})")
     bootstrapped = False
 
     while True:
         try:
-            if not LOG_FILE.exists():
+            new_path = _active_log_path()
+            if new_path != current_path:
+                # Date rolled over (or we found today's file for the first
+                # time). Treat as rotation: bootstrap the new file's tail.
+                logger.info(
+                    f"active log path changed: {current_path} -> {new_path} "
+                    "— bootstrapping new file"
+                )
+                current_path = new_path
+                bootstrapped = False
+                _file_pos = 0
+                _file_inode = -1
+
+            if not current_path.exists():
                 time.sleep(2)
                 continue
 
-            st = LOG_FILE.stat()
+            global _tail_stats_date
+            msd = RE_STATS_DAY.match(current_path.name)
+            _tail_stats_date = msd.group(1) if msd else _today_key()
+
+            st = current_path.stat()
             if st.st_ino != _file_inode:
-                # New file (first run or rotated) — reset.
                 _file_inode = st.st_ino
                 _file_pos = 0
 
-            with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as fh:
+            with open(current_path, "r", encoding="utf-8", errors="ignore") as fh:
                 if not bootstrapped and bootstrap_lines > 0:
-                    # Read the last N lines to seed the dashboard.
                     fh.seek(0, os.SEEK_END)
                     size = fh.tell()
-                    chunk = min(size, 200_000)  # ~200 KB of tail
-                    fh.seek(size - chunk)
+                    chunk = min(size, 200_000)
+                    fh.seek(max(0, size - chunk))
                     tail = fh.read()
                     lines = tail.splitlines()[-bootstrap_lines:]
                     for ln in lines:
                         _parse_line(ln)
                     _file_pos = size
                     bootstrapped = True
-                    logger.info(f"bootstrap complete ({len(lines)} lines parsed)")
+                    logger.info(
+                        f"bootstrap complete ({len(lines)} lines parsed from "
+                        f"{current_path.name})"
+                    )
                 else:
                     fh.seek(_file_pos)
                     new = fh.read()
@@ -468,10 +555,10 @@ def get_last_log_ts() -> float:
 
 
 def get_last_file_mtime() -> float:
-    """Unix mtime of v3_bot.log — proves the bot is actively writing
-    even if no events matched our regexes recently (e.g. pure DEBUG)."""
+    """Unix mtime of the active bot log — proves the bot is actively
+    writing even if no events matched our regexes recently."""
     try:
-        return LOG_FILE.stat().st_mtime
+        return _active_log_path().stat().st_mtime
     except Exception:
         return 0.0
 
@@ -492,7 +579,7 @@ def get_today_stats() -> dict:
         losses = c.get("losses", 0)
         n_resolved = wins + losses
         winrate = (wins / n_resolved * 100) if n_resolved else 0
-        return {
+        base = {
             "today": today,
             "total_events": c.get("total", 0),
             "signals": c.get("signals", 0),
@@ -508,8 +595,33 @@ def get_today_stats() -> dict:
             "breakers": c.get("breakers", 0),
             "blocks_by_coin": by_coin.get(today, {}),
         }
+    # Override W/L/PnL with Polymarket Gamma truth when available
+    if _reconcile_today:
+        try:
+            rec = _reconcile_today()
+            if rec.get("resolved", 0) > 0:
+                base["wins"] = rec["wins"]
+                base["losses"] = rec["losses"]
+                base["winrate"] = rec["winrate"]
+                base["pnl_usd"] = rec["pnl_usd"]
+                base["resolution_source"] = rec.get("source", "gamma")
+                base["pending_trades"] = rec.get("pending", 0)
+        except Exception as _re:
+            logger.debug(f"gamma reconcile failed: {_re}")
+    return base
 
 
 def get_today_trades() -> list[dict]:
+    today = _today_key()
+    if _reconcile_today:
+        try:
+            rec = _reconcile_today()
+            out = []
+            for t in rec.get("trades", []):
+                out.append({**t, "day": today})
+            if out:
+                return out
+        except Exception as _re:
+            logger.debug(f"gamma trades reconcile failed: {_re}")
     with _lock:
-        return list(_today_trades)
+        return [t for t in _today_trades if t.get("day") == today]

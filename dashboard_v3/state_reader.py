@@ -32,6 +32,9 @@ SAFE_SETTINGS = [
     # Modes
     "DRY_RUN", "COMPOUND_MODE", "WEEKEND_MODE",
     "SKIP_NIGHT_HOURS", "NIGHT_START_HOUR", "NIGHT_END_HOUR",
+    # PM-session filters (apr28)
+    "PM_ENTRY_MAX", "PM_BLOCKED_COINS",
+    "TRAP_BAND_MIN", "TRAP_BAND_MAX",
     # Logging
     "LOG_LEVEL",
 ]
@@ -135,10 +138,15 @@ def get_traded_windows() -> dict:
 # Bot process status + controls
 # ─────────────────────────────────────────────────────────────────
 def bot_status() -> dict:
-    """Check if run_bot.py is running, return PID + uptime."""
+    """Check if run_bot.py is running, return PID + uptime.
+
+    Uses an anchored regex so transient bash -c lines that mention
+    `run_bot.py` (e.g. during a restart) don't match first, and the
+    `-u` flag (unbuffered output, used in production) is matched too.
+    """
     try:
         out = subprocess.check_output(
-            ["pgrep", "-af", "python3 run_bot.py"],
+            ["pgrep", "-af", r"^python3.*run_bot\.py$"],
             text=True,
         ).strip()
         if not out:
@@ -200,12 +208,30 @@ def bot_clear_locks() -> dict:
 # ─────────────────────────────────────────────────────────────────
 # Log tail (for raw viewer)
 # ─────────────────────────────────────────────────────────────────
+def _active_log_path() -> Path:
+    """Today's log or latest bot_YYYY-MM-DD.log with content."""
+    from datetime import datetime
+    import re as _re
+    logs = BOT_DIR / "logs"
+    today = logs / f"bot_{datetime.now().strftime('%Y-%m-%d')}.log"
+    if today.exists() and today.stat().st_size > 0:
+        return today
+    pat = _re.compile(r"^bot_(\d{4}-\d{2}-\d{2})\.log$")
+    candidates = [p for p in logs.glob("bot_*.log") if pat.match(p.name) and p.stat().st_size > 0]
+    if candidates:
+        return max(candidates, key=lambda x: x.stat().st_mtime)
+    if today.exists():
+        return today
+    return LOG_FILE
+
+
 def tail_log(n: int = 200) -> list[str]:
-    if not LOG_FILE.exists():
+    log_file = _active_log_path()
+    if not log_file.exists():
         return []
     try:
         # Efficient tail via seek
-        with open(LOG_FILE, "rb") as f:
+        with open(log_file, "rb") as f:
             f.seek(0, os.SEEK_END)
             size = f.tell()
             chunk = min(size, 200_000)
