@@ -23,3 +23,26 @@ data/Polymarket-History-*.csv
 traded_windows_5m.json
 v3_bot_5m.log
 logs/bot_5m_*.log
+
+# === v10: never commit secrets/backups/state ===
+.env*
+!.env.example
+*.bak
+*.bak_*
+*.bak*
+*_backup.py
+*_backup/
+*_v4.py
+*_v5.py
+*_v8.py
+*predeploy*
+*predeploy*
+*_predeploy_*
+*rollback*
+*.disabled*
+regime_aware.disabled_*/
+dashboard_v3_backups/
+_audit_predeploy_*/
+_regime_predeploy_backup_*/
+_rollback_backup_*/
+*.pid
