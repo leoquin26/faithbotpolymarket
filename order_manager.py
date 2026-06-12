@@ -589,6 +589,19 @@ class OrderManager:
                 self.daily_trades += 1
                 self.mark_window_traded(coin, window_start, direction)
                 logger.info(f"[FILLED] {coin} {direction} | {int(matched)} shares @ {avg_price*100:.0f}c = ${cost:.2f}")
+                # jun12 audit: analytics pipeline was severed by the Jun-3
+                # rewrite — restore SIGNAL/FIRED events (jsonl + sqlite ledger).
+                try:
+                    from analytics import event_logger as _alog_f
+                    _tid = _alog_f.new_trade_id()
+                    if pred is not None:
+                        _alog_f.log_signal(_tid, pred, float(getattr(pred, "trend_score", 0.0) or 0.0),
+                                           dist_pct=float(getattr(pred, "dist_pct", 0.0) or 0.0))
+                    _alog_f.log_fired(_tid, coin, direction, float(avg_price), float(matched),
+                                      float(cost), phase="15M", order_kind="FOK",
+                                      window_start=int(window_start or 0))
+                except Exception:
+                    pass
                 print(f"\n  [OK] FILLED: {coin} {direction} | {int(matched)} shares @ {avg_price*100:.0f}c | Cost: ${cost:.2f}")
                 tg.notify_fill(coin, direction, int(matched), avg_price, cost, pred.edge if pred else 0, pred.probability if pred else 0)
                 return True
@@ -620,6 +633,17 @@ class OrderManager:
                         self.daily_trades += 1
                         self.mark_window_traded(coin, window_start, direction)
                         logger.info(f"[FILLED] {coin} {direction} | {int(gtc_m)} shares @ {gtc_p*100:.0f}c (GTC)")
+                        try:
+                            from analytics import event_logger as _alog_g
+                            _tid = _alog_g.new_trade_id()
+                            if pred is not None:
+                                _alog_g.log_signal(_tid, pred, float(getattr(pred, "trend_score", 0.0) or 0.0),
+                                                   dist_pct=float(getattr(pred, "dist_pct", 0.0) or 0.0))
+                            _alog_g.log_fired(_tid, coin, direction, float(gtc_p), float(gtc_m),
+                                              float(cost), phase="15M", order_kind="GTC",
+                                              window_start=int(window_start or 0))
+                        except Exception:
+                            pass
                         return True
                     self.active_gtc[gtc_oid or "unknown"] = {
                         "coin": coin, "direction": direction, "token_id": token_id,
@@ -772,6 +796,11 @@ class OrderManager:
                 _sh = _sh_ok
             else:
                 _sh = _sh_tail
+            # jun12 audit: MEDIUM-confidence signals won 39.4% (n=33) vs HIGH
+            # 58.8% (n=177) — de-size them, do not block. CONF_MULT_MEDIUM=1.0
+            # disables.
+            if str(getattr(pred, "confidence", "") or "") == "MEDIUM":
+                _sh = max(2.0, round(_sh * float(os.getenv("CONF_MULT_MEDIUM", "0.6"))))
             # jun11 session-weighted sizing: trade smoothly ALL day (no
             # blocking) but lean size into when the bot actually wins.
             # 90-trade data by ET session: PRE_OPEN 43%, US_OPEN 54%,

@@ -1156,6 +1156,37 @@ class Predictor:
             except Exception as _cal_e:
                 logger.debug(f"[CALIBRATION] skip {coin}: {_cal_e}")
 
+        # jun12 audit — EMPIRICAL SHRINK: graded outcomes show the model prob
+        # is ~22pp overconfident (0.80-0.85 bucket -> 58.4% realized WR, n=214;
+        # Brier 0.298 vs 0.247 constant). Realized WR is anchored by |dist|
+        # tier (<0.10%: 44%, 0.10-0.15%: 64%, >=0.15%: 75%; Jun n=38).
+        # cal = anchor(|dist|) + alpha*(prob-0.50); alpha 0.2-0.3 beat the
+        # constant baseline out-of-sample (Brier 0.2445). The shrunk prob
+        # feeds the existing LOW PROB / LOW EDGE / THIN EDGE gates and sizing,
+        # so the edge gate becomes an honest EV gate. EMP_SHRINK_ON=off kills it.
+        if os.getenv("EMP_SHRINK_ON", "on").lower() in ("on", "1", "true"):
+            try:
+                _es_alpha = float(os.getenv("EMP_SHRINK_ALPHA", "0.30"))
+                _es_ad = abs(dist_pct)
+                if _es_ad < float(os.getenv("EMP_SHRINK_D1", "0.0010")):
+                    _es_anchor = float(os.getenv("EMP_SHRINK_WR1", "0.52"))
+                elif _es_ad < float(os.getenv("EMP_SHRINK_D2", "0.0015")):
+                    _es_anchor = float(os.getenv("EMP_SHRINK_WR2", "0.60"))
+                else:
+                    _es_anchor = float(os.getenv("EMP_SHRINK_WR3", "0.68"))
+                _es_prob = max(float(os.getenv("EMP_SHRINK_LO", "0.35")),
+                               min(float(os.getenv("EMP_SHRINK_HI", "0.82")),
+                                   _es_anchor + _es_alpha * (win_prob - 0.50)))
+                if abs(_es_prob - win_prob) > 0.001:
+                    logger.debug(
+                        f"[EMP SHRINK] {coin} {direction}: prob {win_prob*100:.0f}%"
+                        f" -> {_es_prob*100:.0f}% (anchor={_es_anchor:.2f} "
+                        f"alpha={_es_alpha:.2f} dist={dist_pct*100:+.3f}%)")
+                win_prob = _es_prob
+                edge = win_prob - ask
+            except Exception:
+                pass
+
         _sg = sess_cal.get_session()
         min_edge = max(getattr(config, "MIN_EDGE", 0.05), _sg.min_edge)
         min_prob = max(getattr(config, "MIN_WIN_PROB", 0.65), _sg.min_prob)
@@ -1182,7 +1213,11 @@ class Predictor:
             )
             return None
 
-        confidence = "HIGH" if win_prob >= 0.75 and edge >= 0.12 else "MEDIUM"
+        # jun12 audit: thresholds rescaled to the shrunk-probability space
+        # (raw 0.75/0.12 maps to ~0.62/0.08 after EMP SHRINK). Env-tunable.
+        _conf_p = float(os.getenv("CONF_HIGH_PROB", "0.62"))
+        _conf_e = float(os.getenv("CONF_HIGH_EDGE", "0.08"))
+        confidence = "HIGH" if win_prob >= _conf_p and edge >= _conf_e else "MEDIUM"
 
         reasoning = (
             f"BS={base_up_prob:.1%} sigma={sigma:.2e} T={time_remaining:.0f}s | "

@@ -266,6 +266,18 @@ def resolve_expired_positions(orders, predictor, binance_ws_module):
             f"{'WIN' if won else 'LOSS'}"
         )
 
+        # jun12 audit: restore RESOLVED analytics events (jsonl + ledger).
+        try:
+            from analytics import event_logger as _alog_r
+            _alog_r.log_resolved(
+                trade_id=pos.get("trade_id"), coin=coin, side=side,
+                window_start=int(ws), won=bool(won), cost=float(cost),
+                payout=float(payout), pnl=float((payout - cost) if won else -cost),
+                phase="15M", resolution_source=str(resolve_src),
+            )
+        except Exception:
+            pass
+
         if won:
             pnl = payout - cost
             orders.record_win_pnl(pnl)
