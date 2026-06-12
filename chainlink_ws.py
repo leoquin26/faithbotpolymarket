@@ -19,6 +19,13 @@ _COIN_SYMBOL = {
 }
 
 _latest: Dict[str, float] = {}
+_updated: Dict[str, float] = {}
+# jun12: rolling RTDS tick buffer per coin — RTDS is the real-time Chainlink
+# stream (the settlement feed family). Momentum computed from it beats 2.5s
+# polls of the deviation-gated on-chain aggregator (~5bp quantized, heartbeat
+# lag). ~40min at 1 tick/s.
+_ticks: Dict[str, list] = {}
+_TICK_MAX = int(os.getenv("CHAINLINK_WS_TICK_MAX", "2400"))
 _lock = threading.Lock()
 _connected = False
 _thread: Optional[threading.Thread] = None
@@ -48,9 +55,17 @@ def _on_message(ws, message):
         coin = _coin_from_symbol(sym)
         if coin:
             _connected = True
-            _last_data_ts = time.time()
+            now = time.time()
+            _last_data_ts = now
             with _lock:
                 _latest[coin] = val
+                _updated[coin] = now
+                buf = _ticks.setdefault(coin, [])
+                # dedupe equal prices but keep a >=1s cadence so ROC spans are real
+                if not buf or buf[-1][1] != val or (now - buf[-1][0]) >= 1.0:
+                    buf.append((now, val))
+                    if len(buf) > _TICK_MAX:
+                        del buf[: len(buf) - _TICK_MAX]
     except Exception:
         pass
 
@@ -156,10 +171,29 @@ def start():
     logger.info("[CHAINLINK-WS] RTDS subscriber started")
 
 
-def get_price(coin: str) -> Optional[float]:
+def get_price(coin: str, max_age: Optional[float] = None) -> Optional[float]:
+    """Latest RTDS price, or None when STALE (default 30s) so callers fall
+    back to on-chain/Binance instead of computing dist_pct off a frozen
+    level. CHAINLINK_WS_MAX_AGE=0 disables the check (old behavior)."""
+    c = coin.upper()
+    if max_age is None:
+        max_age = float(os.getenv("CHAINLINK_WS_MAX_AGE", "30"))
     with _lock:
-        p = _latest.get(coin.upper())
-    return p if p and p > 0 else None
+        p = _latest.get(c)
+        ts = _updated.get(c, 0.0)
+    if not p or p <= 0:
+        return None
+    if max_age > 0 and ts > 0 and (time.time() - ts) > max_age:
+        return None
+    return p
+
+
+def get_ticks(coin: str, seconds: float = 300.0) -> list:
+    """(ts, price) RTDS ticks for the last `seconds`, oldest first."""
+    cutoff = time.time() - seconds
+    with _lock:
+        buf = list(_ticks.get(coin.upper(), []))
+    return [(ts, p) for ts, p in buf if ts >= cutoff]
 
 
 def is_connected() -> bool:

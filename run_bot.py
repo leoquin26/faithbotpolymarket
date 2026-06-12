@@ -86,8 +86,21 @@ def _multi_price(coin: str):
 
 
 def _chainlink_tick_history(coin: str, seconds: int = 300):
-    """(ts, price) ticks on the Chainlink feed for ROC. On-chain history
-    (RTDS keeps only latest), so ROC matches the level's feed."""
+    """(ts, price) ticks on the Chainlink feed for ROC.
+
+    jun12: prefer the RTDS websocket buffer (real-time, the same feed family
+    settlement uses). The on-chain aggregator only publishes rounds on ~5bp
+    deviation or heartbeat, so momentum from it is quantized and laggy. Fall
+    back to on-chain polls when the RTDS buffer is thin or stale."""
+    try:
+        import chainlink_ws as _clws
+        ticks = _clws.get_ticks(coin, seconds)
+        if (len(ticks) >= int(os.getenv("RTDS_TICKS_MIN", "10"))
+                and (ticks[-1][0] - ticks[0][0]) >= float(os.getenv("RTDS_SPAN_MIN", "60"))
+                and (time.time() - ticks[-1][0]) <= float(os.getenv("RTDS_FRESH_SEC", "20"))):
+            return ticks
+    except Exception:
+        pass
     if _chainlink_onchain is not None:
         try:
             return _chainlink_onchain.tick_history(coin, seconds)

@@ -49,6 +49,12 @@ class Prediction:
     dir_votes_up: int = 0
     dir_votes_down: int = 0
     dist_pct: float = 0.0
+    # jun12: full feature snapshot for the analytics events / fitted model
+    sigma: float = 0.0
+    t_remaining: float = 0.0
+    roc60: float = 0.0
+    roc300: float = 0.0
+    regime: str = ""
 
 
 # ── Normal CDF (Abramowitz & Stegun approximation, max error 1.5e-7) ──
@@ -603,10 +609,12 @@ class Predictor:
         raw_prob = _sigmoid(trend_score * 3.0)
 
         _ua_b, _da_b = float(up_ask or 0), float(down_ask or 0)
-        if _ua_b > 0.02 and _da_b > 0.02:
-            book_up = _ua_b / (_ua_b + _da_b)
-        elif up_mid > 0.01 and down_mid > 0.01:
+        # jun12: prefer MIDs — an ask-only ratio skews toward whichever side
+        # quotes the wider spread; mids are the book's actual consensus.
+        if up_mid > 0.01 and down_mid > 0.01:
             book_up = up_mid / (up_mid + down_mid)
+        elif _ua_b > 0.02 and _da_b > 0.02:
+            book_up = _ua_b / (_ua_b + _da_b)
         elif up_mid > 0.01:
             book_up = up_mid
         elif down_mid > 0.01:
@@ -1270,4 +1278,9 @@ class Predictor:
             dir_votes_up=votes_up,
             dir_votes_down=votes_down,
             dist_pct=dist_pct,
+            sigma=sigma,
+            t_remaining=time_remaining,
+            roc60=roc_60,
+            roc300=roc_300,
+            regime=regime,
         )

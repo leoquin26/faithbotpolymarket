@@ -627,7 +627,13 @@ class OrderManager:
                     _tid = _alog_f.new_trade_id()
                     if pred is not None:
                         _alog_f.log_signal(_tid, pred, float(getattr(pred, "trend_score", 0.0) or 0.0),
-                                           dist_pct=float(getattr(pred, "dist_pct", 0.0) or 0.0))
+                                           dist_pct=float(getattr(pred, "dist_pct", 0.0) or 0.0),
+                                           sigma=float(getattr(pred, "sigma", 0.0) or 0.0),
+                                           t_remaining=float(getattr(pred, "t_remaining", 0.0) or 0.0),
+                                           roc60=float(getattr(pred, "roc60", 0.0) or 0.0),
+                                           roc300=float(getattr(pred, "roc300", 0.0) or 0.0),
+                                           book_up=float(getattr(pred, "book_up_mid", 0.5) or 0.5),
+                                           regime=str(getattr(pred, "regime", "") or ""))
                     _alog_f.log_fired(_tid, coin, direction, float(avg_price), float(matched),
                                       float(cost), phase="15M", order_kind="FOK",
                                       window_start=int(window_start or 0))
@@ -669,7 +675,13 @@ class OrderManager:
                             _tid = _alog_g.new_trade_id()
                             if pred is not None:
                                 _alog_g.log_signal(_tid, pred, float(getattr(pred, "trend_score", 0.0) or 0.0),
-                                                   dist_pct=float(getattr(pred, "dist_pct", 0.0) or 0.0))
+                                                   dist_pct=float(getattr(pred, "dist_pct", 0.0) or 0.0),
+                                                   sigma=float(getattr(pred, "sigma", 0.0) or 0.0),
+                                                   t_remaining=float(getattr(pred, "t_remaining", 0.0) or 0.0),
+                                                   roc60=float(getattr(pred, "roc60", 0.0) or 0.0),
+                                                   roc300=float(getattr(pred, "roc300", 0.0) or 0.0),
+                                                   book_up=float(getattr(pred, "book_up_mid", 0.5) or 0.5),
+                                                   regime=str(getattr(pred, "regime", "") or ""))
                             _alog_g.log_fired(_tid, coin, direction, float(gtc_p), float(gtc_m),
                                               float(cost), phase="15M", order_kind="GTC",
                                               window_start=int(window_start or 0))
