@@ -250,6 +250,12 @@ def _parse_line(raw: str):
     t, level, msg = m["time"], m["level"], m["msg"].strip()
     category = _classify(level, msg)
 
+    # jun12: any well-formed line proves the bot scanned recently — record
+    # it BEFORE the debug-noise drop so the dashboard can show a "last scan"
+    # heartbeat even when every decision is a skip (no event regex matches).
+    global _last_scan_ts
+    _last_scan_ts = _log_hms_to_epoch(t)
+
     # True DEBUG noise (no [TAG]) gets dropped entirely to keep the
     # ring focused. Classified DEBUG-with-tag lines (filter decisions)
     # are kept.
@@ -541,6 +547,16 @@ def get_events(limit: int = 200, category: str | None = None) -> list[dict]:
         else:
             buf = list(events_ring)
     return list(reversed(buf[-limit:]))
+
+
+_last_scan_ts = 0.0
+
+
+def get_last_scan_ts() -> float:
+    """Epoch of the most recent well-formed log line (any level, including
+    dropped DEBUG noise). Liveness heartbeat: proves the bot is scanning
+    even when no signal/order/win events occur."""
+    return float(_last_scan_ts)
 
 
 def get_last_log_ts() -> float:

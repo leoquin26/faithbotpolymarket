@@ -37,6 +37,7 @@ from log_parser import (  # noqa: E402
     get_today_stats,
     get_today_trades,
     get_last_log_ts,
+    get_last_scan_ts,
     get_last_file_mtime,
 )
 import log_parser_5m as parser_5m  # noqa: E402
@@ -435,6 +436,7 @@ def api_5m_snapshot():
         signals = parser_5m.get_signals(limit=40)
         heartbeat = {
             "last_event_ts": parser_5m.get_last_log_ts(),
+            "last_scan_ts": parser_5m.get_last_scan_ts(),
             "log_mtime": parser_5m.get_last_file_mtime(),
             "now": time.time(),
         }
@@ -626,6 +628,7 @@ def api_snapshot():
         # quiet (scan-only, no signals / fills).
         heartbeat = {
             "last_event_ts": get_last_log_ts(),
+            "last_scan_ts": get_last_scan_ts(),
             "log_mtime": get_last_file_mtime(),
             "now": time.time(),
         }
@@ -692,6 +695,7 @@ def api_snapshot():
                 "stats": stats_5m,
                 "heartbeat": {
                     "last_event_ts": parser_5m.get_last_log_ts(),
+                    "last_scan_ts": parser_5m.get_last_scan_ts(),
                     "log_mtime": parser_5m.get_last_file_mtime(),
                 },
             },

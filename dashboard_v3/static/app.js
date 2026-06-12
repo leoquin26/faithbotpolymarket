@@ -563,9 +563,11 @@ function renderHeartbeat15m(snap) {
   const now = Date.now() / 1000;
   const evAge   = hb.last_event_ts ? Math.max(0, now - hb.last_event_ts) : null;
   const fileAge = hb.log_mtime    ? Math.max(0, now - hb.log_mtime)     : null;
+  const scanAge = hb.last_scan_ts ? Math.max(0, now - hb.last_scan_ts)  : null;
+  const liveAge = scanAge !== null ? scanAge : fileAge;
   subtitle.innerHTML = `
-    <span class="hb-dot ${fileAge !== null && fileAge < 30 ? 'live' : 'stale'}"></span>
-    log file: ${fmtAge(fileAge)} · last parsed event: ${fmtAge(evAge)}
+    <span class="hb-dot ${liveAge !== null && liveAge < 30 ? 'live' : 'stale'}"></span>
+    last scan: ${fmtAge(scanAge)} · log file: ${fmtAge(fileAge)} · last event: ${fmtAge(evAge)}
   `;
 }
 
@@ -576,9 +578,11 @@ function renderHeartbeat5m(snap) {
   const now = Date.now() / 1000;
   const evAge   = hb.last_event_ts ? Math.max(0, now - hb.last_event_ts) : null;
   const fileAge = hb.log_mtime    ? Math.max(0, now - hb.log_mtime)     : null;
+  const scanAge = hb.last_scan_ts ? Math.max(0, now - hb.last_scan_ts)  : null;
+  const liveAge = scanAge !== null ? scanAge : fileAge;
   subtitle.innerHTML = `
-    <span class="hb-dot ${fileAge !== null && fileAge < 30 ? 'live' : 'stale'}"></span>
-    log file: ${fmtAge(fileAge)} · last parsed event: ${fmtAge(evAge)}
+    <span class="hb-dot ${liveAge !== null && liveAge < 30 ? 'live' : 'stale'}"></span>
+    last scan: ${fmtAge(scanAge)} · log file: ${fmtAge(fileAge)} · last event: ${fmtAge(evAge)}
   `;
 }
 
