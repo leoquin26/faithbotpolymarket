@@ -568,8 +568,11 @@ class OrderManager:
                 token_id=token_id,
             )
             result = None
+            _recon_m, _recon_p = 0.0, 0.0
+            _ord_t0 = time.time()
+            _max_try = int(os.getenv("ORDER_TRANSPORT_RETRIES", "3"))
             with self._place_lock:
-                for attempt in range(3):
+                for attempt in range(_max_try):
                     try:
                         if attempt > 0:
                             self.client._ClobClient__cached_version = None
@@ -579,13 +582,50 @@ class OrderManager:
                         )
                         break
                     except PolyApiException as e:
-                        if "order_version_mismatch" not in str(e).lower() or attempt >= 2:
+                        _emsg = str(e).lower()
+                        _is_vmm = "order_version_mismatch" in _emsg
+                        # jun15: transport failure = no HTTP status came back
+                        # (TLS/connection died mid-flight). status_code is None.
+                        _is_transport = (getattr(e, "status_code", None) is None
+                                         and not _is_vmm)
+                        if attempt >= _max_try - 1:
                             raise
-                        logger.warning(
-                            f"[CLOB] {coin} order_version_mismatch — retry {attempt + 2}/3"
-                        )
+                        if _is_vmm:
+                            logger.warning(
+                                f"[CLOB] {coin} order_version_mismatch — retry {attempt + 2}/{_max_try}"
+                            )
+                            continue
+                        if _is_transport:
+                            # Before retrying a FOK, reconcile against trades so a
+                            # silently-landed order is never double-filled. If the
+                            # lookup itself fails we cannot verify -> abort (raise)
+                            # rather than risk a double fill.
+                            _rec = self._recent_buy_fill(token_id, _ord_t0 - 3)
+                            if _rec is None:
+                                logger.warning(
+                                    f"[CLOB] {coin} transport fail — fill UNVERIFIABLE, not retrying"
+                                )
+                                raise
+                            if _rec[0] > 0:
+                                _recon_m, _recon_p = _rec
+                                logger.warning(
+                                    f"[CLOB] {coin} transport fail but trade landed "
+                                    f"({_recon_m:.0f}sh @ {_recon_p*100:.0f}c) — adopting, no retry"
+                                )
+                                break
+                            _bk = float(os.getenv("ORDER_RETRY_BACKOFF", "0.35")) * (attempt + 1)
+                            logger.warning(
+                                f"[CLOB] {coin} transport fail, no fill yet — "
+                                f"retry {attempt + 2}/{_max_try} in {_bk:.2f}s"
+                            )
+                            time.sleep(_bk)
+                            continue
+                        raise
 
-            matched, avg_price, order_id = self._parse_result(result)
+            if _recon_m > 0:
+                matched, avg_price, order_id = _recon_m, _recon_p, None
+            else:
+                matched, avg_price, order_id = self._parse_result(result)
 
             if use_gtc:
                 self.active_gtc[order_id or "unknown"] = {
@@ -933,6 +973,29 @@ class OrderManager:
             mult = 0.5
         size = min(base * mult, config.MAX_SINGLE_TRADE)
         return max(1.50, size)
+
+    def _recent_buy_fill(self, token_id, since_ts):
+        """Reconcile a transport failure: (shares, avg_price) of BUY trades on
+        token_id at/after since_ts; (0.0, 0.0) if none landed; None if the
+        lookup itself failed (cannot verify -> caller must NOT retry)."""
+        try:
+            from py_clob_client_v2.clob_types import TradeParams
+            trades = self.client.get_trades(
+                TradeParams(asset_id=str(token_id), after=int(since_ts))
+            )
+            tot_sh, tot_cost = 0.0, 0.0
+            for t in (trades or []):
+                g = (t.get if isinstance(t, dict) else (lambda k, d=None: getattr(t, k, d)))
+                if str(g("side", "") or "").upper() != "BUY":
+                    continue
+                sz = float(g("size", 0) or 0)
+                px = float(g("price", 0) or 0)
+                tot_sh += sz
+                tot_cost += sz * px
+            return (tot_sh, (tot_cost / tot_sh) if tot_sh > 0 else 0.0)
+        except Exception as _e:
+            logger.warning(f"[RECONCILE] {token_id} trade lookup failed: {_e}")
+            return None
 
     @staticmethod
     def _parse_result(result) -> tuple:

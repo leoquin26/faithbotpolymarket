@@ -1193,6 +1193,28 @@ class Predictor:
                 # losers reprice out). EMP_CHOP_DELTA2=0 disables.
                 if _es_chop_d and is_chop:
                     _es_anchor -= _es_chop_d
+                # jun15: fresh-overshoot guard — don't grant the deep-distance
+                # confidence BOOST when the price only just spiked into that
+                # tier; a fast excursion tends to mean-revert (ETH DOWN 10:34
+                # fired at -0.152% after sitting at -0.08..-0.10%, closed UP,
+                # -$3.10). Re-anchor on the distance SUSTAINED ~60s ago
+                # (dist - roc60) so the depth must have been actually held.
+                if os.getenv("FRESH_OVERSHOOT_ON", "on").lower() in ("on", "1", "true"):
+                    _fo_ad = abs(dist_pct - roc_60)
+                    if _fo_ad < float(os.getenv("EMP_SHRINK_D1", "0.0010")):
+                        _fo_anchor = float(os.getenv("EMP_SHRINK_WR1", "0.52"))
+                    elif _fo_ad < float(os.getenv("EMP_SHRINK_D2", "0.0015")):
+                        _fo_anchor = float(os.getenv("EMP_SHRINK_WR2", "0.60"))
+                    else:
+                        _fo_anchor = float(os.getenv("EMP_SHRINK_WR3", "0.68"))
+                    if _es_chop_d and is_chop:
+                        _fo_anchor -= _es_chop_d
+                    if _fo_anchor < _es_anchor - 1e-9:
+                        logger.debug(
+                            f"[FRESH OVERSHOOT] {coin} {direction}: dist={dist_pct*100:+.3f}%"
+                            f" sustained={(dist_pct - roc_60)*100:+.3f}%"
+                            f" (roc60={roc_60*10000:+.1f}bps) — anchor {_es_anchor:.2f}->{_fo_anchor:.2f}")
+                        _es_anchor = _fo_anchor
                 _es_prob = max(float(os.getenv("EMP_SHRINK_LO", "0.35")),
                                min(float(os.getenv("EMP_SHRINK_HI", "0.82")),
                                    _es_anchor + _es_alpha * (win_prob - 0.50)))
