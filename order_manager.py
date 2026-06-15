@@ -923,6 +923,25 @@ class OrderManager:
                 logger.debug(
                     f"[SIZE-TILT] {pred.coin}: global x{_gmult:.2f} coin x{_coinm:.2f}"
                     f" -> {_sh_t:.0f}sh becomes {_sh:.0f}sh")
+            # jun15 roc60-chase de-size (TEST, reversible): roc60 is mean-
+            # reverting (mined logistic coef -0.24, n=71 traded + n=353
+            # signaled). Entries where roc60 agrees with the side (chasing,
+            # 86% of trades) won 52%; pullback entries won 70%. De-size the
+            # chase, never block. ROC60_DESIZE_ON=off or ROC60_CHASE_MULT=1.0
+            # disables.
+            if os.getenv("ROC60_DESIZE_ON", "off").lower() in ("on", "1", "true"):
+                _r60 = float(getattr(pred, "roc60", 0.0) or 0.0)
+                _chase_bps = float(os.getenv("ROC60_CHASE_BPS", "2.0")) / 10000.0
+                _is_chase = ((_r60 > _chase_bps and pred.direction == "UP")
+                             or (_r60 < -_chase_bps and pred.direction == "DOWN"))
+                if _is_chase:
+                    _cm = float(os.getenv("ROC60_CHASE_MULT", "0.6"))
+                    _sh_c = _sh
+                    _sh = max(float(os.getenv("SIZE_SH_FLOOR", "3")), round(_sh * _cm))
+                    logger.debug(
+                        f"[ROC60 CHASE] {pred.coin} {pred.direction}: roc60="
+                        f"{_r60*10000:+.1f}bps agrees side (chasing) -> de-size "
+                        f"x{_cm:.2f} {_sh_c:.0f}->{_sh:.0f}sh")
             _entry = pred.entry_price if pred.entry_price > 0.05 else (pred.poly_price or 0.55)
             if _entry <= 0.01 or _entry >= 0.99:
                 _entry = 0.55
