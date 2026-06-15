@@ -47,6 +47,23 @@ class OrderManager:
         self.daily_trades = 0
         self._trading_day = ""
         self._load_daily_pnl()
+        # jun15: ground daily P&L (and the daily stop) in the REAL on-chain
+        # account on startup — the internal counter can drift across restarts
+        # or a mis-resolution. Best-effort; falls back to the file on any error.
+        try:
+            import daily_reconcile as _dr
+            _rec = _dr.realized_pnl_today(self._trading_day or None)
+            if _rec is not None:
+                _wp, _lc, _net = _rec
+                logger.info(
+                    f"[DAILY RECONCILE] chain realized today: wins=${_wp:.2f} "
+                    f"losses=${_lc:.2f} net=${_net:+.2f} (was net "
+                    f"${self.daily_wins - self.daily_losses:+.2f}) — using chain"
+                )
+                self.daily_wins, self.daily_losses = _wp, _lc
+                self._save_daily_pnl()
+        except Exception as _dre:
+            logger.debug(f"[DAILY RECONCILE] startup skip: {_dre}")
         if self.positions:
             coins = ", ".join(
                 f"{c} {self.positions[c].get('side', '?')}@{self.positions[c].get('entry_price', 0)*100:.0f}c"
