@@ -214,6 +214,19 @@ def _resolve_one_position(pos: dict, binance_ws_module) -> tuple:
     except Exception as _ge:
         logger.debug(f"[RESOLVE] gamma failed {coin}: {_ge}")
 
+    # jun15: a transient gamma outage must NOT trigger a live-price guess —
+    # that recorded phantom WINs (BTC UP 1781553600 scored WIN off a stale
+    # Binance price ~6min post-close; true gamma winner was DOWN). Gamma posts
+    # winners within minutes, so keep the position PENDING and retry; allow the
+    # live-price last-resort only once the window is LONG closed.
+    try:
+        _win_secs = 900 if tf == "15m" else (300 if tf == "5m" else 3600)
+        _age = time.time() - (ws + _win_secs)
+        if _age < float(os.getenv("RESOLVE_FALLBACK_MIN_AGE", "3600")):
+            return False, None, "pending", f"gamma winner not posted yet, waiting (age={_age:.0f}s)"
+    except Exception:
+        pass
+
     try:
         final_price = None
         src = "unknown"
