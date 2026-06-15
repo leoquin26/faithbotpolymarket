@@ -910,6 +910,19 @@ class OrderManager:
                     f"[SIZE-SESSION] {pred.coin}: {_sname} x{_smult:.2f} -> "
                     f"{_sh_pre:.0f}sh becomes {_sh:.0f}sh"
                 )
+            # jun15 capital-preservation + coin tilt: edge is thin/non-stationary
+            # (live May-Jun BTC 48%/ETH 45% lost -$128; SOL 61% held). Shrink
+            # stakes globally to protect bankroll while the Step-2 model gathers
+            # data, and de-size the decayed coins / lean into SOL. Soft and
+            # reversible (multipliers), NOT a block; edges rotate -> revisit.
+            _gmult = float(os.getenv("SIZE_GLOBAL_MULT", "1.0"))
+            _coinm = float(os.getenv(f"COIN_MULT_{pred.coin}", "1.0"))
+            if _gmult != 1.0 or _coinm != 1.0:
+                _sh_t = _sh
+                _sh = max(float(os.getenv("SIZE_SH_FLOOR", "3")), round(_sh * _gmult * _coinm))
+                logger.debug(
+                    f"[SIZE-TILT] {pred.coin}: global x{_gmult:.2f} coin x{_coinm:.2f}"
+                    f" -> {_sh_t:.0f}sh becomes {_sh:.0f}sh")
             _entry = pred.entry_price if pred.entry_price > 0.05 else (pred.poly_price or 0.55)
             if _entry <= 0.01 or _entry >= 0.99:
                 _entry = 0.55
@@ -918,6 +931,12 @@ class OrderManager:
             _cap = bankroll * float(os.getenv("SIZE_MAX_PCT", "0.05"))
             if _cap > 0:
                 _size = min(_size, _cap)
+            # jun15: hard absolute $ cap, robust to a wrong/locked live-balance
+            # read (balance endpoint showed $113 while tradeable was ~$35).
+            # SIZE_MAX_USD=0 disables.
+            _abs_cap = float(os.getenv("SIZE_MAX_USD", "0"))
+            if _abs_cap > 0:
+                _size = min(_size, _abs_cap)
             _size = max(float(os.getenv("SIZE_MIN_USD", "1.50")), _size)
             logger.debug(
                 f"[SIZE-DIST] {pred.coin}: |dist|={_adist*100:.3f}% -> {_sh:.0f}sh "
