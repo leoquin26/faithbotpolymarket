@@ -1267,11 +1267,17 @@ class Predictor:
             f"ask={ask*100:.0f}c edge={edge*100:.1f}% depth={depth:.1f}x"
         )
 
+        # maker-first instrumentation (jun15): spread a maker captures (ask-mid)
+        # and the per-share crypto taker fee (0.07*p*(1-p)) a maker avoids.
+        _side_mid = (up_mid if is_up else down_mid) or ask
+        _spread_c = max(0.0, ask - _side_mid)
+        _taker_fee_c = 0.07 * ask * (1.0 - ask)
         logger.info(
             f"[SIGNAL] {coin} {direction} | Prob={win_prob:.0%} | Ask={ask*100:.0f}c | "
             f"Edge={edge*100:.1f}% | Trend={trend_score:+.2f} Dist={dist_pct*100:+.3f}% "
             f"ROC60={roc_60*10000:+.1f}bps ROC300={roc_300*10000:+.1f}bps "
-            f"σ={sigma:.2e} T={time_remaining:.0f}s spot={_spot_src} strike={_strike_src}"
+            f"σ={sigma:.2e} T={time_remaining:.0f}s spot={_spot_src} strike={_strike_src} "
+            f"mid={_side_mid*100:.1f}c spread={_spread_c*100:.1f}c fee={_taker_fee_c*100:.2f}c"
         )
 
         self._window_direction = direction  # legacy global
