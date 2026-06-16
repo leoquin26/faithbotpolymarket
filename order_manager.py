@@ -520,7 +520,25 @@ class OrderManager:
 
         our_limit = round(min(poly_price + 0.02, max_entry), 2)
 
-        if real_ask and real_ask <= max_entry:
+        # ── maker-first (jun16): rest a GTC bid 1 tick below the ask instead of
+        # crossing as a taker — captures spread, dodges the 7% taker fee, and
+        # earns the maker rebate. 2026 research: market-making is the only edge
+        # that fits a small account without sub-100ms latency; our signal is
+        # ~80% right but the taker fee+spread erase it. CAVEAT: a resting bid on
+        # our favored side is adverse-selected (fills when the side weakens), so
+        # this is OFF by default and must be A/B-measured (maker-fill win-rate
+        # vs taker) before trusting it. MAKER_FIRST_ON=on enables; taker
+        # fallback when the window is too short for a resting order to fill.
+        _maker_first = os.getenv("MAKER_FIRST_ON", "off").lower() in ("on", "1", "true")
+        _maker_min_time = float(os.getenv("MAKER_MIN_TIME", "180"))
+        if _maker_first and real_ask and 0.02 < real_ask <= max_entry and time_left >= _maker_min_time:
+            limit_price = round(max(0.02, real_ask - 0.01), 2)
+            use_gtc = True
+            logger.info(
+                f"[MAKER-FIRST] {coin} {direction}: resting bid {limit_price*100:.0f}c "
+                f"vs ask {real_ask*100:.0f}c — capture spread + dodge fee, T={time_left:.0f}s"
+            )
+        elif real_ask and real_ask <= max_entry:
             fok_price = round(min(real_ask + 0.01, max_entry), 2)
             limit_price = fok_price
             use_gtc = False
