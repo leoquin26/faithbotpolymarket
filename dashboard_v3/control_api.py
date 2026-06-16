@@ -238,10 +238,82 @@ def _sniper() -> dict:
     return res
 
 
+_lm = {"ts": 0.0, "data": []}
+
+
+def _livemarket():
+    """Live current-window quotes per coin: strike, spot, distance, UP/DOWN
+    best asks, time-left. CLOB + Binance.us are directly reachable from the
+    EC2 (only binance.com is geo-blocked). Cached 4s."""
+    if time.time() - _lm["ts"] < 4 and _lm["data"]:
+        return _lm["data"]
+    import sys
+    if str(BOT_DIR) not in sys.path:
+        sys.path.insert(0, str(BOT_DIR))
+    import httpx
+    try:
+        import market_data
+        import poly_resolution as pr
+    except Exception as e:
+        return [{"coin": "?", "err": str(e)}]
+    SYM = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "XRP": "XRPUSDT"}
+    bcli = httpx.Client(timeout=5)
+
+    def bpx(c):
+        for host in ("https://api.binance.us", "https://api.binance.com"):
+            try:
+                jj = bcli.get(host + "/api/v3/ticker/price", params={"symbol": SYM[c]}).json()
+                if "price" in jj:
+                    return float(jj["price"])
+            except Exception:
+                pass
+        return None
+
+    def ask(tok):
+        try:
+            r = httpx.get("https://clob.polymarket.com/book", params={"token_id": tok}, timeout=8)
+            a = [float(x["price"]) for x in (r.json().get("asks") or []) if float(x.get("size", 0)) > 0]
+            return round(min(a) * 100) if a else None
+        except Exception:
+            return None
+
+    now = int(time.time())
+    ws = (now // 900) * 900
+    tleft = ws + 900 - now
+    out = []
+    for c in ("BTC", "ETH", "SOL", "XRP"):
+        row = {"coin": c, "time_left": tleft, "window_age": now - ws}
+        try:
+            strike = market_data.get_threshold_from_binance(c, ws, "15m")
+        except Exception:
+            strike = None
+        px = bpx(c)
+        row["strike"] = round(strike, 2) if strike else None
+        row["price"] = round(px, 2) if px else None
+        if strike and px:
+            row["dist_pct"] = round((px - strike) / strike * 100, 3)
+            row["leader"] = "UP" if px >= strike else "DOWN"
+        try:
+            m = pr.fetch_market_by_slug(f"{c.lower()}-updown-15m-{ws}")
+            toks = json.loads(m.get("clobTokenIds") or "[]") if m else []
+            if len(toks) >= 2:
+                row["up_ask"] = ask(toks[0])
+                row["down_ask"] = ask(toks[1])
+        except Exception:
+            pass
+        out.append(row)
+    _lm.update(ts=time.time(), data=out)
+    return out
+
+
 def register(app):
     @app.route("/control")
     def control_page():
         return render_template("control.html")
+
+    @app.route("/api/v3/livemarket")
+    def livemarket():
+        return jsonify({"coins": _livemarket(), "ts": time.time()})
 
     @app.route("/api/v3/config")
     def cfg_get():

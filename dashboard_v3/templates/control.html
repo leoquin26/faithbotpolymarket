@@ -280,16 +280,28 @@ function signals(v){const sg=(SNAP&&SNAP.signals)||[];
     sg.map(s=>`<tr><td class="mini">${s.t}</td><td>${s.coin}</td><td><span class="tag ${s.dir}">${s.dir}</span></td>
     <td class="r ${s.edge>=5?'pos':'neu'}"><b>${num(s.edge,1)}%</b></td><td class="r">${s.prob}%</td><td class="r">${s.ask}c</td>
     <td class="r ${cls(s.trend)}">${num(s.trend,2)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">no recent signals</div>'}</div>`}
-function market(v){const co=((SNAP&&SNAP.market)||{}).coins||[];
-  v.innerHTML=`<div class="grid g2">${co.map(c=>{const u=c.up||{},d=c.down||{},ls=c.last_signal||{};
-    return `<div class="card"><h3>${c.coin}${c.last_action?` <span class="pill2">${c.last_action}</span>`:''}</h3>
-    <div class="row" style="justify-content:space-between;align-items:flex-start">
-      <div><div class="mini">UP</div><div class="kpi sm">${u.ask||'—'}c</div>
-        <div class="sub">edge <b class="${u.edge>=5?'pos':'mut'}">${num(u.edge,1)}%</b> · ${u.prob||'—'}% · tr ${num(u.trend,2)}</div></div>
-      <div style="text-align:right"><div class="mini">DOWN</div><div class="kpi sm">${d.ask||'—'}c</div>
-        <div class="sub">edge <b class="${d.edge>=5?'pos':'mut'}">${num(d.edge,1)}%</b> · ${d.prob||'—'}% · tr ${num(d.trend,2)}</div></div>
+let LM=null,LMt=0;
+async function market(v){
+  if(!LM)v.innerHTML='<div class="empty">fetching live quotes…</div>';
+  const d=await j('/api/v3/livemarket');if(d&&d.coins){LM=d.coins;LMt=Date.now()}
+  if(TAB!=='market')return;
+  const co=LM||[];const sigs=(SNAP&&SNAP.signals)||[];
+  const lastSig=c=>sigs.find(s=>s.coin===c);
+  v.innerHTML=`<div class="row" style="margin-bottom:11px"><span class="mini">live quotes · current 15m window · updates every 4s</span>
+    <span class="grow"></span><button class="btn sm" onclick="LM=null;market($('#view'))">↻ refresh</button></div>
+  <div class="grid g2">${co.map(c=>{
+    if(c.err)return `<div class="card"><h3>${c.coin}</h3><div class="empty">${esc(c.err)}</div></div>`;
+    const tl=c.time_left||0,tpct=Math.max(0,Math.min(100,100*(1-tl/900)));
+    const up=c.up_ask,dn=c.down_ask,lead=c.leader,ls=lastSig(c.coin);
+    return `<div class="card"><h3>${c.coin} <span class="mini">${c.price!=null?'spot $'+c.price.toLocaleString():'no spot'}</span></h3>
+    <div class="field"><span class="key">strike (window open)</span><span>${c.strike!=null?'$'+c.strike.toLocaleString():'—'}</span></div>
+    <div class="field"><span class="key">distance from strike</span><span class="${c.dist_pct>0?'pos':c.dist_pct<0?'neg':''}"><b>${c.dist_pct!=null?(c.dist_pct>0?'+':'')+c.dist_pct+'%':'—'}</b> ${lead?`<span class="tag ${lead}">${lead} ahead</span>`:''}</span></div>
+    <div class="row" style="justify-content:space-between;margin-top:10px;align-items:flex-start">
+      <div style="flex:1;${lead==='UP'?'':'opacity:.5'}"><div class="mini">UP ask</div><div class="kpi sm ${lead==='UP'?'pos':''}">${up!=null?up+'c':'—'}</div></div>
+      <div style="flex:1;text-align:right;${lead==='DOWN'?'':'opacity:.5'}"><div class="mini">DOWN ask</div><div class="kpi sm ${lead==='DOWN'?'neg':''}">${dn!=null?dn+'c':'—'}</div></div>
     </div>
-    <div class="field"><span class="key">last signal</span><span>${ls.dir?`<span class="tag ${ls.dir}">${ls.dir}</span> ${ls.edge}% @ ${ls.t}`:'—'}</span></div>
+    <div class="bar-out"><div class="bar-in" style="width:${tpct}%;background:${tl<120?'var(--yel)':'var(--blu)'}"></div></div>
+    <div class="sub" style="margin-top:6px">${tl>0?`${Math.floor(tl/60)}m ${tl%60}s left in window`:'resolving…'}${ls?` · last signal <span class="tag ${ls.dir}">${ls.dir}</span> ${ls.edge}% @ ${ls.t}`:''}</div>
     </div>`}).join('')||'<div class="empty">no market data</div>'}</div>`}
 
 /* ---------- SNIPER ---------- */
