@@ -363,7 +363,7 @@ async function saveCfg(restart){const d=await j('/api/v3/config')||{knobs:[]};co
   else toast('error: '+((r&&r.errors)||['failed']).join('; '),'err')}
 
 /* ---------- LOGS ---------- */
-let logData=[],logRaw=false;
+let logData=[],logRaw=true;
 function logs(v){
   const cats=['all','signal','trade','approve','risk','filter','error','warn'];
   v.innerHTML=`<div class="card"><div class="row" style="margin-bottom:9px">
