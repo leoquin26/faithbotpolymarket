@@ -18,10 +18,15 @@ except ImportError:
 USE_TOR = os.getenv('USE_TOR', 'false').lower() == 'true'
 
 if USE_TOR:
-    # Set proxy for ALL traffic
-    os.environ['HTTP_PROXY'] = 'socks5h://127.0.0.1:9050'
-    os.environ['HTTPS_PROXY'] = 'socks5h://127.0.0.1:9050'
-    os.environ['ALL_PROXY'] = 'socks5h://127.0.0.1:9050'
+    # Proxy address: defaults to local Tor (127.0.0.1:9050). Point PROXY_PORT
+    # at a faster SOCKS5 tunnel (ssh -D to a low-latency VPS in an allowed
+    # region) to cut order latency ~900ms -> ~150ms and kill Tor flakiness.
+    _phost = os.getenv('PROXY_HOST', '127.0.0.1')
+    _pport = os.getenv('PROXY_PORT', '9050')
+    _proxy = f'socks5h://{_phost}:{_pport}'
+    os.environ['HTTP_PROXY'] = _proxy
+    os.environ['HTTPS_PROXY'] = _proxy
+    os.environ['ALL_PROXY'] = _proxy
     
     # EXCLUDE these domains from proxy (direct connection)
     # This keeps MongoDB, Binance, Coinbase, Polygon fast

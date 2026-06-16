@@ -171,7 +171,7 @@ async function render(){
     if(TAB==='sniper')return sniper(v);
     if(TAB==='scout')return scoutTab(v);
     if(TAB==='config')return config(v);
-    if(TAB==='logs')return logs(v);
+    if(TAB==='logs'){ if(!document.querySelector('#logbox')) logs(v); else if(!logPaused) fetchLogs(); return; }
     if(TAB==='controls')return controls(v);
   }catch(e){v.innerHTML=`<div class="card"><div class="empty">render error: ${esc(''+e)}</div></div>`}
 }
@@ -363,23 +363,29 @@ async function saveCfg(restart){const d=await j('/api/v3/config')||{knobs:[]};co
   else toast('error: '+((r&&r.errors)||['failed']).join('; '),'err')}
 
 /* ---------- LOGS ---------- */
+let logData=[],logRaw=false;
 function logs(v){
   const cats=['all','signal','trade','approve','risk','filter','error','warn'];
   v.innerHTML=`<div class="card"><div class="row" style="margin-bottom:9px">
-    ${cats.map(c=>`<button class="btn sm ${c===logCat?'go':''}" onclick="logCat='${c}';drawLogs()">${c}</button>`).join('')}
-    <input class="inp" id="logq" placeholder="search…" value="${esc(logSearch)}" oninput="logSearch=this.value;drawLogs()" style="width:160px"/>
-    <button class="btn sm ${logPaused?'warn':''}" onclick="logPaused=!logPaused;logs($('#view'))">${logPaused?'▶ resume':'⏸ pause'}</button>
+    ${cats.map(c=>`<button class="btn sm ${c===logCat&&!logRaw?'go':''}" onclick="logCat='${c}';logRaw=false;fetchLogs()">${c}</button>`).join('')}
+    <button class="btn sm ${logRaw?'go':''}" onclick="logRaw=!logRaw;fetchLogs()" title="full raw tail">RAW</button>
+    <input class="inp" id="logq" placeholder="search…" value="${esc(logSearch)}" oninput="logSearch=this.value;renderLogs()" style="width:150px"/>
+    <button class="btn sm ${logPaused?'warn':''}" onclick="logPaused=!logPaused">${logPaused?'▶ resume':'⏸ pause'}</button>
     <span class="grow"></span><span class="mini" id="logn"></span></div>
-    <div class="logbox" id="logbox"></div></div>`;
-  drawLogs();
+    <div class="logbox" id="logbox"><div class="empty">loading…</div></div></div>`;
+  fetchLogs();
 }
-function drawLogs(){
+async function fetchLogs(){
+  if(logRaw){const d=await j('/api/v3/logs/raw?n=500');logData=((d&&d.lines)||[]).map(l=>({raw:l}));}
+  else{const d=await j('/api/v3/logs?limit=500&category='+logCat+'&bot=both');logData=(d&&d.events)||[];}
+  renderLogs();
+}
+function renderLogs(){
   const box=$('#logbox');if(!box)return;
-  let ev=((SNAP&&SNAP.events)||[]).slice();
-  if(logCat!=='all')ev=ev.filter(e=>e.cat===logCat||(logCat==='warn'&&e.level==='WARNING')||(logCat==='error'&&e.level==='ERROR'));
-  if(logSearch)ev=ev.filter(e=>(e.msg||'').toLowerCase().includes(logSearch.toLowerCase()));
-  $('#logn').textContent=ev.length+' lines';
-  box.innerHTML=ev.map(e=>`<div class="logline l-${e.level}">${e.t} <span class="key">[${e.bot||'15m'}]</span> ${esc(e.msg)}</div>`).join('')||'<div class="empty">no matching lines</div>';
+  let ev=logData.slice();
+  if(logSearch){const q=logSearch.toLowerCase();ev=ev.filter(e=>((e.raw||e.msg)||'').toLowerCase().includes(q));}
+  $('#logn').textContent=ev.length+' lines'+(logRaw?' (raw)':'');
+  box.innerHTML=ev.map(e=>e.raw?`<div class="logline">${esc(e.raw)}</div>`:`<div class="logline l-${e.level}">${e.t} <span class="key">[${e.bot||'15m'}]</span> ${esc(e.msg)}</div>`).join('')||'<div class="empty">no matching lines</div>';
 }
 
 /* ---------- CONTROLS ---------- */
