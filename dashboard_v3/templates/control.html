@@ -117,7 +117,7 @@ function toast(m,k){const t=$('#toast');t.textContent=m;t.className='toast show 
 
 const NAV=[['overview','◎','Overview'],['performance','📈','Performance'],['trades','💱','Trades'],
 ['signals','📡','Signals'],['market','🪙','Market'],['sniper','🎯','Sniper'],
-['config','⚙️','Config'],['logs','📜','Logs'],['controls','🛠','Controls']];
+['scout','🛰','Scout'],['config','⚙️','Config'],['logs','📜','Logs'],['controls','🛠','Controls']];
 let TAB=localStorage.getItem('tab')||'overview';
 let SNAP=null,PERF=null,SNIPE=null,lastOk=0,logPaused=false,logCat='all',logSearch='';
 $('#nav').innerHTML=NAV.map(([k,i,l])=>`<a data-t="${k}" onclick="go('${k}')"><span class="ic">${i}</span>${l}</a>`).join('');
@@ -169,6 +169,7 @@ async function render(){
     if(TAB==='signals')return signals(v);
     if(TAB==='market')return market(v);
     if(TAB==='sniper')return sniper(v);
+    if(TAB==='scout')return scoutTab(v);
     if(TAB==='config')return config(v);
     if(TAB==='logs')return logs(v);
     if(TAB==='controls')return controls(v);
@@ -320,6 +321,27 @@ function verdict(s){const op=s.snipe_count||0,nr=s.near||0,t=op+nr;if(!t)return'
   if(pct>=20)return`✅ <b>The delay still exists.</b> ${op}/${t} sharp-move setups still had the winning side ≤40c (${pct}%). Worth taking live.`;
   if(pct>=5)return`⚠️ <b>Edge has narrowed.</b> Only ${pct}% of setups (${op}/${t}) still showed a lagged ≤40c price. Marginal.`;
   return`❌ <b>The lag appears closed.</b> ${nr} setups but only ${op} were ≤40c — the book reprices fast now.`}
+
+/* ---------- SCOUT (Option 2: daily threshold markets) ---------- */
+async function scoutTab(v){
+  const s=await j('/api/v3/scout')||{};const br=s.brier;const atm=s.atm||{};
+  v.innerHTML=`<div class="grid g4">
+    <div class="card"><h3>Daily scout</h3><div class="kpi sm">${s.running?'<span class="pos">● live</span>':'<span class="neg">○ off</span>'}</div><div class="sub">BS vol-model vs market · dry-run</div></div>
+    <div class="card"><h3>Edge flags</h3><div class="kpi">${(s.flags||[]).length}</div><div class="sub">|model−market| ≥ 5%</div></div>
+    <div class="card"><h3>Settled strikes</h3><div class="kpi">${br?br.n:0}</div><div class="sub">${br?br.better+' model better':'pending end-of-day'}</div></div>
+    <div class="card"><h3>Brier: model vs market</h3>${br?`<div class="kpi sm ${br.model<br.market?'pos':'neg'}">${br.model.toFixed(3)} <span class="mut">/</span> ${br.market.toFixed(3)}</div><div class="sub">${br.model<br.market?'✅ model beating market':'market still sharper'}</div>`:'<div class="sub">awaiting EOD resolutions…</div>'}</div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Live model vs market — nearest-50/50 strike per coin</h3>
+    ${Object.keys(atm).length?`<table><thead><tr><th>coin</th><th class="r">vol/hr</th><th class="r">strike</th><th class="r">our model</th><th class="r">market</th><th class="r">edge</th></tr></thead><tbody>${
+      Object.keys(atm).map(c=>{const a=atm[c];return `<tr><td>${c}</td><td class="r">${a.hv}%</td><td class="r">$${a.strike}</td>
+      <td class="r"><b>${a.model}%</b></td><td class="r">${a.market}%</td><td class="r ${Math.abs(a.edge)>=5?'pos':'mut'}">${a.edge>0?'+':''}${a.edge}%</td></tr>`}).join('')}</tbody></table>`:'<div class="empty">waiting for live readings…</div>'}</div>
+  <div class="card" style="margin-top:14px"><h3>Edge flags (model disagrees ≥5%)</h3>
+    ${(s.flags||[]).length?`<div class="logbox">${s.flags.slice().reverse().map(l=>`<div class="logline l-INFO pos">${esc(l)}</div>`).join('')}</div>`:'<div class="empty">none yet — the daily market is efficiently priced so far</div>'}</div>
+  <div class="card" style="margin-top:14px"><h3>What this is</h3><div class="sub" style="font-size:13px;line-height:1.6">
+    Option 2 — a <b>latency-independent</b> edge test on the <b>daily "above $X"</b> threshold markets (no HFT competition there). Our Black-Scholes vol model estimates the probability the price ends above each strike; the scout flags strikes where it disagrees with the market by ≥5%, then scores model-vs-market by Brier at end of day. If the model beats the market out-of-sample, we build a daily-threshold trading module reusing the pricing the bot already has. Read-only, no orders.</div></div>
+  <div class="card" style="margin-top:14px"><h3>Recent scout events</h3>
+    <div class="logbox">${(s.recent||[]).slice().reverse().map(l=>`<div class="logline ${/SCOUT/.test(l)?'l-INFO pos':/RESULT/.test(l)?'l-INFO':'l-DEBUG'}">${esc(l)}</div>`).join('')||'<div class="empty">starting…</div>'}</div></div>`;
+}
 
 /* ---------- CONFIG ---------- */
 async function config(v){const d=await j('/api/v3/config')||{knobs:[]};

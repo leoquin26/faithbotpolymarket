@@ -238,6 +238,39 @@ def _sniper() -> dict:
     return res
 
 
+def _scout():
+    """Daily-threshold scout (Option 2): BS vol-model vs market on daily
+    'above $X' markets. Parses logs/daily_scout.log."""
+    log = BOT_DIR / "logs" / "daily_scout.log"
+    res = {"running": bool(_pids(r"daily_scout")), "atm": {}, "flags": [],
+           "results": [], "recent": [], "brier": None}
+    if not log.exists():
+        return res
+    try:
+        lines = log.read_text(encoding="utf-8", errors="ignore").splitlines()[-600:]
+        for ln in lines:
+            if "[ATM]" in ln:
+                m = re.search(r"\[ATM\] (\w+) hv=([\d.]+)%/h .*?\$([\d,]+): model (\d+)% vs mkt (\d+)% \(edge ([-+]\d+)%\)", ln)
+                if m:
+                    res["atm"][m.group(1)] = {"hv": float(m.group(2)), "strike": m.group(3),
+                                              "model": int(m.group(4)), "market": int(m.group(5)),
+                                              "edge": int(m.group(6))}
+            elif "[SCOUT]" in ln:
+                res["flags"].append(ln.split(" - ")[-1])
+            elif "[RESULT]" in ln:
+                res["results"].append(ln.split(" - ")[-1])
+                mb = re.search(r"model_brier=([\d.]+) mkt_brier=([\d.]+) \((\d+)/(\d+)", ln)
+                if mb:
+                    res["brier"] = {"model": float(mb.group(1)), "market": float(mb.group(2)),
+                                    "better": int(mb.group(3)), "n": int(mb.group(4))}
+        res["recent"] = [l.split(" - ")[-1] for l in lines
+                         if any(t in l for t in ("[SCOUT]", "[ATM]", "[RESULT]", "[STATUS]"))][-30:]
+        res["flags"] = res["flags"][-15:]
+    except Exception as e:
+        res["err"] = str(e)
+    return res
+
+
 _lm = {"ts": 0.0, "data": []}
 
 
@@ -352,5 +385,9 @@ def register(app):
     @app.route("/api/v3/sniper")
     def sniper():
         return jsonify(_sniper())
+
+    @app.route("/api/v3/scout")
+    def scout():
+        return jsonify(_scout())
 
     return app
