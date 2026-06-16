@@ -5,250 +5,371 @@
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>FaithBot · Control Center</title>
 <style>
-:root{--bg:#0b0e14;--panel:#141925;--panel2:#1b2230;--line:#262e3f;--tx:#e6edf3;--mut:#8b97a8;
---grn:#2ecc71;--red:#ff5c5c;--blu:#4aa8ff;--yel:#ffcf56;--acc:#7c5cff}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);
-font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif}
-a{color:var(--blu)}
-.bar{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--panel);
-border-bottom:1px solid var(--line);flex-wrap:wrap;position:sticky;top:0;z-index:10}
-.brand{font-weight:700;font-size:16px;letter-spacing:.3px}
-.brand b{color:var(--acc)}
-.pill{display:flex;align-items:center;gap:6px;background:var(--panel2);padding:5px 10px;
-border-radius:20px;font-size:12.5px;border:1px solid var(--line)}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--mut)}
+:root{--bg:#090c12;--bg2:#0e131c;--panel:#141b27;--panel2:#1b2333;--line:#27314a;
+--tx:#e8eef6;--mut:#8896ab;--mut2:#5d6b82;--grn:#34d399;--red:#f87171;--blu:#60a5fa;
+--yel:#fbbf24;--acc:#8b5cf6;--ok:#34d399}
+*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--tx);
+font:13.5px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;display:flex;overflow:hidden}
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-thumb{background:#222c42;border-radius:6px}
+/* sidebar */
+.side{width:208px;background:var(--bg2);border-right:1px solid var(--line);display:flex;flex-direction:column;flex-shrink:0}
+.logo{padding:16px 18px;font-weight:800;font-size:17px;letter-spacing:.4px;border-bottom:1px solid var(--line)}
+.logo b{color:var(--acc)}
+.nav{flex:1;padding:10px 8px;overflow:auto}
+.nav a{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:9px;color:var(--mut);
+cursor:pointer;font-weight:600;margin-bottom:2px;user-select:none}
+.nav a:hover{background:var(--panel);color:var(--tx)}
+.nav a.on{background:var(--panel2);color:var(--tx);box-shadow:inset 3px 0 0 var(--acc)}
+.nav .ic{width:18px;text-align:center;font-size:15px}
+.sidefoot{padding:12px;border-top:1px solid var(--line);font-size:11px;color:var(--mut2)}
+/* main */
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.top{display:flex;align-items:center;gap:12px;padding:11px 18px;background:var(--bg2);
+border-bottom:1px solid var(--line);flex-wrap:wrap}
+.chip{display:flex;align-items:center;gap:7px;background:var(--panel);padding:6px 11px;border-radius:9px;
+border:1px solid var(--line);font-size:12px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mut2);flex-shrink:0}
 .dot.on{background:var(--grn);box-shadow:0 0 8px var(--grn)}.dot.off{background:var(--red)}
-.spacer{flex:1}
-.btn{background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:7px;
-padding:6px 12px;cursor:pointer;font-size:12.5px}.btn:hover{border-color:var(--acc)}
-.btn.warn{border-color:#5a3030;color:#ffb3b3}.btn.go{border-color:#2e6b46;color:#9ff0bf}
-.tabs{display:flex;gap:4px;padding:8px 16px 0;flex-wrap:wrap;background:var(--panel);
-border-bottom:1px solid var(--line)}
-.tab{padding:8px 14px;cursor:pointer;color:var(--mut);border-bottom:2px solid transparent;font-weight:600}
-.tab.active{color:var(--tx);border-color:var(--acc)}
-.wrap{padding:16px;max-width:1200px;margin:0 auto}
-.grid{display:grid;gap:14px}.g4{grid-template-columns:repeat(4,1fr)}.g3{grid-template-columns:repeat(3,1fr)}
-.g2{grid-template-columns:repeat(2,1fr)}
-@media(max-width:800px){.g4,.g3,.g2{grid-template-columns:1fr 1fr}}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px}
-.card h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut)}
-.kpi{font-size:26px;font-weight:700}.kpi.sm{font-size:19px}
-.sub{color:var(--mut);font-size:12px;margin-top:3px}
-.pos{color:var(--grn)}.neg{color:var(--red)}.neu{color:var(--yel)}
+.dot.warn{background:var(--yel);box-shadow:0 0 8px var(--yel)}
+.grow{flex:1}
+.btn{background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:8px;
+padding:7px 13px;cursor:pointer;font-size:12.5px;font-weight:600}
+.btn:hover{border-color:var(--acc)}.btn:active{transform:translateY(1px)}
+.btn.go{border-color:#2a6b4a;color:#86efac}.btn.warn{border-color:#7a3434;color:#fca5a5}
+.btn.sm{padding:4px 9px;font-size:11.5px}
+.content{flex:1;overflow:auto;padding:18px}
+.view{max-width:1280px;margin:0 auto}
+.grid{display:grid;gap:14px}.g5{grid-template-columns:repeat(5,1fr)}.g4{grid-template-columns:repeat(4,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}.g2{grid-template-columns:repeat(2,1fr)}
+@media(max-width:1000px){.g5,.g4{grid-template-columns:repeat(2,1fr)}.g3,.g2{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:15px}
+.card h3{margin:0 0 12px;font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--mut);
+display:flex;justify-content:space-between;align-items:center}
+.kpi{font-size:27px;font-weight:800;letter-spacing:-.5px}.kpi.sm{font-size:20px}
+.sub{color:var(--mut);font-size:11.5px;margin-top:4px}
+.pos{color:var(--grn)}.neg{color:var(--red)}.neu{color:var(--yel)}.mut{color:var(--mut)}
+.bar-out{height:9px;background:#0c1018;border-radius:6px;overflow:hidden;margin-top:9px;border:1px solid var(--line)}
+.bar-in{height:100%;border-radius:6px;transition:width .4s}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
-th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
-th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase}
-td.r,th.r{text-align:right}
-.tag{padding:2px 7px;border-radius:5px;font-size:11px;font-weight:700}
-.tag.UP{background:#16341f;color:var(--grn)}.tag.DOWN{background:#3a1c1c;color:var(--red)}
-.logline{font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:3px 6px;white-space:pre-wrap;
-border-bottom:1px solid #1a2030}
-.l-DEBUG{color:#6b7688}.l-INFO{color:#cdd6e0}.l-WARNING{color:var(--yel)}.l-ERROR{color:var(--red)}
-.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.field{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line)}
-.field input{background:var(--bg);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:6px 9px;width:120px;text-align:right}
-.field .lbl{color:var(--tx)}.field .key{color:var(--mut);font-size:11px;font-family:monospace}
-.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--panel2);
-border:1px solid var(--acc);padding:11px 18px;border-radius:9px;opacity:0;transition:.3s;pointer-events:none}
-.toast.show{opacity:1}
-.hide{display:none}
-canvas{width:100%;height:160px;display:block}
+th,td{text-align:left;padding:8px 9px;border-bottom:1px solid var(--line)}
+th{color:var(--mut);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px}
+td.r,th.r{text-align:right}tr:hover td{background:#10round}tbody tr:hover td{background:#121a28}
+.tag{padding:2px 8px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:.3px}
+.tag.UP{background:#0f2c1c;color:var(--grn)}.tag.DOWN{background:#311618;color:var(--red)}
+.tag.WIN{background:#0f2c1c;color:var(--grn)}.tag.LOSS{background:#311618;color:var(--red)}
+.tag.gr{background:#1a2238;color:var(--blu)}
+.logbox{max-height:64vh;overflow:auto;background:#0a0e16;border-radius:10px;padding:6px}
+.logline{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;padding:2px 7px;white-space:pre-wrap;line-height:1.5}
+.l-DEBUG{color:#5a6680}.l-INFO{color:#c6d2e2}.l-WARNING{color:var(--yel)}.l-ERROR{color:var(--red)}
+.row{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.field{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
+.field:last-child{border:0}
+.field input,.field select{background:#0a0e16;border:1px solid var(--line);color:var(--tx);border-radius:7px;
+padding:7px 10px;width:130px;text-align:right;font-size:12.5px;font-family:ui-monospace,monospace}
+.field input:focus,.field select:focus{outline:none;border-color:var(--acc)}
+.field input.dirty{border-color:var(--yel);background:#1a1605}
+.lbl{color:var(--tx);font-weight:600}.key{color:var(--mut2);font-size:10.5px;font-family:ui-monospace,monospace}
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--panel2);
+border:1px solid var(--acc);padding:12px 20px;border-radius:11px;opacity:0;transition:.3s;pointer-events:none;
+font-weight:600;z-index:99;box-shadow:0 10px 40px #000a}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.err{border-color:var(--red)}.toast.ok{border-color:var(--grn)}
+canvas{width:100%;display:block}
 .mini{font-size:11px;color:var(--mut)}
+.inp{background:#0a0e16;border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:7px 11px;font-size:12.5px}
+.pill2{padding:3px 9px;border-radius:7px;background:var(--panel2);font-size:11px;color:var(--mut)}
+.hl{background:#101826}
+.flash{animation:fl 1s}@keyframes fl{from{background:#1d2b1f}to{background:transparent}}
+.empty{color:var(--mut2);padding:18px;text-align:center;font-style:italic}
 </style>
 </head>
 <body>
-<div class="bar">
-  <div class="brand">Faith<b>Bot</b> · Control</div>
-  <div class="pill"><span id="fb-dot" class="dot"></span>faithbot <span id="fb-meta" class="mini"></span></div>
-  <div class="pill"><span id="sn-dot" class="dot"></span>sniper <span id="sn-meta" class="mini"></span></div>
-  <div class="pill" id="pnl-pill">today <span id="pnl-val">—</span></div>
-  <div class="spacer"></div>
-  <button class="btn go" onclick="ctl('faithbot','restart')">↻ faithbot</button>
-  <button class="btn go" onclick="ctl('sniper','restart')">↻ sniper</button>
-  <span id="clock" class="mini"></span>
+<div class="side">
+  <div class="logo">Faith<b>Bot</b></div>
+  <div class="nav" id="nav"></div>
+  <div class="sidefoot" id="foot">connecting…</div>
 </div>
-<div class="tabs" id="tabs"></div>
-<div class="wrap" id="view"></div>
+<div class="main">
+  <div class="top">
+    <div class="chip"><span id="fb-dot" class="dot"></span>faithbot <span id="fb-meta" class="mini"></span></div>
+    <div class="chip"><span id="hb-dot" class="dot"></span><span id="hb-meta" class="mini">scan…</span></div>
+    <div class="chip"><span id="sn-dot" class="dot"></span>sniper <span id="sn-meta" class="mini"></span></div>
+    <div class="chip">today <span id="pnl-val">—</span></div>
+    <div class="grow"></div>
+    <button class="btn go sm" onclick="ctl('faithbot','restart')">↻ faithbot</button>
+    <button class="btn go sm" onclick="ctl('sniper','restart')">↻ sniper</button>
+    <span id="clock" class="mini"></span>
+  </div>
+  <div class="content"><div class="view" id="view"><div class="empty">loading…</div></div></div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
 const $=(s,r=document)=>r.querySelector(s);
-const fmt=(n,d=2)=>(n==null||isNaN(n))?'—':(n>=0?'+':'')+Number(n).toFixed(d);
+const E=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e};
+const num=(n,d=2)=>(n==null||isNaN(n))?'—':Number(n).toFixed(d);
+const money=(n,d=2)=>(n==null||isNaN(n))?'—':(n>=0?'+$':'-$')+Math.abs(Number(n)).toFixed(d);
 const cls=n=>n>0?'pos':n<0?'neg':'neu';
-const j=async(u,o)=>{try{const r=await fetch(u,o);return await r.json()}catch(e){return null}};
-let TAB='overview';
-const TABS=['overview','performance','signals','market','config','logs','sniper'];
-function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600)}
-async function ctl(t,a){toast(t+' '+a+'…');const r=await j(`/api/v3/control/${t}/${a}`,{method:'POST'});
-  toast(r&&r.ok?`${t} ${a} ✓ (pid ${(r.pids||[]).join(',')||'—'})`:`${t} ${a} failed`);setTimeout(refresh,1500)}
+const esc=s=>(s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+async function j(u,o){try{const r=await fetch(u,o);return await r.json()}catch(e){return null}}
+function toast(m,k){const t=$('#toast');t.textContent=m;t.className='toast show '+(k||'');setTimeout(()=>t.className='toast',2800)}
 
-$('#tabs').innerHTML=TABS.map(t=>`<div class="tab" data-t="${t}" onclick="go('${t}')">${t}</div>`).join('');
-function go(t){TAB=t;[...document.querySelectorAll('.tab')].forEach(e=>e.classList.toggle('active',e.dataset.t===t));refresh()}
+const NAV=[['overview','◎','Overview'],['performance','📈','Performance'],['trades','💱','Trades'],
+['signals','📡','Signals'],['market','🪙','Market'],['sniper','🎯','Sniper'],
+['config','⚙️','Config'],['logs','📜','Logs'],['controls','🛠','Controls']];
+let TAB=localStorage.getItem('tab')||'overview';
+let SNAP=null,PERF=null,SNIPE=null,lastOk=0,logPaused=false,logCat='all',logSearch='';
+$('#nav').innerHTML=NAV.map(([k,i,l])=>`<a data-t="${k}" onclick="go('${k}')"><span class="ic">${i}</span>${l}</a>`).join('');
+function markNav(){[...document.querySelectorAll('.nav a')].forEach(a=>a.classList.toggle('on',a.dataset.t===TAB))}
+function go(t){TAB=t;localStorage.setItem('tab',t);markNav();render()}
+markNav();
 
-function uptime(s){if(!s)return'';const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?`${h}h${m}m`:`${m}m`}
+function uptime(s){if(!s)return'';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+return d?`${d}d${h}h`:h?`${h}h${m}m`:`${m}m`}
+async function ctl(t,a){
+  if(a==='stop'&&!confirm(`Stop ${t}?`))return;
+  toast(`${t} ${a}…`);const r=await j(`/api/v3/control/${t}/${a}`,{method:'POST'});
+  toast(r&&r.ok?`${t} ${a} ✓  pid ${(r.pids||[]).join(',')||'—'}`:`${t} ${a} failed`,r&&r.ok?'ok':'err');
+  setTimeout(poll,1600)}
 
-async function topbar(){
-  const st=await j('/api/v3/status');const sn=await j('/api/v3/sniper');const pf=await j('/api/v3/perf');
-  if(st&&st.bot){$('#fb-dot').className='dot '+(st.bot.running?'on':'off');
-    $('#fb-meta').textContent=st.bot.running?`pid ${st.bot.pid} · ${uptime(st.bot.uptime_sec)}`:'stopped'}
-  if(sn){$('#sn-dot').className='dot '+(sn.running?'on':'off');
-    $('#sn-meta').textContent=sn.running?`${sn.snipe_count} snipes · ${sn.near} near`:'stopped'}
-  if(pf&&pf.today){const n=pf.today.net;$('#pnl-val').innerHTML=`<b class="${cls(n)}">$${fmt(n)}</b>`}
-  $('#clock').textContent=st?st.server_time+' · '+(st.session||''):'';
+async function poll(){
+  const [s,sn]=await Promise.all([j('/api/v3/snapshot'),j('/api/v3/sniper')]);
+  if(s){SNAP=s;lastOk=Date.now()}
+  if(sn)SNIPE=sn;
+  topbar();render();
+}
+function hbState(){const h=(SNAP&&SNAP.heartbeat)||{};const age=h.last_scan_ts?(h.now-h.last_scan_ts):null;
+  if(age==null)return['warn','no scan data',null];
+  if(age<70)return['on',`scanning ${Math.round(age)}s ago`,age];
+  if(age<360)return['warn',`last scan ${Math.round(age)}s ago`,age];
+  return['off',`stale ${Math.round(age/60)}m`,age]}
+function topbar(){
+  const b=(SNAP&&SNAP.bot)||{};
+  $('#fb-dot').className='dot '+(b.running?'on':'off');
+  $('#fb-meta').textContent=b.running?`pid ${b.pid} · ${uptime(b.uptime_sec)}`:'stopped';
+  const [hc,ht]=hbState();$('#hb-dot').className='dot '+hc;$('#hb-meta').textContent=ht;
+  if(SNIPE){$('#sn-dot').className='dot '+(SNIPE.running?'on':'off');
+    $('#sn-meta').textContent=SNIPE.running?`${SNIPE.snipe_count} snipe · ${SNIPE.near} near`:'off'}
+  const pn=(SNAP&&SNAP.risk)?(SNAP.risk.loss_today!=null?-SNAP.risk.loss_today:null):null;
+  // prefer real chain pnl from perf if available
+  const real=(PERF&&PERF.today)?PERF.today.net:pn;
+  $('#pnl-val').innerHTML=`<b class="${cls(real)}">${money(real)}</b>`;
+  const stale=(Date.now()-lastOk)>12000;
+  $('#clock').textContent=(SNAP?SNAP.server_time:'')+(stale?' · ⚠ stale':'');
+  $('#foot').innerHTML=`session <b>${SNAP?esc(SNAP.session||'—'):'—'}</b><br>updated ${new Date(lastOk).toLocaleTimeString()}`;
 }
 
-async function refresh(){
-  topbar();
+async function render(){
   const v=$('#view');
-  if(TAB==='overview')return ov(v);
-  if(TAB==='performance')return perf(v);
-  if(TAB==='signals')return sig(v);
-  if(TAB==='market')return mkt(v);
-  if(TAB==='config')return cfg(v);
-  if(TAB==='logs')return logs(v);
-  if(TAB==='sniper')return snip(v);
+  try{
+    if(TAB==='overview')return ov(v);
+    if(TAB==='performance'){if(!PERF)PERF=await j('/api/v3/perf');return perf(v)}
+    if(TAB==='trades')return trades(v);
+    if(TAB==='signals')return signals(v);
+    if(TAB==='market')return market(v);
+    if(TAB==='sniper')return sniper(v);
+    if(TAB==='config')return config(v);
+    if(TAB==='logs')return logs(v);
+    if(TAB==='controls')return controls(v);
+  }catch(e){v.innerHTML=`<div class="card"><div class="empty">render error: ${esc(''+e)}</div></div>`}
 }
 
+/* ---------- OVERVIEW ---------- */
 async function ov(v){
-  const pf=await j('/api/v3/perf')||{};const pnl=await j('/api/v3/pnl')||{};
-  const t=pf.today||{};const lt=pf.lifetime||{};const oc=(pnl.on_chain_today)||{};
-  v.innerHTML=`<div class="grid g4">
-    <div class="card"><h3>Today (real account)</h3><div class="kpi ${cls(t.net)}">$${fmt(t.net)}</div>
-      <div class="sub">+$${fmt(t.win_profit,2)} won · −$${fmt(t.loss_cost,2)} lost · ${oc.n_buys||0} bets</div></div>
-    <div class="card"><h3>Lifetime</h3><div class="kpi ${cls(lt.net)}">$${fmt(lt.net)}</div>
-      <div class="sub">${lt.n||0} trades · ${lt.wr||0}% win rate</div></div>
-    <div class="card"><h3>Today win rate</h3><div class="kpi">${(pnl.today||{}).winrate||0}%</div>
-      <div class="sub">${(pnl.today||{}).wins||0}W / ${(pnl.today||{}).losses||0}L</div></div>
-    <div class="card"><h3>Risked today</h3><div class="kpi sm">$${fmt(oc.risked||0,2)}</div>
-      <div class="sub">on ${oc.n_buys||0} buys</div></div>
+  if(!PERF)PERF=await j('/api/v3/perf');
+  const r=(SNAP&&SNAP.risk)||{},p=(SNAP&&SNAP.pnl)||{},t=(PERF&&PERF.today)||{},lt=(PERF&&PERF.lifetime)||{},st=(PERF&&PERF.stats)||{};
+  const loss=r.loss_today||0,lim=r.daily_loss_limit||0,rem=r.dsl_remaining;
+  const pct=lim?Math.min(100,100*loss/lim):0;
+  const tt=(SNAP&&SNAP.trades_today)||[];
+  v.innerHTML=`
+  <div class="grid g5">
+    <div class="card"><h3>Today · real account</h3><div class="kpi ${cls(t.net)}">${money(t.net)}</div>
+      <div class="sub">+$${num(t.win_profit)} won · −$${num(t.loss_cost)} lost</div></div>
+    <div class="card"><h3>Win rate today</h3><div class="kpi">${num(p.winrate||0,0)}%</div>
+      <div class="sub">${p.wins||0}W / ${p.losses||0}L · ${tt.length} trades</div></div>
+    <div class="card"><h3>Bankroll</h3><div class="kpi sm">$${num(r.bankroll||0)}</div>
+      <div class="sub">Kelly cap ${num((r.kelly_max_pct||0)*100,0)}%</div></div>
+    <div class="card"><h3>Lifetime</h3><div class="kpi sm ${cls(lt.net)}">${money(lt.net)}</div>
+      <div class="sub">${lt.n||0} trades · ${num(lt.wr,0)}% WR</div></div>
+    <div class="card"><h3>Streak</h3><div class="kpi sm ${st.streak>0?'pos':st.streak<0?'neg':''}">${st.streak>0?st.streak+'W':st.streak<0?(-st.streak)+'L':'—'}</div>
+      <div class="sub">max DD $${num(st.max_drawdown)}</div></div>
   </div>
   <div class="grid g2" style="margin-top:14px">
-    <div class="card"><h3>Bots</h3><div id="botcards"></div></div>
-    <div class="card"><h3>By coin (lifetime)</h3><div id="coinmini"></div></div>
+    <div class="card"><h3>Daily stop-loss</h3>
+      <div class="row" style="justify-content:space-between"><span>lost today <b class="neg">$${num(loss)}</b></span>
+        <span class="mini">limit $${num(lim)} · ${rem!=null?'$'+num(rem)+' left':'—'}</span></div>
+      <div class="bar-out"><div class="bar-in" style="width:${pct}%;background:${pct>80?'var(--red)':pct>50?'var(--yel)':'var(--grn)'}"></div></div>
+      <div class="sub" style="margin-top:8px">breakers today: ${r.breakers_today||0}</div></div>
+    <div class="card"><h3>Health</h3><div id="health"></div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Today's trades <span class="mini">real outcomes</span></h3>
+    <div id="tt"></div></div>`;
+  // health
+  const [hc,ht]=hbState();const b=(SNAP&&SNAP.bot)||{};
+  $('#health').innerHTML=`
+    <div class="field"><span><span class="dot ${b.running?'on':'off'}"></span> faithbot</span><span class="mini">${b.running?'pid '+b.pid+' · up '+uptime(b.uptime_sec):'stopped'}</span></div>
+    <div class="field"><span><span class="dot ${hc}"></span> scanner</span><span class="mini">${ht}</span></div>
+    <div class="field"><span><span class="dot ${SNIPE&&SNIPE.running?'on':'off'}"></span> sniper</span><span class="mini">${SNIPE?SNIPE.snipe_count+' snipes · '+SNIPE.near+' near':'—'}</span></div>`;
+  $('#tt').innerHTML=tradeTable(tt);
+}
+function tradeTable(tt){
+  if(!tt||!tt.length)return'<div class="empty">no trades yet today</div>';
+  return `<table><thead><tr><th>time</th><th>coin</th><th>dir</th><th class="r">entry</th><th class="r">shares</th><th>result</th><th class="r">P&L</th><th>src</th></tr></thead><tbody>${
+    tt.slice().reverse().map(x=>`<tr><td class="mini">${x.t||''}</td><td>${x.coin}</td>
+    <td><span class="tag ${x.dir}">${x.dir}</span></td><td class="r">${x.entry}c</td><td class="r">${x.shares}</td>
+    <td>${x.type?`<span class="tag ${x.type}">${x.type}</span>`:(x.status||'')}</td>
+    <td class="r ${cls(x.pnl)}">${money(x.pnl)}</td><td class="mini">${x.reconciled?'chain':(x.source||'')}</td></tr>`).join('')}</tbody></table>`;
+}
+
+/* ---------- PERFORMANCE ---------- */
+function perf(v){
+  const eq=(PERF&&PERF.equity)||[],dl=(PERF&&PERF.daily)||[],bc=(PERF&&PERF.by_coin)||{},bb=(PERF&&PERF.by_band)||{},
+    lt=(PERF&&PERF.lifetime)||{},st=(PERF&&PERF.stats)||{};
+  v.innerHTML=`
+  <div class="grid g5">
+    <div class="card"><h3>Lifetime net</h3><div class="kpi sm ${cls(lt.net)}">${money(lt.net)}</div><div class="sub">${lt.n||0} trades</div></div>
+    <div class="card"><h3>Win rate</h3><div class="kpi sm">${num(lt.wr,0)}%</div><div class="sub">${st.n_days||0} days</div></div>
+    <div class="card"><h3>Avg win / loss</h3><div class="kpi sm"><span class="pos">${money(st.avg_win)}</span> <span class="mut">/</span> <span class="neg">${money(st.avg_loss)}</span></div>
+      <div class="sub">asym ${st.avg_loss?num(Math.abs(st.avg_loss/st.avg_win),2):'—'}×</div></div>
+    <div class="card"><h3>Max drawdown</h3><div class="kpi sm neg">${money(st.max_drawdown)}</div>
+      <div class="sub">best $${num((st.best_day||{}).net)} · worst $${num((st.worst_day||{}).net)}</div></div>
+    <div class="card"><h3>Streak</h3><div class="kpi sm ${st.streak>0?'pos':'neg'}">${st.streak>0?st.streak+'W':st.streak<0?(-st.streak)+'L':'—'}</div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Equity curve <span class="mini">cumulative P&L · ${eq.length} days</span></h3>
+    <canvas id="eqc" height="200"></canvas></div>
+  <div class="card" style="margin-top:14px"><h3>Daily P&L <span class="mini">last ${dl.length} days</span></h3>
+    <canvas id="dbc" height="130"></canvas></div>
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card"><h3>By coin</h3>${tbl(bc,'coin')}</div>
+    <div class="card"><h3>By entry price</h3>${tbl(bb,'band')}</div>
   </div>`;
-  // bot cards
-  const st=await j('/api/v3/status');const sn=await j('/api/v3/sniper');
-  $('#botcards').innerHTML=`
-    <div class="field"><span><span class="dot ${st&&st.bot&&st.bot.running?'on':'off'}"></span> faithbot
-      <span class="mini">${st&&st.bot&&st.bot.running?'pid '+st.bot.pid+' · '+uptime(st.bot.uptime_sec):'stopped'}</span></span>
-      <span class="row"><button class="btn go" onclick="ctl('faithbot','restart')">restart</button>
-      <button class="btn warn" onclick="ctl('faithbot','stop')">stop</button></span></div>
-    <div class="field"><span><span class="dot ${sn&&sn.running?'on':'off'}"></span> sniper (dry-run)
-      <span class="mini">${sn?sn.snipe_count+' snipes · '+sn.near+' near · '+sn.settled.w+'W/'+sn.settled.l+'L':''}</span></span>
-      <span class="row"><button class="btn go" onclick="ctl('sniper','restart')">restart</button>
-      <button class="btn warn" onclick="ctl('sniper','stop')">stop</button></span></div>`;
-  const bc=(pf.by_coin)||{};$('#coinmini').innerHTML=Object.keys(bc).map(c=>{
-    const x=bc[c];return `<div class="field"><span class="lbl">${c}</span>
-      <span class="row"><span class="mini">${x.n} · ${x.wr}%</span> <b class="${cls(x.net)}">$${fmt(x.net)}</b></span></div>`}).join('')||'<div class="mini">no data</div>';
+  setTimeout(()=>{lineChart('eqc',eq.map(e=>e.cum));barChart('dbc',dl.map(d=>d.net))},20);
 }
+function tbl(o,label){const ks=Object.keys(o||{});if(!ks.length)return'<div class="empty">no data</div>';
+  return `<table><thead><tr><th>${label}</th><th class="r">n</th><th class="r">win%</th><th class="r">net $</th></tr></thead><tbody>${
+    ks.map(k=>`<tr><td>${k}</td><td class="r">${o[k].n}</td><td class="r ${o[k].wr>=50?'pos':'neg'}">${o[k].wr}%</td>
+    <td class="r ${cls(o[k].net)}">${money(o[k].net)}</td></tr>`).join('')}</tbody></table>`}
+function lineChart(id,ys){const c=$('#'+id);if(!c||!ys.length)return;const w=c.width=c.clientWidth,h=c.height,P=26,x=c.getContext('2d');
+  x.clearRect(0,0,w,h);const mn=Math.min(0,...ys),mx=Math.max(0,...ys),rg=(mx-mn)||1;
+  const X=i=>P+i*(w-2*P)/(ys.length-1||1),Y=v=>h-P-(v-mn)/rg*(h-2*P);
+  x.strokeStyle='#222c44';x.lineWidth=1;x.beginPath();x.moveTo(P,Y(0));x.lineTo(w-P,Y(0));x.stroke();
+  const up=ys[ys.length-1]>=0;const g=x.createLinearGradient(0,0,0,h);
+  g.addColorStop(0,up?'rgba(52,211,153,.25)':'rgba(248,113,113,.25)');g.addColorStop(1,'rgba(0,0,0,0)');
+  x.beginPath();ys.forEach((v,i)=>i?x.lineTo(X(i),Y(v)):x.moveTo(X(i),Y(v)));x.lineTo(X(ys.length-1),Y(mn));x.lineTo(X(0),Y(mn));x.closePath();x.fillStyle=g;x.fill();
+  x.lineWidth=2;x.strokeStyle=up?'#34d399':'#f87171';x.beginPath();ys.forEach((v,i)=>i?x.lineTo(X(i),Y(v)):x.moveTo(X(i),Y(v)));x.stroke();
+  x.fillStyle='#8896ab';x.font='10px monospace';x.fillText('$'+mx.toFixed(0),3,Y(mx)+4);x.fillText('$'+mn.toFixed(0),3,Y(mn)+4)}
+function barChart(id,ys){const c=$('#'+id);if(!c||!ys.length)return;const w=c.width=c.clientWidth,h=c.height,P=20,x=c.getContext('2d');
+  x.clearRect(0,0,w,h);const mx=Math.max(1,...ys.map(Math.abs)),mid=h/2,bw=(w-2*P)/ys.length;
+  x.strokeStyle='#222c44';x.beginPath();x.moveTo(P,mid);x.lineTo(w-P,mid);x.stroke();
+  ys.forEach((v,i)=>{const bh=Math.abs(v)/mx*(h/2-P);x.fillStyle=v>=0?'#34d399':'#f87171';
+    x.fillRect(P+i*bw+1,v>=0?mid-bh:mid,bw-2,bh)})}
 
-async function perf(v){
-  const pf=await j('/api/v3/perf')||{};const eq=pf.equity||[];const bc=pf.by_coin||{};
-  v.innerHTML=`<div class="card"><h3>Equity curve (cumulative P&L, last ${eq.length} trading days)</h3>
-    <canvas id="eq" width="1000" height="160"></canvas></div>
-    <div class="card" style="margin-top:14px"><h3>By coin (lifetime)</h3>
-    <table><thead><tr><th>coin</th><th class="r">trades</th><th class="r">win %</th><th class="r">net $</th></tr></thead>
-    <tbody>${Object.keys(bc).map(c=>`<tr><td>${c}</td><td class="r">${bc[c].n}</td>
-      <td class="r">${bc[c].wr}%</td><td class="r ${cls(bc[c].net)}">${fmt(bc[c].net)}</td></tr>`).join('')}</tbody></table></div>`;
-  drawEq(eq);
-}
-function drawEq(eq){const c=$('#eq');if(!c||!eq.length)return;const ctx=c.getContext('2d');
-  const W=c.width,H=c.height,P=24;ctx.clearRect(0,0,W,H);
-  const ys=eq.map(e=>e.cum);const mn=Math.min(0,...ys),mx=Math.max(0,...ys);const rng=(mx-mn)||1;
-  const x=i=>P+i*(W-2*P)/(eq.length-1||1);const y=v=>H-P-(v-mn)/rng*(H-2*P);
-  // zero line
-  ctx.strokeStyle='#2a3346';ctx.beginPath();ctx.moveTo(P,y(0));ctx.lineTo(W-P,y(0));ctx.stroke();
-  ctx.lineWidth=2;ctx.strokeStyle=ys[ys.length-1]>=0?'#2ecc71':'#ff5c5c';ctx.beginPath();
-  eq.forEach((e,i)=>{const px=x(i),py=y(e.cum);i?ctx.lineTo(px,py):ctx.moveTo(px,py)});ctx.stroke();
-  ctx.fillStyle='#8b97a8';ctx.font='10px monospace';ctx.fillText('$'+mx.toFixed(0),2,y(mx)+4);ctx.fillText('$'+mn.toFixed(0),2,y(mn)+4);
-}
+/* ---------- TRADES / SIGNALS / MARKET ---------- */
+function trades(v){const tt=(SNAP&&SNAP.trades_today)||[];
+  const net=tt.reduce((a,x)=>a+(x.pnl||0),0),w=tt.filter(x=>x.type==='WIN').length,l=tt.filter(x=>x.type==='LOSS').length;
+  v.innerHTML=`<div class="grid g4">
+    <div class="card"><h3>Trades today</h3><div class="kpi">${tt.length}</div></div>
+    <div class="card"><h3>Won / Lost</h3><div class="kpi sm"><span class="pos">${w}</span> / <span class="neg">${l}</span></div></div>
+    <div class="card"><h3>Net (logged)</h3><div class="kpi sm ${cls(net)}">${money(net)}</div></div>
+    <div class="card"><h3>Win rate</h3><div class="kpi sm">${w+l?Math.round(100*w/(w+l)):0}%</div></div>
+  </div><div class="card" style="margin-top:14px"><h3>All trades today</h3>${tradeTable(tt)}</div>`}
+function signals(v){const sg=(SNAP&&SNAP.signals)||[];
+  v.innerHTML=`<div class="card"><h3>Recent signals <span class="mini">${sg.length}</span></h3>
+  ${sg.length?`<table><thead><tr><th>time</th><th>coin</th><th>dir</th><th class="r">edge</th><th class="r">prob</th><th class="r">ask</th><th class="r">trend</th></tr></thead><tbody>${
+    sg.map(s=>`<tr><td class="mini">${s.t}</td><td>${s.coin}</td><td><span class="tag ${s.dir}">${s.dir}</span></td>
+    <td class="r ${s.edge>=5?'pos':'neu'}"><b>${num(s.edge,1)}%</b></td><td class="r">${s.prob}%</td><td class="r">${s.ask}c</td>
+    <td class="r ${cls(s.trend)}">${num(s.trend,2)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">no recent signals</div>'}</div>`}
+function market(v){const co=((SNAP&&SNAP.market)||{}).coins||[];
+  v.innerHTML=`<div class="grid g2">${co.map(c=>{const u=c.up||{},d=c.down||{},ls=c.last_signal||{};
+    return `<div class="card"><h3>${c.coin}${c.last_action?` <span class="pill2">${c.last_action}</span>`:''}</h3>
+    <div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div><div class="mini">UP</div><div class="kpi sm">${u.ask||'—'}c</div>
+        <div class="sub">edge <b class="${u.edge>=5?'pos':'mut'}">${num(u.edge,1)}%</b> · ${u.prob||'—'}% · tr ${num(u.trend,2)}</div></div>
+      <div style="text-align:right"><div class="mini">DOWN</div><div class="kpi sm">${d.ask||'—'}c</div>
+        <div class="sub">edge <b class="${d.edge>=5?'pos':'mut'}">${num(d.edge,1)}%</b> · ${d.prob||'—'}% · tr ${num(d.trend,2)}</div></div>
+    </div>
+    <div class="field"><span class="key">last signal</span><span>${ls.dir?`<span class="tag ${ls.dir}">${ls.dir}</span> ${ls.edge}% @ ${ls.t}`:'—'}</span></div>
+    </div>`}).join('')||'<div class="empty">no market data</div>'}</div>`}
 
-async function sig(v){
-  const d=await j('/api/v3/scanner')||{signals:[]};
-  v.innerHTML=`<div class="card"><h3>Recent signals (high-level)</h3>
-  <table><thead><tr><th>time</th><th>coin</th><th>dir</th><th class="r">edge</th><th class="r">prob</th><th class="r">ask</th><th class="r">trend</th></tr></thead>
-  <tbody>${(d.signals||[]).slice(0,40).map(s=>`<tr><td class="mini">${s.t}</td><td>${s.coin}</td>
-    <td><span class="tag ${s.dir}">${s.dir}</span></td>
-    <td class="r ${s.edge>=5?'pos':'neu'}">${fmt(s.edge,1)}%</td><td class="r">${s.prob}%</td>
-    <td class="r">${s.ask}c</td><td class="r">${fmt(s.trend,2)}</td></tr>`).join('')}</tbody></table></div>`;
-}
+/* ---------- SNIPER ---------- */
+function sniper(v){const s=SNIPE||{},se=s.settled||{w:0,l:0,net:0},tot=(s.snipe_count||0)+(s.near||0);
+  v.innerHTML=`<div class="grid g4">
+    <div class="card"><h3>Sniper</h3><div class="kpi sm">${s.running?'<span class="pos">● live</span>':'<span class="neg">○ off</span>'}</div><div class="sub">dry-run · no orders</div></div>
+    <div class="card"><h3>Snipe opps</h3><div class="kpi">${s.snipe_count||0}</div><div class="sub">winning side ≤40c</div></div>
+    <div class="card"><h3>Near-misses</h3><div class="kpi">${s.near||0}</div><div class="sub">book already repriced</div></div>
+    <div class="card"><h3>Hypothetical</h3><div class="kpi sm ${cls(se.net)}">${money(se.net)}</div><div class="sub">${se.w}W/${se.l}L${se.w+se.l?' · '+Math.round(100*se.w/(se.w+se.l))+'%':''}</div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Verdict</h3><div class="sub" style="font-size:13.5px;line-height:1.6">${verdict(s)}</div></div>
+  <div class="card" style="margin-top:14px"><h3>Recent sniper events</h3>
+    <div class="logbox">${(s.recent||[]).slice().reverse().map(l=>`<div class="logline ${/SNIPE/.test(l)?'l-INFO pos':/WIN/.test(l)?'pos':/LOSS/.test(l)?'neg':'l-DEBUG'}">${esc(l)}</div>`).join('')||'<div class="empty">waiting for first 90s window with a ≥0.2% move…</div>'}</div></div>`}
+function verdict(s){const op=s.snipe_count||0,nr=s.near||0,t=op+nr;if(!t)return'⏳ No setups yet — the sniper only fires in the first 90s of each :00/:15/:30/:45 window after a ≥0.2% Binance move. Let it run.';
+  const pct=Math.round(100*op/t);
+  if(pct>=20)return`✅ <b>The delay still exists.</b> ${op}/${t} sharp-move setups still had the winning side ≤40c (${pct}%). Worth taking live.`;
+  if(pct>=5)return`⚠️ <b>Edge has narrowed.</b> Only ${pct}% of setups (${op}/${t}) still showed a lagged ≤40c price. Marginal.`;
+  return`❌ <b>The lag appears closed.</b> ${nr} setups but only ${op} were ≤40c — the book reprices fast now.`}
 
-async function mkt(v){
-  const d=await j('/api/v3/market')||{coins:[]};
-  v.innerHTML=`<div class="grid g2">${(d.coins||[]).map(c=>{
-    const u=c.up||{},dn=c.down||{},ls=c.last_signal||{};
-    return `<div class="card"><h3>${c.coin}</h3>
-      <div class="row" style="justify-content:space-between"><div><div class="mini">UP</div>
-        <div class="kpi sm">${u.ask||'—'}c</div><div class="sub">edge ${fmt(u.edge,1)}% · ${u.prob||'—'}%</div></div>
-      <div style="text-align:right"><div class="mini">DOWN</div>
-        <div class="kpi sm">${dn.ask||'—'}c</div><div class="sub">edge ${fmt(dn.edge,1)}% · ${dn.prob||'—'}%</div></div></div>
-      <div class="field"><span class="key">last signal</span><span>${ls.dir?`<span class="tag ${ls.dir}">${ls.dir}</span> ${ls.edge}% @ ${ls.t}`:'—'}</span></div>
-    </div>`}).join('')}</div>`;
-}
-
-async function cfg(v){
-  const d=await j('/api/v3/config')||{knobs:[]};
-  const groups={};(d.knobs||[]).forEach(k=>{(groups[k.group]=groups[k.group]||[]).push(k)});
-  v.innerHTML=`<div class="grid g2">${Object.keys(groups).map(g=>`<div class="card"><h3>${g}</h3>
-    ${groups[g].map(k=>{
-      const inp=k.type==='bool'
-        ?`<select id="cf-${k.key}"><option ${/^(on|1|true)$/i.test(k.value)?'selected':''}>on</option><option ${!/^(on|1|true)$/i.test(k.value)?'selected':''}>off</option></select>`
-        :`<input id="cf-${k.key}" value="${k.value}"/>`;
-      return `<div class="field"><span><span class="lbl">${k.label}</span><br><span class="key">${k.key}</span></span>${inp}</div>`}).join('')}
-  </div>`).join('')}</div>
-  <div class="row" style="margin-top:14px"><button class="btn go" onclick="saveCfg()">💾 Save config</button>
-  <button class="btn go" onclick="saveCfg(true)">💾 Save & restart faithbot</button>
-  <span class="mini">changes are written to .env — restart the bot to apply.</span></div>`;
-}
-async function saveCfg(restart){
-  const d=await j('/api/v3/config')||{knobs:[]};const body={};
-  (d.knobs||[]).forEach(k=>{const el=$('#cf-'+k.key);if(el&&el.value!==k.value)body[k.key]=el.value});
+/* ---------- CONFIG ---------- */
+async function config(v){const d=await j('/api/v3/config')||{knobs:[]};
+  const g={};(d.knobs||[]).forEach(k=>(g[k.group]=g[k.group]||[]).push(k));
+  v.innerHTML=`<div class="row" style="margin-bottom:12px"><button class="btn go" onclick="saveCfg(0)">💾 Save</button>
+    <button class="btn go" onclick="saveCfg(1)">💾 Save & restart faithbot</button>
+    <button class="btn sm" onclick="config($('#view'))">↺ reload</button>
+    <span class="mini">edits write to .env (auto-backed-up) · restart to apply</span></div>
+  <div class="grid g3">${Object.keys(g).map(grp=>`<div class="card"><h3>${grp}</h3>${g[grp].map(k=>{
+    const inp=k.type==='bool'
+      ?`<select id="cf-${k.key}" data-o="${k.value}" onchange="this.classList.toggle('dirty',this.value!==this.dataset.o)"><option ${/^(on|1|true)$/i.test(k.value)?'selected':''}>on</option><option ${!/^(on|1|true)$/i.test(k.value)?'selected':''}>off</option></select>`
+      :`<input id="cf-${k.key}" value="${k.value}" data-o="${k.value}" oninput="this.classList.toggle('dirty',this.value!==this.dataset.o)"/>`;
+    return `<div class="field"><span><div class="lbl">${k.label}</div><div class="key">${k.key}</div></span>${inp}</div>`}).join('')}</div>`).join('')}</div>`}
+async function saveCfg(restart){const d=await j('/api/v3/config')||{knobs:[]};const body={};
+  (d.knobs||[]).forEach(k=>{const el=$('#cf-'+k.key);if(el&&el.value!==el.dataset.o)body[k.key]=el.value});
   if(!Object.keys(body).length){toast('no changes');return}
   const r=await j('/api/v3/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  toast(r&&r.ok?`saved ${r.changed.join(', ')}`:`error: ${(r&&r.errors||[]).join('; ')}`);
-  if(restart&&r&&r.ok){setTimeout(()=>ctl('faithbot','restart'),800)}
-}
+  if(r&&r.ok){toast('saved: '+r.changed.join(', '),'ok');if(restart)setTimeout(()=>ctl('faithbot','restart'),700);else config($('#view'))}
+  else toast('error: '+((r&&r.errors)||['failed']).join('; '),'err')}
 
-let logCat='all';
-async function logs(v){
-  const d=await j('/api/v3/logs?limit=160&category='+logCat)||{events:[]};
+/* ---------- LOGS ---------- */
+function logs(v){
   const cats=['all','signal','trade','approve','risk','filter','error','warn'];
-  v.innerHTML=`<div class="card"><div class="row" style="margin-bottom:8px">
-    ${cats.map(c=>`<button class="btn ${c===logCat?'go':''}" onclick="logCat='${c}';refresh()">${c}</button>`).join('')}
-    <span class="spacer"></span><span class="mini">live · ${(d.events||[]).length} lines</span></div>
-    <div style="max-height:62vh;overflow:auto">${(d.events||[]).map(e=>
-      `<div class="logline l-${e.level}">${e.t} <span class="mini">[${e.bot||'15m'}]</span> ${(e.msg||'').replace(/</g,'&lt;')}</div>`).join('')}</div></div>`;
+  v.innerHTML=`<div class="card"><div class="row" style="margin-bottom:9px">
+    ${cats.map(c=>`<button class="btn sm ${c===logCat?'go':''}" onclick="logCat='${c}';drawLogs()">${c}</button>`).join('')}
+    <input class="inp" id="logq" placeholder="search…" value="${esc(logSearch)}" oninput="logSearch=this.value;drawLogs()" style="width:160px"/>
+    <button class="btn sm ${logPaused?'warn':''}" onclick="logPaused=!logPaused;logs($('#view'))">${logPaused?'▶ resume':'⏸ pause'}</button>
+    <span class="grow"></span><span class="mini" id="logn"></span></div>
+    <div class="logbox" id="logbox"></div></div>`;
+  drawLogs();
+}
+function drawLogs(){
+  const box=$('#logbox');if(!box)return;
+  let ev=((SNAP&&SNAP.events)||[]).slice();
+  if(logCat!=='all')ev=ev.filter(e=>e.cat===logCat||(logCat==='warn'&&e.level==='WARNING')||(logCat==='error'&&e.level==='ERROR'));
+  if(logSearch)ev=ev.filter(e=>(e.msg||'').toLowerCase().includes(logSearch.toLowerCase()));
+  $('#logn').textContent=ev.length+' lines';
+  box.innerHTML=ev.map(e=>`<div class="logline l-${e.level}">${e.t} <span class="key">[${e.bot||'15m'}]</span> ${esc(e.msg)}</div>`).join('')||'<div class="empty">no matching lines</div>';
 }
 
-async function snip(v){
-  const s=await j('/api/v3/sniper')||{};const se=s.settled||{w:0,l:0,net:0};
-  const tot=se.w+se.l;
-  v.innerHTML=`<div class="grid g4">
-    <div class="card"><h3>Sniper status</h3><div class="kpi sm">${s.running?'<span class="pos">● live</span>':'<span class="neg">○ off</span>'}</div>
-      <div class="sub">dry-run · no real orders</div></div>
-    <div class="card"><h3>Snipe opportunities</h3><div class="kpi">${s.snipe_count||0}</div>
-      <div class="sub">winning side ≤40c (book lagged)</div></div>
-    <div class="card"><h3>Near-misses</h3><div class="kpi">${s.near||0}</div>
-      <div class="sub">right setup, book already repriced</div></div>
-    <div class="card"><h3>Hypothetical result</h3><div class="kpi ${cls(se.net)}">$${fmt(se.net)}</div>
-      <div class="sub">${se.w}W / ${se.l}L${tot?` · ${Math.round(100*se.w/tot)}%`:''}</div></div>
+/* ---------- CONTROLS ---------- */
+function controls(v){const b=(SNAP&&SNAP.bot)||{};
+  v.innerHTML=`<div class="grid g2">
+    <div class="card"><h3>faithbot (15m predictor)</h3>
+      <div class="sub" style="margin-bottom:12px">${b.running?`running · pid ${b.pid} · up ${uptime(b.uptime_sec)}`:'stopped'}</div>
+      <div class="row"><button class="btn go" onclick="ctl('faithbot','restart')">↻ Restart</button>
+        <button class="btn" onclick="ctl('faithbot','start')">▶ Start</button>
+        <button class="btn warn" onclick="ctl('faithbot','stop')">■ Stop</button></div></div>
+    <div class="card"><h3>sniper (latency-arb dry-run)</h3>
+      <div class="sub" style="margin-bottom:12px">${SNIPE&&SNIPE.running?`running · ${SNIPE.snipe_count} snipes`:'stopped'}</div>
+      <div class="row"><button class="btn go" onclick="ctl('sniper','restart')">↻ Restart</button>
+        <button class="btn" onclick="ctl('sniper','start')">▶ Start</button>
+        <button class="btn warn" onclick="ctl('sniper','stop')">■ Stop</button></div></div>
   </div>
-  <div class="card" style="margin-top:14px"><h3>Verdict</h3>
-    <div class="sub" style="font-size:13px">${verdict(s)}</div></div>
-  <div class="card" style="margin-top:14px"><h3>Recent sniper events</h3>
-    <div style="max-height:46vh;overflow:auto">${(s.recent||[]).slice().reverse().map(l=>
-      `<div class="logline ${/SNIPE/.test(l)?'l-INFO pos':/SETTLE.*WIN/.test(l)?'pos':/LOSS/.test(l)?'neg':''}">${(l||'').replace(/</g,'&lt;')}</div>`).join('')||'<div class="mini">waiting for the first 90s window with a sharp move…</div>'}</div></div>`;
-}
-function verdict(s){const op=s.snipe_count||0,nr=s.near||0,tot=op+nr;
-  if(!tot)return'No setups yet — the sniper only acts in the first 90s of each :00/:15/:30/:45 window after a ≥0.2% move. Let it run.';
-  const pct=Math.round(100*op/tot);
-  if(pct>=20)return`✅ The delay still exists: ${op}/${tot} sharp-move setups still had the winning side ≤40c (${pct}%). Worth taking live.`;
-  if(pct>=5)return`⚠️ Edge has narrowed: only ${pct}% of setups still showed a lagged ≤40c price (${op}/${tot}). Marginal — may need a higher entry cap.`;
-  return`❌ The lag appears closed: ${nr} setups but only ${op} were still ≤40c — the book reprices fast now. The easy edge is gone.`;
-}
+  <div class="card" style="margin-top:14px"><h3>Quick links</h3>
+    <div class="row"><a class="btn sm" href="/" target="_blank">classic dashboard ↗</a>
+    <a class="btn sm" href="/charts" target="_blank">charts ↗</a>
+    <a class="btn sm" href="/audit" target="_blank">audit ↗</a></div></div>`}
 
-go('overview');
-setInterval(refresh,4000);
+poll();
+setInterval(poll,4000);
+setInterval(()=>{if(TAB==='performance'){j('/api/v3/perf').then(p=>{if(p){PERF=p;if(TAB==='performance')perf($('#view'))}})}},20000);
 </script>
 </body>
 </html>

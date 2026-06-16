@@ -143,26 +143,67 @@ def _perf() -> dict:
                 rows.append(r)
         days = defaultdict(float)
         coins = defaultdict(lambda: [0, 0, 0.0])
+        bands = defaultdict(lambda: [0, 0, 0.0])
         n = w = 0
         net = 0.0
+        wins_amt = []
+        loss_amt = []
+
+        def band_of(p):
+            try:
+                p = float(p)
+            except Exception:
+                return "?"
+            for lo in (30, 40, 50, 60, 70, 80):
+                if p < (lo + 10) / 100.0:
+                    return f"{lo}-{lo+10}c"
+            return "80c+"
         for r in rows:
             days[r["day"]] += r["pnl"]
-            c = coins[r["coin"]]
-            c[0] += 1
-            c[1] += 1 if r["result"] == "WIN" else 0
-            c[2] += r["pnl"]
+            won = r["result"] == "WIN"
+            for tbl, key in ((coins, r["coin"]), (bands, band_of(r.get("avg")))):
+                t = tbl[key]
+                t[0] += 1
+                t[1] += 1 if won else 0
+                t[2] += r["pnl"]
             n += 1
-            w += 1 if r["result"] == "WIN" else 0
+            w += 1 if won else 0
             net += r["pnl"]
+            (wins_amt if won else loss_amt).append(r["pnl"])
         cum = 0.0
         eq = []
+        peak = 0.0
+        max_dd = 0.0
         for d in sorted(days):
             cum += days[d]
+            peak = max(peak, cum)
+            max_dd = min(max_dd, cum - peak)
             eq.append({"day": d, "net": round(days[d], 2), "cum": round(cum, 2)})
-        out["equity"] = eq[-60:]
+        # current win/loss streak (most recent trades)
+        streak = 0
+        for r in reversed(rows):
+            s = 1 if r["result"] == "WIN" else -1
+            if streak == 0 or (streak > 0) == (s > 0):
+                streak += s
+            else:
+                break
+        daysort = sorted(days.items(), key=lambda x: x[1])
+        out["equity"] = eq[-90:]
+        out["daily"] = [{"day": d, "net": round(v, 2)} for d, v in sorted(days.items())][-30:]
         out["by_coin"] = {k: {"n": v[0], "wr": round(100 * v[1] / v[0], 1) if v[0] else 0,
                               "net": round(v[2], 2)} for k, v in coins.items()}
+        out["by_band"] = {k: {"n": v[0], "wr": round(100 * v[1] / v[0], 1) if v[0] else 0,
+                              "net": round(v[2], 2)} for k, v in sorted(bands.items())}
         out["lifetime"] = {"n": n, "wr": round(100 * w / n, 1) if n else 0, "net": round(net, 2)}
+        out["stats"] = {
+            "avg_win": round(sum(wins_amt) / len(wins_amt), 2) if wins_amt else 0,
+            "avg_loss": round(sum(loss_amt) / len(loss_amt), 2) if loss_amt else 0,
+            "best_day": {"day": daysort[-1][0], "net": round(daysort[-1][1], 2)} if daysort else None,
+            "worst_day": {"day": daysort[0][0], "net": round(daysort[0][1], 2)} if daysort else None,
+            "max_drawdown": round(max_dd, 2),
+            "streak": streak,
+            "n_days": len(days),
+        }
     except Exception as e:
         out["equity_err"] = str(e)
     return out
