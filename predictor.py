@@ -556,6 +556,10 @@ class Predictor:
                     f"— dampened trend {old_ts:+.2f} -> {trend_score:+.2f}",
                     15.0,
                 )
+                # jun16: mark a reversal/oscillation event for the cooldown gate
+                if not hasattr(self, "_reversal_ts"):
+                    self._reversal_ts = {}
+                self._reversal_ts[coin] = now_ts
 
         # Regime detection: choppy vs trending (per-coin history — audit M1)
         chop = self._chop_detector
@@ -912,6 +916,23 @@ class Predictor:
                 12.0,
             )
             return None
+
+        # ── Reversal cooldown (jun16): don't re-enter a coin within N seconds of
+        # a timeframe-conflict/bounce — the V-shape trap (price plunges, bounces,
+        # we fire on the 2nd leg into a reversal; SOL DOWN 10:47 fired 36s after a
+        # bounce, reverted up, lost). Data: re-entries <90s after a bounce won
+        # 46% vs 55% clean. REVERSAL_COOLDOWN_SEC=0 disables.
+        _rev_cd = float(os.getenv("REVERSAL_COOLDOWN_SEC", "0"))
+        if _rev_cd > 0 and hasattr(self, "_reversal_ts"):
+            _rev_age = now_ts - self._reversal_ts.get(coin, -999999)
+            if 0 <= _rev_age < _rev_cd:
+                self._diag_log(
+                    f"revcd-{coin}",
+                    f"[REVERSAL COOLDOWN] {coin} {direction}: bounce/conflict {_rev_age:.0f}s "
+                    f"ago (< {_rev_cd:.0f}s) — skip V-shape re-entry",
+                    12.0,
+                )
+                return None
 
         # ── Expensive DOWN needs deep dist (56-64c DOWN on -0.2% dist = today's loss) ──
         _bk_agree = sess_cal.book_agrees(direction, book_up)
