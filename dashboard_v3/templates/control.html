@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>FaithBot · Control Center</title>
+<style>
+:root{--bg:#0b0e14;--panel:#141925;--panel2:#1b2230;--line:#262e3f;--tx:#e6edf3;--mut:#8b97a8;
+--grn:#2ecc71;--red:#ff5c5c;--blu:#4aa8ff;--yel:#ffcf56;--acc:#7c5cff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);
+font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif}
+a{color:var(--blu)}
+.bar{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--panel);
+border-bottom:1px solid var(--line);flex-wrap:wrap;position:sticky;top:0;z-index:10}
+.brand{font-weight:700;font-size:16px;letter-spacing:.3px}
+.brand b{color:var(--acc)}
+.pill{display:flex;align-items:center;gap:6px;background:var(--panel2);padding:5px 10px;
+border-radius:20px;font-size:12.5px;border:1px solid var(--line)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mut)}
+.dot.on{background:var(--grn);box-shadow:0 0 8px var(--grn)}.dot.off{background:var(--red)}
+.spacer{flex:1}
+.btn{background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:7px;
+padding:6px 12px;cursor:pointer;font-size:12.5px}.btn:hover{border-color:var(--acc)}
+.btn.warn{border-color:#5a3030;color:#ffb3b3}.btn.go{border-color:#2e6b46;color:#9ff0bf}
+.tabs{display:flex;gap:4px;padding:8px 16px 0;flex-wrap:wrap;background:var(--panel);
+border-bottom:1px solid var(--line)}
+.tab{padding:8px 14px;cursor:pointer;color:var(--mut);border-bottom:2px solid transparent;font-weight:600}
+.tab.active{color:var(--tx);border-color:var(--acc)}
+.wrap{padding:16px;max-width:1200px;margin:0 auto}
+.grid{display:grid;gap:14px}.g4{grid-template-columns:repeat(4,1fr)}.g3{grid-template-columns:repeat(3,1fr)}
+.g2{grid-template-columns:repeat(2,1fr)}
+@media(max-width:800px){.g4,.g3,.g2{grid-template-columns:1fr 1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px}
+.card h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut)}
+.kpi{font-size:26px;font-weight:700}.kpi.sm{font-size:19px}
+.sub{color:var(--mut);font-size:12px;margin-top:3px}
+.pos{color:var(--grn)}.neg{color:var(--red)}.neu{color:var(--yel)}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase}
+td.r,th.r{text-align:right}
+.tag{padding:2px 7px;border-radius:5px;font-size:11px;font-weight:700}
+.tag.UP{background:#16341f;color:var(--grn)}.tag.DOWN{background:#3a1c1c;color:var(--red)}
+.logline{font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:3px 6px;white-space:pre-wrap;
+border-bottom:1px solid #1a2030}
+.l-DEBUG{color:#6b7688}.l-INFO{color:#cdd6e0}.l-WARNING{color:var(--yel)}.l-ERROR{color:var(--red)}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.field{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line)}
+.field input{background:var(--bg);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:6px 9px;width:120px;text-align:right}
+.field .lbl{color:var(--tx)}.field .key{color:var(--mut);font-size:11px;font-family:monospace}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--panel2);
+border:1px solid var(--acc);padding:11px 18px;border-radius:9px;opacity:0;transition:.3s;pointer-events:none}
+.toast.show{opacity:1}
+.hide{display:none}
+canvas{width:100%;height:160px;display:block}
+.mini{font-size:11px;color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="bar">
+  <div class="brand">Faith<b>Bot</b> · Control</div>
+  <div class="pill"><span id="fb-dot" class="dot"></span>faithbot <span id="fb-meta" class="mini"></span></div>
+  <div class="pill"><span id="sn-dot" class="dot"></span>sniper <span id="sn-meta" class="mini"></span></div>
+  <div class="pill" id="pnl-pill">today <span id="pnl-val">—</span></div>
+  <div class="spacer"></div>
+  <button class="btn go" onclick="ctl('faithbot','restart')">↻ faithbot</button>
+  <button class="btn go" onclick="ctl('sniper','restart')">↻ sniper</button>
+  <span id="clock" class="mini"></span>
+</div>
+<div class="tabs" id="tabs"></div>
+<div class="wrap" id="view"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $=(s,r=document)=>r.querySelector(s);
+const fmt=(n,d=2)=>(n==null||isNaN(n))?'—':(n>=0?'+':'')+Number(n).toFixed(d);
+const cls=n=>n>0?'pos':n<0?'neg':'neu';
+const j=async(u,o)=>{try{const r=await fetch(u,o);return await r.json()}catch(e){return null}};
+let TAB='overview';
+const TABS=['overview','performance','signals','market','config','logs','sniper'];
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600)}
+async function ctl(t,a){toast(t+' '+a+'…');const r=await j(`/api/v3/control/${t}/${a}`,{method:'POST'});
+  toast(r&&r.ok?`${t} ${a} ✓ (pid ${(r.pids||[]).join(',')||'—'})`:`${t} ${a} failed`);setTimeout(refresh,1500)}
+
+$('#tabs').innerHTML=TABS.map(t=>`<div class="tab" data-t="${t}" onclick="go('${t}')">${t}</div>`).join('');
+function go(t){TAB=t;[...document.querySelectorAll('.tab')].forEach(e=>e.classList.toggle('active',e.dataset.t===t));refresh()}
+
+function uptime(s){if(!s)return'';const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?`${h}h${m}m`:`${m}m`}
+
+async function topbar(){
+  const st=await j('/api/v3/status');const sn=await j('/api/v3/sniper');const pf=await j('/api/v3/perf');
+  if(st&&st.bot){$('#fb-dot').className='dot '+(st.bot.running?'on':'off');
+    $('#fb-meta').textContent=st.bot.running?`pid ${st.bot.pid} · ${uptime(st.bot.uptime_sec)}`:'stopped'}
+  if(sn){$('#sn-dot').className='dot '+(sn.running?'on':'off');
+    $('#sn-meta').textContent=sn.running?`${sn.snipe_count} snipes · ${sn.near} near`:'stopped'}
+  if(pf&&pf.today){const n=pf.today.net;$('#pnl-val').innerHTML=`<b class="${cls(n)}">$${fmt(n)}</b>`}
+  $('#clock').textContent=st?st.server_time+' · '+(st.session||''):'';
+}
+
+async function refresh(){
+  topbar();
+  const v=$('#view');
+  if(TAB==='overview')return ov(v);
+  if(TAB==='performance')return perf(v);
+  if(TAB==='signals')return sig(v);
+  if(TAB==='market')return mkt(v);
+  if(TAB==='config')return cfg(v);
+  if(TAB==='logs')return logs(v);
+  if(TAB==='sniper')return snip(v);
+}
+
+async function ov(v){
+  const pf=await j('/api/v3/perf')||{};const pnl=await j('/api/v3/pnl')||{};
+  const t=pf.today||{};const lt=pf.lifetime||{};const oc=(pnl.on_chain_today)||{};
+  v.innerHTML=`<div class="grid g4">
+    <div class="card"><h3>Today (real account)</h3><div class="kpi ${cls(t.net)}">$${fmt(t.net)}</div>
+      <div class="sub">+$${fmt(t.win_profit,2)} won · −$${fmt(t.loss_cost,2)} lost · ${oc.n_buys||0} bets</div></div>
+    <div class="card"><h3>Lifetime</h3><div class="kpi ${cls(lt.net)}">$${fmt(lt.net)}</div>
+      <div class="sub">${lt.n||0} trades · ${lt.wr||0}% win rate</div></div>
+    <div class="card"><h3>Today win rate</h3><div class="kpi">${(pnl.today||{}).winrate||0}%</div>
+      <div class="sub">${(pnl.today||{}).wins||0}W / ${(pnl.today||{}).losses||0}L</div></div>
+    <div class="card"><h3>Risked today</h3><div class="kpi sm">$${fmt(oc.risked||0,2)}</div>
+      <div class="sub">on ${oc.n_buys||0} buys</div></div>
+  </div>
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card"><h3>Bots</h3><div id="botcards"></div></div>
+    <div class="card"><h3>By coin (lifetime)</h3><div id="coinmini"></div></div>
+  </div>`;
+  // bot cards
+  const st=await j('/api/v3/status');const sn=await j('/api/v3/sniper');
+  $('#botcards').innerHTML=`
+    <div class="field"><span><span class="dot ${st&&st.bot&&st.bot.running?'on':'off'}"></span> faithbot
+      <span class="mini">${st&&st.bot&&st.bot.running?'pid '+st.bot.pid+' · '+uptime(st.bot.uptime_sec):'stopped'}</span></span>
+      <span class="row"><button class="btn go" onclick="ctl('faithbot','restart')">restart</button>
+      <button class="btn warn" onclick="ctl('faithbot','stop')">stop</button></span></div>
+    <div class="field"><span><span class="dot ${sn&&sn.running?'on':'off'}"></span> sniper (dry-run)
+      <span class="mini">${sn?sn.snipe_count+' snipes · '+sn.near+' near · '+sn.settled.w+'W/'+sn.settled.l+'L':''}</span></span>
+      <span class="row"><button class="btn go" onclick="ctl('sniper','restart')">restart</button>
+      <button class="btn warn" onclick="ctl('sniper','stop')">stop</button></span></div>`;
+  const bc=(pf.by_coin)||{};$('#coinmini').innerHTML=Object.keys(bc).map(c=>{
+    const x=bc[c];return `<div class="field"><span class="lbl">${c}</span>
+      <span class="row"><span class="mini">${x.n} · ${x.wr}%</span> <b class="${cls(x.net)}">$${fmt(x.net)}</b></span></div>`}).join('')||'<div class="mini">no data</div>';
+}
+
+async function perf(v){
+  const pf=await j('/api/v3/perf')||{};const eq=pf.equity||[];const bc=pf.by_coin||{};
+  v.innerHTML=`<div class="card"><h3>Equity curve (cumulative P&L, last ${eq.length} trading days)</h3>
+    <canvas id="eq" width="1000" height="160"></canvas></div>
+    <div class="card" style="margin-top:14px"><h3>By coin (lifetime)</h3>
+    <table><thead><tr><th>coin</th><th class="r">trades</th><th class="r">win %</th><th class="r">net $</th></tr></thead>
+    <tbody>${Object.keys(bc).map(c=>`<tr><td>${c}</td><td class="r">${bc[c].n}</td>
+      <td class="r">${bc[c].wr}%</td><td class="r ${cls(bc[c].net)}">${fmt(bc[c].net)}</td></tr>`).join('')}</tbody></table></div>`;
+  drawEq(eq);
+}
+function drawEq(eq){const c=$('#eq');if(!c||!eq.length)return;const ctx=c.getContext('2d');
+  const W=c.width,H=c.height,P=24;ctx.clearRect(0,0,W,H);
+  const ys=eq.map(e=>e.cum);const mn=Math.min(0,...ys),mx=Math.max(0,...ys);const rng=(mx-mn)||1;
+  const x=i=>P+i*(W-2*P)/(eq.length-1||1);const y=v=>H-P-(v-mn)/rng*(H-2*P);
+  // zero line
+  ctx.strokeStyle='#2a3346';ctx.beginPath();ctx.moveTo(P,y(0));ctx.lineTo(W-P,y(0));ctx.stroke();
+  ctx.lineWidth=2;ctx.strokeStyle=ys[ys.length-1]>=0?'#2ecc71':'#ff5c5c';ctx.beginPath();
+  eq.forEach((e,i)=>{const px=x(i),py=y(e.cum);i?ctx.lineTo(px,py):ctx.moveTo(px,py)});ctx.stroke();
+  ctx.fillStyle='#8b97a8';ctx.font='10px monospace';ctx.fillText('$'+mx.toFixed(0),2,y(mx)+4);ctx.fillText('$'+mn.toFixed(0),2,y(mn)+4);
+}
+
+async function sig(v){
+  const d=await j('/api/v3/scanner')||{signals:[]};
+  v.innerHTML=`<div class="card"><h3>Recent signals (high-level)</h3>
+  <table><thead><tr><th>time</th><th>coin</th><th>dir</th><th class="r">edge</th><th class="r">prob</th><th class="r">ask</th><th class="r">trend</th></tr></thead>
+  <tbody>${(d.signals||[]).slice(0,40).map(s=>`<tr><td class="mini">${s.t}</td><td>${s.coin}</td>
+    <td><span class="tag ${s.dir}">${s.dir}</span></td>
+    <td class="r ${s.edge>=5?'pos':'neu'}">${fmt(s.edge,1)}%</td><td class="r">${s.prob}%</td>
+    <td class="r">${s.ask}c</td><td class="r">${fmt(s.trend,2)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+async function mkt(v){
+  const d=await j('/api/v3/market')||{coins:[]};
+  v.innerHTML=`<div class="grid g2">${(d.coins||[]).map(c=>{
+    const u=c.up||{},dn=c.down||{},ls=c.last_signal||{};
+    return `<div class="card"><h3>${c.coin}</h3>
+      <div class="row" style="justify-content:space-between"><div><div class="mini">UP</div>
+        <div class="kpi sm">${u.ask||'—'}c</div><div class="sub">edge ${fmt(u.edge,1)}% · ${u.prob||'—'}%</div></div>
+      <div style="text-align:right"><div class="mini">DOWN</div>
+        <div class="kpi sm">${dn.ask||'—'}c</div><div class="sub">edge ${fmt(dn.edge,1)}% · ${dn.prob||'—'}%</div></div></div>
+      <div class="field"><span class="key">last signal</span><span>${ls.dir?`<span class="tag ${ls.dir}">${ls.dir}</span> ${ls.edge}% @ ${ls.t}`:'—'}</span></div>
+    </div>`}).join('')}</div>`;
+}
+
+async function cfg(v){
+  const d=await j('/api/v3/config')||{knobs:[]};
+  const groups={};(d.knobs||[]).forEach(k=>{(groups[k.group]=groups[k.group]||[]).push(k)});
+  v.innerHTML=`<div class="grid g2">${Object.keys(groups).map(g=>`<div class="card"><h3>${g}</h3>
+    ${groups[g].map(k=>{
+      const inp=k.type==='bool'
+        ?`<select id="cf-${k.key}"><option ${/^(on|1|true)$/i.test(k.value)?'selected':''}>on</option><option ${!/^(on|1|true)$/i.test(k.value)?'selected':''}>off</option></select>`
+        :`<input id="cf-${k.key}" value="${k.value}"/>`;
+      return `<div class="field"><span><span class="lbl">${k.label}</span><br><span class="key">${k.key}</span></span>${inp}</div>`}).join('')}
+  </div>`).join('')}</div>
+  <div class="row" style="margin-top:14px"><button class="btn go" onclick="saveCfg()">💾 Save config</button>
+  <button class="btn go" onclick="saveCfg(true)">💾 Save & restart faithbot</button>
+  <span class="mini">changes are written to .env — restart the bot to apply.</span></div>`;
+}
+async function saveCfg(restart){
+  const d=await j('/api/v3/config')||{knobs:[]};const body={};
+  (d.knobs||[]).forEach(k=>{const el=$('#cf-'+k.key);if(el&&el.value!==k.value)body[k.key]=el.value});
+  if(!Object.keys(body).length){toast('no changes');return}
+  const r=await j('/api/v3/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  toast(r&&r.ok?`saved ${r.changed.join(', ')}`:`error: ${(r&&r.errors||[]).join('; ')}`);
+  if(restart&&r&&r.ok){setTimeout(()=>ctl('faithbot','restart'),800)}
+}
+
+let logCat='all';
+async function logs(v){
+  const d=await j('/api/v3/logs?limit=160&category='+logCat)||{events:[]};
+  const cats=['all','signal','trade','approve','risk','filter','error','warn'];
+  v.innerHTML=`<div class="card"><div class="row" style="margin-bottom:8px">
+    ${cats.map(c=>`<button class="btn ${c===logCat?'go':''}" onclick="logCat='${c}';refresh()">${c}</button>`).join('')}
+    <span class="spacer"></span><span class="mini">live · ${(d.events||[]).length} lines</span></div>
+    <div style="max-height:62vh;overflow:auto">${(d.events||[]).map(e=>
+      `<div class="logline l-${e.level}">${e.t} <span class="mini">[${e.bot||'15m'}]</span> ${(e.msg||'').replace(/</g,'&lt;')}</div>`).join('')}</div></div>`;
+}
+
+async function snip(v){
+  const s=await j('/api/v3/sniper')||{};const se=s.settled||{w:0,l:0,net:0};
+  const tot=se.w+se.l;
+  v.innerHTML=`<div class="grid g4">
+    <div class="card"><h3>Sniper status</h3><div class="kpi sm">${s.running?'<span class="pos">● live</span>':'<span class="neg">○ off</span>'}</div>
+      <div class="sub">dry-run · no real orders</div></div>
+    <div class="card"><h3>Snipe opportunities</h3><div class="kpi">${s.snipe_count||0}</div>
+      <div class="sub">winning side ≤40c (book lagged)</div></div>
+    <div class="card"><h3>Near-misses</h3><div class="kpi">${s.near||0}</div>
+      <div class="sub">right setup, book already repriced</div></div>
+    <div class="card"><h3>Hypothetical result</h3><div class="kpi ${cls(se.net)}">$${fmt(se.net)}</div>
+      <div class="sub">${se.w}W / ${se.l}L${tot?` · ${Math.round(100*se.w/tot)}%`:''}</div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Verdict</h3>
+    <div class="sub" style="font-size:13px">${verdict(s)}</div></div>
+  <div class="card" style="margin-top:14px"><h3>Recent sniper events</h3>
+    <div style="max-height:46vh;overflow:auto">${(s.recent||[]).slice().reverse().map(l=>
+      `<div class="logline ${/SNIPE/.test(l)?'l-INFO pos':/SETTLE.*WIN/.test(l)?'pos':/LOSS/.test(l)?'neg':''}">${(l||'').replace(/</g,'&lt;')}</div>`).join('')||'<div class="mini">waiting for the first 90s window with a sharp move…</div>'}</div></div>`;
+}
+function verdict(s){const op=s.snipe_count||0,nr=s.near||0,tot=op+nr;
+  if(!tot)return'No setups yet — the sniper only acts in the first 90s of each :00/:15/:30/:45 window after a ≥0.2% move. Let it run.';
+  const pct=Math.round(100*op/tot);
+  if(pct>=20)return`✅ The delay still exists: ${op}/${tot} sharp-move setups still had the winning side ≤40c (${pct}%). Worth taking live.`;
+  if(pct>=5)return`⚠️ Edge has narrowed: only ${pct}% of setups still showed a lagged ≤40c price (${op}/${tot}). Marginal — may need a higher entry cap.`;
+  return`❌ The lag appears closed: ${nr} setups but only ${op} were still ≤40c — the book reprices fast now. The easy edge is gone.`;
+}
+
+go('overview');
+setInterval(refresh,4000);
+</script>
+</body>
+</html>

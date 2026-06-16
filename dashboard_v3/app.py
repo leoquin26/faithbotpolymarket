@@ -69,6 +69,13 @@ try:
 except Exception as _e_ap:
     logger.warning(f"[audit_panels] register failed: {_e_ap}")
 
+try:
+    import control_api as _control_api
+    _control_api.register(app)
+    logger.info("[control_api] registered at /control + /api/v3/{config,control,perf,sniper}")
+except Exception as _e_ca:
+    logger.warning(f"[control_api] register failed: {_e_ca}")
+
 COINS = ["BTC", "ETH", "SOL", "XRP"]
 
 
