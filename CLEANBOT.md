@@ -1,8 +1,10 @@
-# CleanBot — Known-Good Working Version (v1.0, 2026-06-19)
+# CleanBot — Working Trader (current: v1.1.0, see CHANGELOG.md)
 
-> **STATUS: ✅ WORKING / PROFITABLE.** First profitable session: **48 trades,
-> 67% win rate, +$22.50 real on-chain (account ~$28 → ~$50)**. This commit/tag is
-> a verified rollback point — if a later change breaks the bot, restore this.
+> **STATUS: ✅ WORKING / PROFITABLE / COMPOUNDING.** First profitable session
+> (v1.0): 48 trades, 67% WR, +$22.50 real (account ~$28 → ~$50). v1.1 adds
+> bankroll-scaled compounding. **The running version is in `clean_bot.py`
+> `VERSION`, logged on startup + shown in Telegram + dashboard.** Per-version
+> details and rollback points: **`CHANGELOG.md`** + git tags `cleanbot-vX.Y.Z`.
 
 ## What it is
 A minimal, single-purpose **early-drift** trader for Polymarket 15-minute crypto
@@ -47,8 +49,22 @@ US-midday session 0/3 −$7.
 | `CLEAN_MIN_ASK` | `0.45` | avoid junk longshots |
 | `CLEAN_MAKER_OFFSET` | `0.01` | rest this far below ask |
 | `CLEAN_SHARES` | `5` | size (exchange min) |
-| `CLEAN_DAILY_STOP` | `6.0` | net $ daily loss stop |
 | `CLEAN_GTC_MAX_AGE` | `180` | cancel unfilled GTC after (sec) |
+
+### Compounding (v1.1)
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `CLEAN_COMPOUND` | `true` | scale bet size with bankroll (off = fixed `CLEAN_SHARES`) |
+| `CLEAN_START_BANKROLL` | `48` | seed bankroll on first run (set to real balance) |
+| `CLEAN_KELLY_FRAC` | `0.06` | bet = this fraction of bankroll (half-Kelly) |
+| `CLEAN_MAX_BET_PCT` | `0.10` | hard cap: one bet never exceeds this % of bankroll |
+| `CLEAN_MAX_OPEN_PCT` | `0.25` | cap total simultaneous open exposure |
+| `CLEAN_STOP_PCT` | `0.15` | daily stop = this % of bankroll … |
+| `CLEAN_DAILY_STOP` | `6.0` | … with this $ floor |
+
+Bankroll is tracked in `clean_bot_state.json` and grows `+= pnl` on every
+resolution → the account compounds. Kelly math (from 51 trades): 65% WR,
+b=0.72 → full Kelly 16.4%, we run **6% (half-Kelly)** for safety.
 
 **Reused infra env (must be set in `.env`, NOT in git):** `POLYMARKET_*`
 (creds/key), `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, `PROXY_HOST`/`PROXY_PORT`

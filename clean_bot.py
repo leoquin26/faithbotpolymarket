@@ -38,6 +38,9 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
+VERSION = "1.1.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+
+
 @dataclass
 class Cfg:
     coins: tuple = ("ETH", "SOL")
@@ -47,10 +50,17 @@ class Cfg:
     max_ask: float = float(os.getenv("CLEAN_MAX_ASK", "0.66"))      # never overpay
     min_ask: float = float(os.getenv("CLEAN_MIN_ASK", "0.45"))      # avoid junk longshots
     maker_offset: float = float(os.getenv("CLEAN_MAKER_OFFSET", "0.01"))
-    shares: int = int(os.getenv("CLEAN_SHARES", "5"))               # exchange min
-    daily_stop: float = float(os.getenv("CLEAN_DAILY_STOP", "6.0")) # net $ stop
+    shares: int = int(os.getenv("CLEAN_SHARES", "5"))               # exchange min (floor)
     gtc_max_age: int = int(os.getenv("CLEAN_GTC_MAX_AGE", "180"))   # cancel unfilled after
     dry: bool = os.getenv("CLEAN_DRY", "true").lower() in ("1", "true", "yes", "on")
+    # ── compounding: bet size scales with the bankroll (half-Kelly) ──
+    compound: bool = os.getenv("CLEAN_COMPOUND", "true").lower() in ("1", "true", "yes", "on")
+    start_bankroll: float = float(os.getenv("CLEAN_START_BANKROLL", "48"))  # seed; set to real balance
+    kelly_frac: float = float(os.getenv("CLEAN_KELLY_FRAC", "0.08"))   # half-Kelly (~8% of bankroll)
+    max_bet_pct: float = float(os.getenv("CLEAN_MAX_BET_PCT", "0.10")) # never >10% of bankroll/bet
+    max_open_pct: float = float(os.getenv("CLEAN_MAX_OPEN_PCT", "0.25"))  # cap total open exposure
+    stop_pct: float = float(os.getenv("CLEAN_STOP_PCT", "0.15"))       # daily stop = 15% of bankroll
+    daily_stop_floor: float = float(os.getenv("CLEAN_DAILY_STOP", "6.0"))  # $ floor for the stop
 
 
 CFG = Cfg()
@@ -93,6 +103,7 @@ class CleanBot:
         self.day = self._today()
         self.wins = 0.0
         self.losses = 0.0
+        self.bankroll = CFG.start_bankroll      # compounds with each resolved trade
         self._stop_notified = False
         self._load()
 
@@ -103,7 +114,7 @@ class CleanBot:
     def _save(self):
         try:
             json.dump({"day": self.day, "wins": self.wins, "losses": self.losses,
-                       "positions": self.positions,
+                       "bankroll": round(self.bankroll, 2), "positions": self.positions,
                        "traded": [list(t) for t in self.traded]},
                       open(STATE, "w"))
         except Exception as e:
@@ -116,10 +127,11 @@ class CleanBot:
             d = json.load(open(STATE))
             if d.get("day") == self.day:
                 self.wins = d.get("wins", 0.0); self.losses = d.get("losses", 0.0)
+            self.bankroll = d.get("bankroll", CFG.start_bankroll)   # persisted, compounds
             self.positions = d.get("positions", {})
             self.traded = {tuple(t) for t in d.get("traded", [])}
-            logger.info(f"state reloaded: {len(self.positions)} positions, day pnl "
-                        f"net={self.wins - self.losses:+.2f}")
+            logger.info(f"state reloaded: {len(self.positions)} positions, bankroll "
+                        f"${self.bankroll:.2f}, day net={self.wins - self.losses:+.2f}")
         except Exception as e:
             logger.warning(f"state load failed: {e}")
 
@@ -133,8 +145,25 @@ class CleanBot:
             self._stop_notified = False
             self.traded = {k for k in self.traded}  # keep; windows are unique by epoch
 
+    def _stop_amount(self):
+        # daily stop scales with bankroll, with a $ floor
+        return max(CFG.daily_stop_floor, self.bankroll * CFG.stop_pct)
+
     def _stopped(self):
-        return (self.losses - self.wins) >= CFG.daily_stop
+        return (self.losses - self.wins) >= self._stop_amount()
+
+    def _open_exposure(self):
+        exp = sum(o["price"] * o["shares"] for o in self.open_orders.values())
+        exp += sum(p["entry"] * p["shares"] for p in self.positions.values()
+                   if p.get("status") == "filled")
+        return exp
+
+    def _size_shares(self, price):
+        """Bet size = half-Kelly fraction of current bankroll, share-floored + capped."""
+        if not CFG.compound:
+            return CFG.shares
+        stake = min(self.bankroll * CFG.kelly_frac, self.bankroll * CFG.max_bet_pct)
+        return max(CFG.shares, int(round(stake / max(0.02, price))))
 
     # ── entry ────────────────────────────────────────────────────────
     def scan(self, coin: str):
@@ -170,23 +199,27 @@ class CleanBot:
         if not ask or not (CFG.min_ask <= float(ask) <= CFG.max_ask):
             return
         maker = round(max(0.02, float(ask) - CFG.maker_offset), 2)
+        shares = self._size_shares(maker)
+        # cap total simultaneous exposure (correlated crypto risk)
+        if self._open_exposure() + maker * shares > self.bankroll * CFG.max_open_pct:
+            return  # too much already at risk right now — wait for a slot
         self.traded.add(key)
         logger.info(f"[ENTER] {coin} {direction} drift={dist*100:+.3f}% ask={float(ask)*100:.0f}c "
-                    f"-> maker {maker*100:.0f}c x{CFG.shares} T={t_rem:.0f}s"
-                    + (" [DRY]" if CFG.dry else ""))
+                    f"-> maker {maker*100:.0f}c x{shares} (${maker*shares:.2f}, bankroll ${self.bankroll:.0f}) "
+                    f"T={t_rem:.0f}s" + (" [DRY]" if CFG.dry else ""))
         if CFG.dry:
             self._save()
             return
         try:
             res = self.client.create_and_post_order(
-                OrderArgs(price=maker, size=CFG.shares, side=BUY, token_id=token),
+                OrderArgs(price=maker, size=shares, side=BUY, token_id=token),
                 PartialCreateOrderOptions(tick_size="0.01"), OrderType.GTC)
             oid = (res or {}).get("orderID") or (res or {}).get("orderId")
             if oid:
                 self.open_orders[oid] = {"coin": coin, "ws": ws, "dir": direction,
                                          "token": token, "price": maker,
-                                         "shares": CFG.shares, "ts": now}
-                logger.info(f"[GTC] resting {coin} {direction} @ {maker*100:.0f}c oid={oid[:10]}")
+                                         "shares": shares, "ts": now}
+                logger.info(f"[GTC] resting {coin} {direction} @ {maker*100:.0f}c x{shares} oid={oid[:10]}")
             else:
                 logger.warning(f"[ORDER] no oid in result: {res}")
         except Exception as e:
@@ -238,22 +271,27 @@ class CleanBot:
             else:
                 self.losses += entry * sh
             p["status"] = "resolved"; p["pnl"] = round(pnl, 2)
+            self.bankroll += pnl                       # ← compound
             net = self.wins - self.losses
             logger.info(f"[{'WIN' if won else 'LOSS'}] {p['coin']} {p['dir']} @ "
-                        f"{entry*100:.0f}c -> {w} | {pnl:+.2f} | day net {net:+.2f}")
+                        f"{entry*100:.0f}c -> {w} | {pnl:+.2f} | bankroll ${self.bankroll:.2f} "
+                        f"| day net {net:+.2f}")
             tg._send(f"{'✅ <b>WIN</b>' if won else '❌ <b>LOSS</b>'} {p['coin']} {p['dir']} @ "
-                     f"{entry*100:.0f}c → {w} | {pnl:+.2f} | day net {net:+.2f}",
+                     f"{entry*100:.0f}c → {w} | {pnl:+.2f} | 💰 ${self.bankroll:.2f} | day net {net:+.2f}",
                      dedup_key=f"res-{k}")
             self._save()
 
     # ── loop ─────────────────────────────────────────────────────────
     def run(self):
-        logger.info(f"=== CleanBot start | {'DRY' if CFG.dry else 'LIVE'} | coins={CFG.coins} "
-                    f"| drift>={CFG.drift_bps}bps T>={CFG.min_t}s ask<={CFG.max_ask} "
-                    f"shares={CFG.shares} stop=${CFG.daily_stop} ===")
-        tg._send(f"🤖 <b>CleanBot started</b> {'LIVE' if not CFG.dry else 'DRY'} | "
+        _sz = (f"COMPOUND {int(CFG.kelly_frac*100)}%/bet" if CFG.compound
+               else f"fixed {CFG.shares}sh")
+        logger.info(f"=== CleanBot v{VERSION} start | {'DRY' if CFG.dry else 'LIVE'} | "
+                    f"{'/'.join(CFG.coins)} | drift>={CFG.drift_bps}bps T>={CFG.min_t}s "
+                    f"ask<={CFG.max_ask} | {_sz} | bankroll ${self.bankroll:.2f} "
+                    f"stop ${self._stop_amount():.2f} ===")
+        tg._send(f"🤖 <b>CleanBot v{VERSION}</b> started {'LIVE' if not CFG.dry else 'DRY'} | "
                  f"{'/'.join(CFG.coins)} · early-drift ≥{CFG.drift_bps}bps · maker · "
-                 f"stop ${CFG.daily_stop}")
+                 f"💰 ${self.bankroll:.2f} · {_sz} · stop ${self._stop_amount():.2f}")
         binance_ws.start()
         time.sleep(90)
         n = 0
@@ -269,16 +307,17 @@ class CleanBot:
                 else:
                     if not self._stop_notified:
                         tg._send(f"🛑 <b>CleanBot daily stop</b> | net {self.wins - self.losses:+.2f} "
-                                 f"≤ -{CFG.daily_stop} — no new entries today")
+                                 f"≤ -{self._stop_amount():.2f} — no new entries today")
                         self._stop_notified = True
                     if n % 40 == 1:
                         logger.info(f"[STOP] daily net {self.wins - self.losses:+.2f} "
-                                    f"<= -{CFG.daily_stop} — no new entries today")
+                                    f"<= -{self._stop_amount():.2f} — no new entries today")
             except Exception as e:
                 logger.warning(f"loop error: {e}")
             if n % 40 == 1:
                 logger.info(f"… alive scan#{n} open={len(self.open_orders)} "
-                            f"positions={len(self.positions)} day_net={self.wins-self.losses:+.2f}")
+                            f"positions={len(self.positions)} bankroll=${self.bankroll:.2f} "
+                            f"day_net={self.wins-self.losses:+.2f}")
             time.sleep(5)
 
 
