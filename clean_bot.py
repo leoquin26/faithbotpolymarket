@@ -42,7 +42,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.5.2"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.5.3"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -301,8 +301,9 @@ class CleanBot:
             "drift_pct": round(dist * 100, 4),
             "roc60_bps": round(roc60 * 10000, 1), "roc300_bps": round(roc300 * 10000, 1),
             "sigma": round(float(sigma or 0), 6),
-            "fav_ask": int(fav_ask) if fav_ask else "",
-            "up_ask": int(up_ask) if up_ask else "", "down_ask": int(down_ask) if down_ask else "",
+            "fav_ask": int(round(fav_ask * 100)) if fav_ask else "",
+            "up_ask": int(round(up_ask * 100)) if up_ask else "",
+            "down_ask": int(round(down_ask * 100)) if down_ask else "",
             "btc_drift_pct": round(btc_d * 100, 4) if btc_d is not None else "",
             "sol_drift_pct": round(sol_d * 100, 4) if sol_d is not None else "",
             "confirmed": int(bool(confirmed)), "decision": decision, "reason": reason,

@@ -10,6 +10,22 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.5.3 — 2026-06-20 — Max-ask 0.62 (cut thin-margin 63–66¢) + fav_ask logging fix
+**Tag:** `cleanbot-v1.5.3` · **Status:** ✅ live
+
+Owner flagged live losses entering at 60¢+ that immediately reversed. Confirmed:
+a high ask means the move is already priced — you buy near exhaustion, and the
+breakeven (= entry price) eats the edge.
+
+- **`CLEAN_MAX_ASK` 0.66 → 0.62.** WR-by-entry (n=89): 56–59¢ **77%** / 60–62¢
+  **68%** (sweet spot, comfortable margin) vs 63–66¢ **69%** with a **66%
+  breakeven** = razor-thin (+3) → first to flip negative in chop. Cut it.
+  (≤55¢ is also negative — 44% — but n=18; holding `MIN_ASK` for more data, not
+  over-narrowing.)
+- **Fix `fav_ask`/`up_ask`/`down_ask` logging:** stored `int(0.64)=0` (truncated
+  the fraction) → research ask column was useless. Now `int(round(ask*100))` = cents.
+- Confirmation/sizing/breaker/research logic unchanged.
+
 ## v1.5.2 — 2026-06-20 — Fix: research CSV header + ENTER mislabeling
 **Tag:** `cleanbot-v1.5.2` · **Status:** ✅ live (DRY)
 
