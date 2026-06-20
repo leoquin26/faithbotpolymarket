@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.5.2 — 2026-06-20 — Fix: research CSV header + ENTER mislabeling
+**Tag:** `cleanbot-v1.5.2` · **Status:** ✅ live (DRY)
+
+Two research-logger bugs found while reviewing the weekend DRY run:
+- **Missing header:** the CSV was pre-created empty, so `new = not exists` was
+  False → header never written → the dashboard `DictReader` mis-read every row
+  (Research tab stayed blank). Fix: `new = not exists OR getsize == 0`; existing
+  CSV back-filled with the header.
+- **ENTER mislabeled as SKIP:** `_research_scan` captures a window the first time
+  drift ≥ 3bps, which can predate the actual entry → traded windows were logged
+  `SKIP` (6 ENTER vs 17 real sim trades). Fix: re-label `decision=ENTER` at
+  resolve time from the final `traded` state.
+- `drift_correct`, features, and outcomes were always correct — only the header
+  and the decision label were wrong.
+
 ## v1.5.1 — 2026-06-20 — Fix: research writer crashed (missing `import csv`)
 **Tag:** `cleanbot-v1.5.1` · **Status:** ✅ live (DRY)
 
