@@ -10,6 +10,25 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.2.0 — 2026-06-19 — Quality tightening + whipsaw breaker
+**Tag:** `cleanbot-v1.2.0` · **Status:** ✅ live
+
+Shipped after validating a 4-loss streak — every loss was a *marginal* signal in
+a whipsawing (chop) regime. All four would have been skipped by these:
+
+- **Drift floor 7 → 10bps** (`CLEAN_DRIFT_BPS=10`). The 7–10bps band wins only
+  54% (coin-flips); ≥10bps wins ~74%. Skipped 3 of the 4 losses.
+- **Min-ask 45¢ → 50¢** (`CLEAN_MIN_ASK=0.50`). Don't bet a side the market
+  prices below 50¢ (market disagrees with our drift, and it was right). Skipped
+  the other 2 losses (SOL UP @44¢, SOL DOWN @46¢).
+- **Consecutive-loss breaker** (new): after `CLEAN_LOSS_BREAKER` (3) losses in a
+  row, pause `CLEAN_BREAKER_COOLDOWN` (1800s/30min) — protects peak gains during
+  choppy regimes the net-based daily stop misses. Counter persisted (restart-safe),
+  resets on a win; Telegram 🧊 alert on trip.
+- Banner now shows ask-range + breaker config. Compounding (v1.1) unchanged.
+- New env: `CLEAN_LOSS_BREAKER, CLEAN_BREAKER_COOLDOWN`; changed `CLEAN_DRIFT_BPS`,
+  `CLEAN_MIN_ASK`.
+
 ## v1.1.0 — 2026-06-19 — Compounding (bankroll-scaled sizing)
 **Tag:** `cleanbot-v1.1.0` · **Status:** ✅ live
 

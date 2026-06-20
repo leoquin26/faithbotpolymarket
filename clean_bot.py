@@ -38,7 +38,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.1.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.2.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -61,6 +61,9 @@ class Cfg:
     max_open_pct: float = float(os.getenv("CLEAN_MAX_OPEN_PCT", "0.25"))  # cap total open exposure
     stop_pct: float = float(os.getenv("CLEAN_STOP_PCT", "0.15"))       # daily stop = 15% of bankroll
     daily_stop_floor: float = float(os.getenv("CLEAN_DAILY_STOP", "6.0"))  # $ floor for the stop
+    # ── whipsaw protection: pause after N losses in a row ──
+    loss_breaker: int = int(os.getenv("CLEAN_LOSS_BREAKER", "3"))      # 0 = off
+    breaker_cooldown: int = int(os.getenv("CLEAN_BREAKER_COOLDOWN", "1800"))  # pause sec (30m)
 
 
 CFG = Cfg()
@@ -104,6 +107,8 @@ class CleanBot:
         self.wins = 0.0
         self.losses = 0.0
         self.bankroll = CFG.start_bankroll      # compounds with each resolved trade
+        self.consec_losses = 0                  # whipsaw breaker counter
+        self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
         self._load()
 
@@ -114,7 +119,9 @@ class CleanBot:
     def _save(self):
         try:
             json.dump({"day": self.day, "wins": self.wins, "losses": self.losses,
-                       "bankroll": round(self.bankroll, 2), "positions": self.positions,
+                       "bankroll": round(self.bankroll, 2),
+                       "consec_losses": self.consec_losses, "breaker_until": self.breaker_until,
+                       "positions": self.positions,
                        "traded": [list(t) for t in self.traded]},
                       open(STATE, "w"))
         except Exception as e:
@@ -128,6 +135,8 @@ class CleanBot:
             if d.get("day") == self.day:
                 self.wins = d.get("wins", 0.0); self.losses = d.get("losses", 0.0)
             self.bankroll = d.get("bankroll", CFG.start_bankroll)   # persisted, compounds
+            self.consec_losses = d.get("consec_losses", 0)
+            self.breaker_until = d.get("breaker_until", 0.0)
             self.positions = d.get("positions", {})
             self.traded = {tuple(t) for t in d.get("traded", [])}
             logger.info(f"state reloaded: {len(self.positions)} positions, bankroll "
@@ -272,6 +281,18 @@ class CleanBot:
                 self.losses += entry * sh
             p["status"] = "resolved"; p["pnl"] = round(pnl, 2)
             self.bankroll += pnl                       # ← compound
+            # whipsaw breaker: pause after N losses in a row (choppy regimes invert the edge)
+            if won:
+                self.consec_losses = 0
+            else:
+                self.consec_losses += 1
+                if CFG.loss_breaker > 0 and self.consec_losses >= CFG.loss_breaker:
+                    self.breaker_until = time.time() + CFG.breaker_cooldown
+                    logger.info(f"[BREAKER] {self.consec_losses} losses in a row — "
+                                f"pausing {CFG.breaker_cooldown // 60}min (whipsaw)")
+                    tg._send(f"🧊 <b>Loss-breaker</b>: {self.consec_losses} in a row → "
+                             f"pause {CFG.breaker_cooldown // 60}min (whipsaw protection)")
+                    self.consec_losses = 0   # fresh start after the cooldown
             net = self.wins - self.losses
             logger.info(f"[{'WIN' if won else 'LOSS'}] {p['coin']} {p['dir']} @ "
                         f"{entry*100:.0f}c -> {w} | {pnl:+.2f} | bankroll ${self.bankroll:.2f} "
@@ -287,7 +308,8 @@ class CleanBot:
                else f"fixed {CFG.shares}sh")
         logger.info(f"=== CleanBot v{VERSION} start | {'DRY' if CFG.dry else 'LIVE'} | "
                     f"{'/'.join(CFG.coins)} | drift>={CFG.drift_bps}bps T>={CFG.min_t}s "
-                    f"ask<={CFG.max_ask} | {_sz} | bankroll ${self.bankroll:.2f} "
+                    f"ask {CFG.min_ask}-{CFG.max_ask} | breaker {CFG.loss_breaker}L/"
+                    f"{CFG.breaker_cooldown // 60}m | {_sz} | bankroll ${self.bankroll:.2f} "
                     f"stop ${self._stop_amount():.2f} ===")
         tg._send(f"🤖 <b>CleanBot v{VERSION}</b> started {'LIVE' if not CFG.dry else 'DRY'} | "
                  f"{'/'.join(CFG.coins)} · early-drift ≥{CFG.drift_bps}bps · maker · "
@@ -301,10 +323,7 @@ class CleanBot:
             try:
                 self.check_orders()
                 self.resolve()
-                if not self._stopped():
-                    for c in CFG.coins:
-                        self.scan(c)
-                else:
+                if self._stopped():
                     if not self._stop_notified:
                         tg._send(f"🛑 <b>CleanBot daily stop</b> | net {self.wins - self.losses:+.2f} "
                                  f"≤ -{self._stop_amount():.2f} — no new entries today")
@@ -312,6 +331,13 @@ class CleanBot:
                     if n % 40 == 1:
                         logger.info(f"[STOP] daily net {self.wins - self.losses:+.2f} "
                                     f"<= -{self._stop_amount():.2f} — no new entries today")
+                elif time.time() < self.breaker_until:
+                    if n % 40 == 1:
+                        logger.info(f"[BREAKER] cooldown {int((self.breaker_until - time.time()) / 60)}m "
+                                    f"left — no new entries")
+                else:
+                    for c in CFG.coins:
+                        self.scan(c)
             except Exception as e:
                 logger.warning(f"loop error: {e}")
             if n % 40 == 1:

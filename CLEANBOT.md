@@ -66,6 +66,17 @@ Bankroll is tracked in `clean_bot_state.json` and grows `+= pnl` on every
 resolution → the account compounds. Kelly math (from 51 trades): 65% WR,
 b=0.72 → full Kelly 16.4%, we run **6% (half-Kelly)** for safety.
 
+### Whipsaw breaker (v1.2)
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `CLEAN_LOSS_BREAKER` | `3` | pause after this many losses in a row (0 = off) |
+| `CLEAN_BREAKER_COOLDOWN` | `1800` | pause duration (sec) — 30 min |
+
+Counter is persisted (restart-safe), resets on a win; Telegram 🧊 alert on trip.
+Protects peak gains in choppy/whipsaw regimes the net-based daily stop misses.
+v1.2 also raised `CLEAN_DRIFT_BPS` 7→10 and `CLEAN_MIN_ASK` 0.45→0.50 (skip the
+54%-WR weak-drift band and "market-disagrees" sub-50¢ entries).
+
 **Reused infra env (must be set in `.env`, NOT in git):** `POLYMARKET_*`
 (creds/key), `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, `PROXY_HOST`/`PROXY_PORT`
 (`9055` = Ireland SSH SOCKS tunnel for order routing).
