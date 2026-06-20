@@ -10,6 +10,25 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.5.0 — 2026-06-20 — Full DRY simulation (paper trading) + dashboard badge
+**Tag:** `cleanbot-v1.5.0` · **Status:** ✅ live (DRY)
+
+Run the weekend **risk-free**: DRY mode is now a full paper-trade simulation, not
+just a no-op log. Reset to a real-balance seed of **$30** after a choppy-regime
+drawdown ($48→~$30).
+
+- **DRY = full lifecycle sim:** `[ENTER]` → `[SIM FILL]` (assume the maker fills)
+  → gamma resolve → simulated P&L/bankroll, exactly like live but **no real
+  orders**. Positions tagged `sim:true`; `[WIN]/[LOSS]` get a `[SIM]` suffix /
+  🧪 Telegram prefix. Gathers weekend data with zero risk.
+- **State exposes `mode` (DRY/LIVE) + `version` + `bankroll`** → dashboard shows a
+  prominent **🧪 DRY / SIMULATION** banner + sim bankroll on the CleanBot tab
+  (`_patch_dash_drysim.py`).
+- Reset to **$30** (bot-tracked bankroll had drifted ~$6 above the real balance;
+  now sized to reality). `CLEAN_DRY=true`, `CLEAN_START_BANKROLL=30`.
+- Trading/sizing/confirmation/research logic unchanged — flip `CLEAN_DRY=false`
+  to go live again.
+
 ## v1.4.0 — 2026-06-20 — Research data logger + dashboard
 **Tag:** `cleanbot-v1.4.0` · **Status:** ✅ live
 

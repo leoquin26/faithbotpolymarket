@@ -42,7 +42,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.4.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.5.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -154,6 +154,7 @@ class CleanBot:
         try:
             json.dump({"day": self.day, "wins": self.wins, "losses": self.losses,
                        "bankroll": round(self.bankroll, 2),
+                       "mode": "DRY" if CFG.dry else "LIVE", "version": VERSION,
                        "consec_losses": self.consec_losses, "breaker_until": self.breaker_until,
                        "positions": self.positions,
                        "traded": [list(t) for t in self.traded]},
@@ -382,6 +383,12 @@ class CleanBot:
                     f"-> maker {maker*100:.0f}c x{shares} (${maker*shares:.2f}, bankroll ${self.bankroll:.0f}) "
                     f"T={t_rem:.0f}s" + (" [DRY]" if CFG.dry else ""))
         if CFG.dry:
+            # paper-trade: assume the maker fills, then track the full lifecycle
+            # (sim fill → gamma resolve → sim P&L/bankroll) exactly like a live trade.
+            self.positions[f"{coin}:{ws}"] = {"coin": coin, "ws": ws, "dir": direction,
+                                              "entry": maker, "shares": shares,
+                                              "status": "filled", "sim": True}
+            logger.info(f"[SIM FILL] {coin} {direction} @ {maker*100:.0f}c x{shares} (paper)")
             self._save()
             return
         try:
@@ -461,8 +468,9 @@ class CleanBot:
             net = self.wins - self.losses
             logger.info(f"[{'WIN' if won else 'LOSS'}] {p['coin']} {p['dir']} @ "
                         f"{entry*100:.0f}c -> {w} | {pnl:+.2f} | bankroll ${self.bankroll:.2f} "
-                        f"| day net {net:+.2f}")
-            tg._send(f"{'✅ <b>WIN</b>' if won else '❌ <b>LOSS</b>'} {p['coin']} {p['dir']} @ "
+                        f"| day net {net:+.2f}" + (" [SIM]" if p.get("sim") else ""))
+            tg._send(f"{'🧪 ' if p.get('sim') else ''}{'✅ <b>WIN</b>' if won else '❌ <b>LOSS</b>'}"
+                     f"{' (sim)' if p.get('sim') else ''} {p['coin']} {p['dir']} @ "
                      f"{entry*100:.0f}c → {w} | {pnl:+.2f} | 💰 ${self.bankroll:.2f} | day net {net:+.2f}",
                      dedup_key=f"res-{k}")
             self._save()
