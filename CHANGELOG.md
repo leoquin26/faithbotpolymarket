@@ -10,6 +10,16 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.5.1 — 2026-06-20 — Fix: research writer crashed (missing `import csv`)
+**Tag:** `cleanbot-v1.5.1` · **Status:** ✅ live (DRY)
+
+- **Bug:** `_research_resolve` used `csv.DictWriter` but `csv` was never imported,
+  so **every** research write failed silently (`name 'csv' is not defined`) since
+  v1.4 → `clean_bot_research.csv` stayed empty → the dashboard 🔬 Research tab had
+  no data to show. Trading/sim were unaffected (research is isolated).
+- **Fix:** added `import csv`. The CSV now writes one row per resolved window;
+  Research tab populates within ~16 min (first window resolution after restart).
+
 ## v1.5.0 — 2026-06-20 — Full DRY simulation (paper trading) + dashboard badge
 **Tag:** `cleanbot-v1.5.0` · **Status:** ✅ live (DRY)
 

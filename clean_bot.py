@@ -16,7 +16,7 @@ binance feed, Ireland proxy (force_tor), gamma (Chainlink) resolution.
 Restart-safe (state persisted). DRY by default — set CLEAN_DRY=false to go live.
 """
 from __future__ import annotations
-import os, sys, time, json, threading, datetime
+import os, sys, time, json, csv, threading, datetime
 from dataclasses import dataclass, field
 
 os.environ.setdefault("PROXY_PORT", "9055")          # Ireland tunnel for orders
@@ -42,7 +42,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.5.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.5.1"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
