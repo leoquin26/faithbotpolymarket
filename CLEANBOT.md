@@ -77,6 +77,18 @@ Protects peak gains in choppy/whipsaw regimes the net-based daily stop misses.
 v1.2 also raised `CLEAN_DRIFT_BPS` 7→10 and `CLEAN_MIN_ASK` 0.45→0.50 (skip the
 54%-WR weak-drift band and "market-disagrees" sub-50¢ entries).
 
+### Cross-coin confirmation (v1.3)
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `CLEAN_CONFIRM_COINS` | `ETH` | coins that need market confirmation (followers) |
+| `CLEAN_CONFIRM_MARKET` | `BTC,SOL` | market-proxy coins (their drift = the market) |
+| `CLEAN_CONFIRM_BPS` | `3` | a proxy must lean ≥ this to vote |
+
+ETH only trades when the broader market drifts the same way: each proxy leaning
+the same direction votes +1, opposing −1 → trade only if net > 0. ETH-solo and
+ETH-vs-market (divergent) → `[NO CONFIRM]` skip. SOL is the leader (not confirmed).
+Data: ETH-confirmed 64% vs ETH-solo 22% vs ETH-divergent 0%.
+
 **Reused infra env (must be set in `.env`, NOT in git):** `POLYMARKET_*`
 (creds/key), `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, `PROXY_HOST`/`PROXY_PORT`
 (`9055` = Ireland SSH SOCKS tunnel for order routing).

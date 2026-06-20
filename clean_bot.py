@@ -38,7 +38,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.2.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.3.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -64,6 +64,11 @@ class Cfg:
     # ── whipsaw protection: pause after N losses in a row ──
     loss_breaker: int = int(os.getenv("CLEAN_LOSS_BREAKER", "3"))      # 0 = off
     breaker_cooldown: int = int(os.getenv("CLEAN_BREAKER_COOLDOWN", "1800"))  # pause sec (30m)
+    # ── cross-coin confirmation: follower coins (ETH) only trade when the broader
+    # market drifts the same way (ETH-solo/divergent drifts revert ~22%/0%) ──
+    confirm_coins: tuple = tuple(c for c in os.getenv("CLEAN_CONFIRM_COINS", "ETH").split(",") if c)
+    confirm_market: tuple = tuple(c for c in os.getenv("CLEAN_CONFIRM_MARKET", "BTC,SOL").split(",") if c)
+    confirm_bps: float = float(os.getenv("CLEAN_CONFIRM_BPS", "3"))    # proxy lean threshold
 
 
 CFG = Cfg()
@@ -110,6 +115,7 @@ class CleanBot:
         self.consec_losses = 0                  # whipsaw breaker counter
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
+        self._nc_logged = set()                 # throttle [NO CONFIRM] logs (per window)
         self._load()
 
     # ── persistence ──────────────────────────────────────────────────
@@ -174,6 +180,35 @@ class CleanBot:
         stake = min(self.bankroll * CFG.kelly_frac, self.bankroll * CFG.max_bet_pct)
         return max(CFG.shares, int(round(stake / max(0.02, price))))
 
+    def _market_confirms(self, coin, direction):
+        """Soft cross-coin confirmation: is the broader market drifting the same
+        way? Each proxy (BTC/SOL) that leans the same direction >= confirm_bps
+        votes +1; opposing votes -1. Confirmed if net > 0. ETH-solo (market flat)
+        and ETH-vs-market (divergent) → not confirmed (those revert ~22%/0%)."""
+        want = 1.0 if direction.upper().startswith("UP") else -1.0
+        thr = CFG.confirm_bps / 10000.0
+        votes = have = 0
+        for p in CFG.confirm_market:
+            if p == coin:
+                continue
+            try:
+                info = get_market_info(p)
+                strike = float(info.threshold_price or 0) if info else 0
+                px = float(binance_ws.get_price(p) or (info.current_crypto_price if info else 0))
+                if strike <= 0 or px <= 0:
+                    continue
+                d = (px - strike) / strike
+            except Exception:
+                continue
+            have += 1
+            if d * want >= thr:
+                votes += 1
+            elif d * want <= -thr:
+                votes -= 1
+        if have == 0:
+            return True     # no market data (transient) → fail-open, don't halt ETH
+        return votes > 0
+
     # ── entry ────────────────────────────────────────────────────────
     def scan(self, coin: str):
         info = get_market_info(coin)
@@ -199,6 +234,14 @@ class CleanBot:
         is_up = dist > 0
         token = info.up_token_id if is_up else info.down_token_id
         direction = "UP" if is_up else "DOWN"
+        # cross-coin confirmation for follower coins (ETH): only trade when the
+        # broader market drifts the same way; skip ETH-solo / market-divergent.
+        if coin in CFG.confirm_coins and not self._market_confirms(coin, direction):
+            if (coin, ws) not in self._nc_logged:
+                logger.info(f"[NO CONFIRM] {coin} {direction} drift={dist*100:+.3f}% "
+                            f"— market not aligned, skip")
+                self._nc_logged.add((coin, ws))
+            return
         book = {}
         try:
             book = self.om.get_clob_book(token) or {}
@@ -306,9 +349,11 @@ class CleanBot:
     def run(self):
         _sz = (f"COMPOUND {int(CFG.kelly_frac*100)}%/bet" if CFG.compound
                else f"fixed {CFG.shares}sh")
+        _cf = (f"confirm {'/'.join(CFG.confirm_coins)}<-{'/'.join(CFG.confirm_market)}"
+               if CFG.confirm_coins else "no-confirm")
         logger.info(f"=== CleanBot v{VERSION} start | {'DRY' if CFG.dry else 'LIVE'} | "
                     f"{'/'.join(CFG.coins)} | drift>={CFG.drift_bps}bps T>={CFG.min_t}s "
-                    f"ask {CFG.min_ask}-{CFG.max_ask} | breaker {CFG.loss_breaker}L/"
+                    f"ask {CFG.min_ask}-{CFG.max_ask} | {_cf} | breaker {CFG.loss_breaker}L/"
                     f"{CFG.breaker_cooldown // 60}m | {_sz} | bankroll ${self.bankroll:.2f} "
                     f"stop ${self._stop_amount():.2f} ===")
         tg._send(f"🤖 <b>CleanBot v{VERSION}</b> started {'LIVE' if not CFG.dry else 'DRY'} | "

@@ -10,6 +10,28 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.3.0 — 2026-06-19 — Cross-coin confirmation for ETH (the follower coin)
+**Tag:** `cleanbot-v1.3.0` · **Status:** ✅ live
+
+ETH is a high-beta *follower* of the crypto market — its **solo** drifts are noise
+that reverts. The data (clean_bot.log, n=23 ETH): ETH when SOL agrees = **64%**,
+ETH solo (SOL flat) = **22%**, ETH vs SOL diverging = **0%**.
+
+- **ETH (and any `CLEAN_CONFIRM_COINS`) only trades when the broader market is
+  drifting the same way.** Soft confirmation: each market proxy
+  (`CLEAN_CONFIRM_MARKET=BTC,SOL`) that leans the same direction ≥
+  `CLEAN_CONFIRM_BPS` (3) votes +1, opposing votes −1 → trade only if net > 0.
+  `get_market_info` is used to read BTC/SOL drift (we don't trade BTC).
+- Handles divergence correctly: ETH-solo and ETH-vs-market → `[NO CONFIRM]` skip
+  (throttled once per window, doesn't lock the window so it can fire if the
+  market aligns later). Fail-open if no proxy data (transient).
+- **SOL unchanged** (it's the leader/proxy, not confirmed). Compounding (v1.1),
+  quality (v1.2) unchanged. New env: `CLEAN_CONFIRM_COINS, CLEAN_CONFIRM_MARKET,
+  CLEAN_CONFIRM_BPS`. Banner shows the confirm rule.
+- Goal: turn ETH from a ~48% drag into a ~64% contributor by only taking
+  market-confirmed ETH (not blocking blindly, not inverting noise). Deploy +
+  measure; revisit if confirmed-ETH holds ≥60% over more trades.
+
 ## v1.2.0 — 2026-06-19 — Quality tightening + whipsaw breaker
 **Tag:** `cleanbot-v1.2.0` · **Status:** ✅ live
 
