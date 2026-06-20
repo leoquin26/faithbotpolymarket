@@ -89,6 +89,19 @@ the same direction votes +1, opposing −1 → trade only if net > 0. ETH-solo a
 ETH-vs-market (divergent) → `[NO CONFIRM]` skip. SOL is the leader (not confirmed).
 Data: ETH-confirmed 64% vs ETH-solo 22% vs ETH-divergent 0%.
 
+### Research data logger (v1.4)
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `CLEAN_RESEARCH` | `on` | log every real-move window (traded or not) for edge-mining |
+| `CLEAN_RESEARCH_MIN_BPS` | `3` | minimum drift to log a window |
+
+Writes **`clean_bot_research.csv`** — one row per window with full features
+(`drift, roc60, roc300, sigma, up/down ask, BTC/SOL drift, confirmed`) + the
+**decision** (ENTER / SKIP + reason) + the **true gamma outcome** (`winner`,
+`drift_correct`). Captures the windows we *skip* with their outcomes → shows if a
+gate is over-filtering. **Read-only, fully isolated** from trading (own
+try/except). View it on the dashboard **🔬 Research** tab (`/api/v3/research`).
+
 **Reused infra env (must be set in `.env`, NOT in git):** `POLYMARKET_*`
 (creds/key), `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, `PROXY_HOST`/`PROXY_PORT`
 (`9055` = Ireland SSH SOCKS tunnel for order routing).

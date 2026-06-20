@@ -10,6 +10,28 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.4.0 — 2026-06-20 — Research data logger + dashboard
+**Tag:** `cleanbot-v1.4.0` · **Status:** ✅ live
+
+Capture **everything** for future edge-mining — every real-move window, traded
+*or* skipped, with full features + true outcome. Read-only, fully isolated from
+the trade path (its own try/except — can never place an order or break trading).
+
+- **`clean_bot_research.csv`** — one row per window with `|drift| >=
+  CLEAN_RESEARCH_MIN_BPS` (3): `ts, window_start, coin, dir, drift_pct,
+  roc60_bps, roc300_bps, sigma, fav_ask, up_ask, down_ask, btc_drift_pct,
+  sol_drift_pct, confirmed, decision (ENTER/SKIP), reason (weak_drift/no_confirm/
+  ask_out_of_zone/exposure), t_left, winner, drift_correct`.
+- **Captures the windows we SKIP** (with the reason) + the outcome → tells us if a
+  gate is leaving money on the table (`drift_correct` on skipped windows).
+- Resolved via gamma (Chainlink). New helpers: `_roc`, `_coin_drift`,
+  `_research_scan`, `_research_resolve`. Env: `CLEAN_RESEARCH` (on),
+  `CLEAN_RESEARCH_MIN_BPS` (3).
+- **Dashboard 🔬 Research tab** (`_patch_dash_research.py`): summary (drift-correct
+  traded vs skipped), skip-reason "are we over-filtering?" table, recent windows
+  with all features + outcome, and the live log. Endpoint `/api/v3/research`.
+- Trading logic / sizing / confirmation unchanged.
+
 ## v1.3.0 — 2026-06-19 — Cross-coin confirmation for ETH (the follower coin)
 **Tag:** `cleanbot-v1.3.0` · **Status:** ✅ live
 

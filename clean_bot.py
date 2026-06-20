@@ -32,13 +32,17 @@ from loguru import logger
 import telegram_notifier as tg
 
 V3 = os.path.expanduser("~/v3-bot")
+RESEARCH_CSV = os.path.join(V3, "clean_bot_research.csv")  # per-window feature+outcome dataset
+RESEARCH_COLS = ["ts", "window_start", "coin", "dir", "drift_pct", "roc60_bps", "roc300_bps",
+                 "sigma", "fav_ask", "up_ask", "down_ask", "btc_drift_pct", "sol_drift_pct",
+                 "confirmed", "decision", "reason", "t_left", "winner", "drift_correct"]
 logger.remove()
 logger.add(sys.stdout, level="INFO", format="{time:HH:mm:ss} | {message}")
 logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.3.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.4.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -69,6 +73,9 @@ class Cfg:
     confirm_coins: tuple = tuple(c for c in os.getenv("CLEAN_CONFIRM_COINS", "ETH").split(",") if c)
     confirm_market: tuple = tuple(c for c in os.getenv("CLEAN_CONFIRM_MARKET", "BTC,SOL").split(",") if c)
     confirm_bps: float = float(os.getenv("CLEAN_CONFIRM_BPS", "3"))    # proxy lean threshold
+    # ── research data capture (read-only; every real-move window, traded or not) ──
+    research: bool = os.getenv("CLEAN_RESEARCH", "on").lower() in ("1", "true", "yes", "on")
+    research_min_bps: float = float(os.getenv("CLEAN_RESEARCH_MIN_BPS", "3"))  # log windows >= this drift
 
 
 CFG = Cfg()
@@ -101,6 +108,25 @@ def gamma_winner(coin: str, ws: int):
         return None
 
 
+def _roc(ticks, sec):
+    """Rate-of-change (fraction) over `sec` seconds from a tick list (robust to
+    (ts,price) vs (price,ts) ordering)."""
+    try:
+        if not ticks or len(ticks) < 2:
+            return 0.0
+        def ts(t): return t[0] if t[0] > 1e8 else t[1]
+        def px(t): return t[1] if t[0] > 1e8 else t[0]
+        now_t = ts(ticks[-1]); now_p = px(ticks[-1]); base = None
+        for t in reversed(ticks):
+            if now_t - ts(t) >= sec:
+                base = px(t); break
+        if base is None:
+            base = px(ticks[0])
+        return (now_p - base) / base if base else 0.0
+    except Exception:
+        return 0.0
+
+
 class CleanBot:
     def __init__(self):
         self.om = OrderManager()                # proven authed client + get_clob_book
@@ -116,6 +142,8 @@ class CleanBot:
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
         self._nc_logged = set()                 # throttle [NO CONFIRM] logs (per window)
+        self._research = {}                     # (coin,ws) -> research row pending resolution
+        self._research_seen = set()             # one research row per window
         self._load()
 
     # ── persistence ──────────────────────────────────────────────────
@@ -208,6 +236,100 @@ class CleanBot:
         if have == 0:
             return True     # no market data (transient) → fail-open, don't halt ETH
         return votes > 0
+
+    def _coin_drift(self, coin):
+        """Current drift (fraction) of a coin vs its window-open strike, or None."""
+        try:
+            info = get_market_info(coin)
+            strike = float(info.threshold_price or 0) if info else 0
+            px = float(binance_ws.get_price(coin) or (info.current_crypto_price if info else 0))
+            return (px - strike) / strike if (strike > 0 and px > 0) else None
+        except Exception:
+            return None
+
+    def _research_scan(self, coin):
+        """Capture EVERY real-move window (drift >= research_min_bps), traded or not,
+        with full features + the actual decision. Resolved later via gamma. Fully
+        isolated from trading (caller wraps in try/except) — it never places orders."""
+        if not CFG.research:
+            return
+        info = get_market_info(coin)
+        if not info:
+            return
+        ws = info.window_start
+        rk = (coin, ws)
+        if rk in self._research_seen:
+            return
+        now = time.time(); t_rem = ws + 900 - now; age = now - ws
+        if age < CFG.warmup or t_rem < CFG.min_t:
+            return
+        strike = float(info.threshold_price or 0)
+        px = float(binance_ws.get_price(coin) or info.current_crypto_price or 0)
+        if strike <= 0 or px <= 0:
+            return
+        dist = (px - strike) / strike
+        if abs(dist) < CFG.research_min_bps / 10000.0:
+            return
+        self._research_seen.add(rk)
+        direction = "UP" if dist > 0 else "DOWN"
+        ticks = binance_ws.get_tick_history(coin, 300)
+        roc60 = _roc(ticks, 60); roc300 = _roc(ticks, 300)
+        sigma = binance_ws.get_realized_vol(coin, 180)
+        up_b = down_b = {}
+        try: up_b = self.om.get_clob_book(info.up_token_id) or {}
+        except Exception: pass
+        try: down_b = self.om.get_clob_book(info.down_token_id) or {}
+        except Exception: pass
+        up_ask = up_b.get("ask"); down_ask = down_b.get("ask")
+        fav_ask = up_ask if direction == "UP" else down_ask
+        btc_d = self._coin_drift("BTC"); sol_d = self._coin_drift("SOL")
+        confirmed = (coin not in CFG.confirm_coins) or self._market_confirms(coin, direction)
+        if rk in self.traded:
+            decision, reason = "ENTER", ""
+        elif abs(dist) < CFG.drift_bps / 10000.0:
+            decision, reason = "SKIP", "weak_drift"
+        elif not confirmed:
+            decision, reason = "SKIP", "no_confirm"
+        elif not fav_ask or not (CFG.min_ask <= float(fav_ask) <= CFG.max_ask):
+            decision, reason = "SKIP", "ask_out_of_zone"
+        else:
+            decision, reason = "SKIP", "exposure_or_timing"
+        self._research[rk] = {
+            "ts": datetime.datetime.utcnow().isoformat(timespec="seconds"),
+            "window_start": ws, "coin": coin, "dir": direction,
+            "drift_pct": round(dist * 100, 4),
+            "roc60_bps": round(roc60 * 10000, 1), "roc300_bps": round(roc300 * 10000, 1),
+            "sigma": round(float(sigma or 0), 6),
+            "fav_ask": int(fav_ask) if fav_ask else "",
+            "up_ask": int(up_ask) if up_ask else "", "down_ask": int(down_ask) if down_ask else "",
+            "btc_drift_pct": round(btc_d * 100, 4) if btc_d is not None else "",
+            "sol_drift_pct": round(sol_d * 100, 4) if sol_d is not None else "",
+            "confirmed": int(bool(confirmed)), "decision": decision, "reason": reason,
+            "t_left": int(t_rem)}
+
+    def _research_resolve(self):
+        """Resolve logged research windows via gamma; append the complete row
+        (features + decision + true outcome) to clean_bot_research.csv."""
+        now = time.time()
+        for rk, row in list(self._research.items()):
+            coin, ws = rk
+            if now < ws + 960:
+                continue
+            w = gamma_winner(coin, ws)
+            if not w:
+                continue
+            row["winner"] = w
+            row["drift_correct"] = int(row["dir"] == w)
+            new = not os.path.exists(RESEARCH_CSV)
+            try:
+                with open(RESEARCH_CSV, "a", newline="") as f:
+                    wr = csv.DictWriter(f, fieldnames=RESEARCH_COLS, extrasaction="ignore")
+                    if new:
+                        wr.writeheader()
+                    wr.writerow(row)
+            except Exception as e:
+                logger.warning(f"research write failed: {e}")
+            self._research.pop(rk, None)
 
     # ── entry ────────────────────────────────────────────────────────
     def scan(self, coin: str):
@@ -354,8 +476,8 @@ class CleanBot:
         logger.info(f"=== CleanBot v{VERSION} start | {'DRY' if CFG.dry else 'LIVE'} | "
                     f"{'/'.join(CFG.coins)} | drift>={CFG.drift_bps}bps T>={CFG.min_t}s "
                     f"ask {CFG.min_ask}-{CFG.max_ask} | {_cf} | breaker {CFG.loss_breaker}L/"
-                    f"{CFG.breaker_cooldown // 60}m | {_sz} | bankroll ${self.bankroll:.2f} "
-                    f"stop ${self._stop_amount():.2f} ===")
+                    f"{CFG.breaker_cooldown // 60}m | {_sz} | research={'on' if CFG.research else 'off'} "
+                    f"| bankroll ${self.bankroll:.2f} stop ${self._stop_amount():.2f} ===")
         tg._send(f"🤖 <b>CleanBot v{VERSION}</b> started {'LIVE' if not CFG.dry else 'DRY'} | "
                  f"{'/'.join(CFG.coins)} · early-drift ≥{CFG.drift_bps}bps · maker · "
                  f"💰 ${self.bankroll:.2f} · {_sz} · stop ${self._stop_amount():.2f}")
@@ -385,6 +507,13 @@ class CleanBot:
                         self.scan(c)
             except Exception as e:
                 logger.warning(f"loop error: {e}")
+            # research data capture — fully isolated, never places orders / affects trading
+            try:
+                for c in CFG.coins:
+                    self._research_scan(c)
+                self._research_resolve()
+            except Exception as e:
+                logger.debug(f"research error: {e}")
             if n % 40 == 1:
                 logger.info(f"… alive scan#{n} open={len(self.open_orders)} "
                             f"positions={len(self.positions)} bankroll=${self.bankroll:.2f} "
