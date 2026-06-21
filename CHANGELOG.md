@@ -10,6 +10,23 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.6.1 — 2026-06-21 — Entry-timed model retrain + gate→shadow (DRY validation)
+**Tag:** `cleanbot-v1.6.1` · **Status:** ✅ live (DRY shadow)
+
+The v1.6.0 DRY run caught the model **miscalibrated live**: it stamped ~0.84 on
+every window but delivered 44% (4W/5L) and hit the sim stop. Root cause: trained at
+a fixed **minute 5**, but the bot enters at **minute 2–3** → out-of-distribution →
+saturated. The DRY shadow did its job — $0 real lost.
+
+- **Retrained on the bot's REAL entry timing** (`build_v3.py`): features at the FIRST
+  minute (2–5) the drift crosses 10bps. Entry-minute dist {2:14.8k, 3:5.5k, 4:3.9k,
+  5:3.2k} — matches live. Now **calibrated** (0.8→83%, 0.9→91%) but honestly
+  **modest discrimination** (AUC 0.57, prob std 0.05) — 2 minutes of data is thin
+  signal. Redeployed `drift_model_band.joblib`.
+- **Gate → shadow** (`CLEAN_MODEL_GATE=off`): logs `model_prob` vs outcomes without
+  gating/stopping, so we validate live calibration cheaply before it touches money.
+- Code unchanged except VERSION; model artifact + env only. Banner `model=shadow`.
+
 ## v1.6.0 — 2026-06-21 — ML model gate (calibrated P(drift wins)), DRY shadow
 **Tag:** `cleanbot-v1.6.0` · **Status:** ✅ live (DRY validation)
 
