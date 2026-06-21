@@ -10,6 +10,29 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.6.0 — 2026-06-21 — ML model gate (calibrated P(drift wins)), DRY shadow
+**Tag:** `cleanbot-v1.6.0` · **Status:** ✅ live (DRY validation)
+
+Adds a calibrated gradient-boosting model that scores each candidate's probability
+of the early-drift winning, trained offline on **46k windows from 1m klines** (see
+`_ml_train/`). Honest scope: within the tradeable band (drift≥10bps) the model
+lifts WR ~84.8%→90.8% on the top ~47% and flags the weak ~75% windows (modest but
+real, calibrated 0.8→86% / 0.9→93%, walk-forward OOS).
+
+- **Shared feature module** `model_features.py` used by BOTH training and the bot →
+  parity guaranteed (this fixes a parity break where the bot computed `sigma`
+  differently than training).
+- `_model_prob(coin, ws)`: fetches binance 1m klines, builds the 8 features, scores
+  `drift_model_band.joblib` (sklearn 1.8, isotonic-calibrated). Cached per window.
+- Logs `model_prob` on every ENTER + in the research CSV (new column) for live
+  calibration validation. **Gate** (`CLEAN_MODEL_GATE`) blocks entries below
+  `CLEAN_MODEL_MIN_PROB` (0.80) — running DRY first to validate before live.
+- New env: `CLEAN_MODEL_PATH, CLEAN_MODEL_GATE, CLEAN_MODEL_MIN_PROB`. Model scoring
+  is wrapped in try/except — never breaks trading. Banner shows `model=gate@0.8`.
+- Real-data backtest (419 Polymarket trades): filtering by model prob turned the old
+  bot's −$97 into +$136 OOS — the market prices the favored side ~59¢ regardless of
+  the model's confidence, so high-prob windows carry real +EV.
+
 ## v1.5.3 — 2026-06-20 — Max-ask 0.62 (cut thin-margin 63–66¢) + fav_ask logging fix
 **Tag:** `cleanbot-v1.5.3` · **Status:** ✅ live
 

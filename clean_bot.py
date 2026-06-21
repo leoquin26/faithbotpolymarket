@@ -35,14 +35,14 @@ V3 = os.path.expanduser("~/v3-bot")
 RESEARCH_CSV = os.path.join(V3, "clean_bot_research.csv")  # per-window feature+outcome dataset
 RESEARCH_COLS = ["ts", "window_start", "coin", "dir", "drift_pct", "roc60_bps", "roc300_bps",
                  "sigma", "fav_ask", "up_ask", "down_ask", "btc_drift_pct", "sol_drift_pct",
-                 "confirmed", "decision", "reason", "t_left", "winner", "drift_correct"]
+                 "confirmed", "model_prob", "decision", "reason", "t_left", "winner", "drift_correct"]
 logger.remove()
 logger.add(sys.stdout, level="INFO", format="{time:HH:mm:ss} | {message}")
 logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.5.3"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.6.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -76,6 +76,10 @@ class Cfg:
     # ── research data capture (read-only; every real-move window, traded or not) ──
     research: bool = os.getenv("CLEAN_RESEARCH", "on").lower() in ("1", "true", "yes", "on")
     research_min_bps: float = float(os.getenv("CLEAN_RESEARCH_MIN_BPS", "3"))  # log windows >= this drift
+    # ── ML model gate (v1.6): calibrated P(drift wins) from drift_model_band.joblib ──
+    model_path: str = os.getenv("CLEAN_MODEL_PATH", "drift_model_band.joblib")
+    model_gate: bool = os.getenv("CLEAN_MODEL_GATE", "off").lower() in ("1", "true", "yes", "on")
+    model_min_prob: float = float(os.getenv("CLEAN_MODEL_MIN_PROB", "0.80"))
 
 
 CFG = Cfg()
@@ -144,6 +148,15 @@ class CleanBot:
         self._nc_logged = set()                 # throttle [NO CONFIRM] logs (per window)
         self._research = {}                     # (coin,ws) -> research row pending resolution
         self._research_seen = set()             # one research row per window
+        self.model = None                       # calibrated P(drift wins) model (v1.6)
+        self._mp_cache = {}                     # (coin,ws) -> model prob (avoid refetch)
+        try:
+            import joblib
+            self.model = joblib.load(CFG.model_path)
+            logger.info(f"model loaded: {CFG.model_path} (feats {self.model['feats']}) "
+                        f"gate={'ON' if CFG.model_gate else 'shadow'} min_prob={CFG.model_min_prob}")
+        except Exception as e:
+            logger.warning(f"model not loaded ({e}) — running without ML gate")
         self._load()
 
     # ── persistence ──────────────────────────────────────────────────
@@ -248,6 +261,41 @@ class CleanBot:
         except Exception:
             return None
 
+    def _model_prob(self, coin, ws):
+        """Calibrated P(betting sign(drift) wins) from binance 1m klines via the
+        shared feature module (parity with training). None if unavailable."""
+        if not self.model:
+            return None
+        ck = (coin, ws)
+        if ck in self._mp_cache:
+            return self._mp_cache[ck]
+        result = None
+        try:
+            import model_features as MF
+            def kl(sym):
+                u = (f"https://api.binance.us/api/v3/klines?symbol={sym}USDT"
+                     f"&interval=1m&startTime={ws * 1000}&limit=6")
+                return httpx.get(u, timeout=6, trust_env=False).json()
+            kc = kl(coin)
+            if not isinstance(kc, list) or len(kc) < 3:
+                return None
+            strike = float(kc[0][1])
+            early = [float(b[4]) for b in kc[1:]]      # 1-min closes since open
+            btc_d = None
+            kb = kl("BTC")
+            if isinstance(kb, list) and len(kb) >= 2:
+                bs = float(kb[0][1]); btc_d = (float(kb[-1][4]) - bs) / bs
+            hour = datetime.datetime.utcfromtimestamp(ws).hour
+            feats = MF.compute(strike, early, btc_d, hour, coin)
+            if feats is None:
+                return None
+            result = float(self.model["model"].predict_proba([feats])[0][1])
+            self._mp_cache[ck] = result          # cache successes only (allow retry on errors)
+            return result
+        except Exception as e:
+            logger.debug(f"model_prob error {coin}: {e}")
+            return None
+
     def _research_scan(self, coin):
         """Capture EVERY real-move window (drift >= research_min_bps), traded or not,
         with full features + the actual decision. Resolved later via gamma. Fully
@@ -285,6 +333,7 @@ class CleanBot:
         fav_ask = up_ask if direction == "UP" else down_ask
         btc_d = self._coin_drift("BTC"); sol_d = self._coin_drift("SOL")
         confirmed = (coin not in CFG.confirm_coins) or self._market_confirms(coin, direction)
+        mp = self._model_prob(coin, ws)
         if rk in self.traded:
             decision, reason = "ENTER", ""
         elif abs(dist) < CFG.drift_bps / 10000.0:
@@ -306,8 +355,9 @@ class CleanBot:
             "down_ask": int(round(down_ask * 100)) if down_ask else "",
             "btc_drift_pct": round(btc_d * 100, 4) if btc_d is not None else "",
             "sol_drift_pct": round(sol_d * 100, 4) if sol_d is not None else "",
-            "confirmed": int(bool(confirmed)), "decision": decision, "reason": reason,
-            "t_left": int(t_rem)}
+            "confirmed": int(bool(confirmed)),
+            "model_prob": round(mp, 3) if mp is not None else "",
+            "decision": decision, "reason": reason, "t_left": int(t_rem)}
 
     def _research_resolve(self):
         """Resolve logged research windows via gamma; append the complete row
@@ -370,6 +420,13 @@ class CleanBot:
                             f"— market not aligned, skip")
                 self._nc_logged.add((coin, ws))
             return
+        # ML gate (v1.6): calibrated P(drift wins). Always shadow-logs; only blocks if enabled.
+        mp = self._model_prob(coin, ws)
+        if mp is not None and CFG.model_gate and mp < CFG.model_min_prob:
+            if (coin, ws) not in self._nc_logged:
+                logger.info(f"[MODEL SKIP] {coin} {direction} prob={mp:.2f} < {CFG.model_min_prob}")
+                self._nc_logged.add((coin, ws))
+            return
         book = {}
         try:
             book = self.om.get_clob_book(token) or {}
@@ -384,9 +441,10 @@ class CleanBot:
         if self._open_exposure() + maker * shares > self.bankroll * CFG.max_open_pct:
             return  # too much already at risk right now — wait for a slot
         self.traded.add(key)
+        _mp = f" prob={mp:.2f}" if mp is not None else ""
         logger.info(f"[ENTER] {coin} {direction} drift={dist*100:+.3f}% ask={float(ask)*100:.0f}c "
-                    f"-> maker {maker*100:.0f}c x{shares} (${maker*shares:.2f}, bankroll ${self.bankroll:.0f}) "
-                    f"T={t_rem:.0f}s" + (" [DRY]" if CFG.dry else ""))
+                    f"-> maker {maker*100:.0f}c x{shares} (${maker*shares:.2f}, bankroll ${self.bankroll:.0f})"
+                    f"{_mp} T={t_rem:.0f}s" + (" [DRY]" if CFG.dry else ""))
         if CFG.dry:
             # paper-trade: assume the maker fills, then track the full lifecycle
             # (sim fill → gamma resolve → sim P&L/bankroll) exactly like a live trade.
@@ -490,6 +548,7 @@ class CleanBot:
                     f"{'/'.join(CFG.coins)} | drift>={CFG.drift_bps}bps T>={CFG.min_t}s "
                     f"ask {CFG.min_ask}-{CFG.max_ask} | {_cf} | breaker {CFG.loss_breaker}L/"
                     f"{CFG.breaker_cooldown // 60}m | {_sz} | research={'on' if CFG.research else 'off'} "
+                    f"| model={('gate@'+str(CFG.model_min_prob)) if (self.model and CFG.model_gate) else ('shadow' if self.model else 'off')} "
                     f"| bankroll ${self.bankroll:.2f} stop ${self._stop_amount():.2f} ===")
         tg._send(f"🤖 <b>CleanBot v{VERSION}</b> started {'LIVE' if not CFG.dry else 'DRY'} | "
                  f"{'/'.join(CFG.coins)} · early-drift ≥{CFG.drift_bps}bps · maker · "

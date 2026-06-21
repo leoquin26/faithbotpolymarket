@@ -46,3 +46,9 @@ _audit_predeploy_*/
 _regime_predeploy_backup_*/
 _rollback_backup_*/
 *.pid
+
+# ML training data/cache (keep _ml_train/*.py + README; drop data)
+_ml_train/klines_cache/
+_ml_train/*.csv
+_ml_train/*.jsonl
+_ml_train/*.joblib
