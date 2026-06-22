@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.8.1 — 2026-06-22 — drift 12→10 (Chainlink feed runs smaller drifts than Binance)
+**Tag:** `cleanbot-v1.8.1` · **Status:** ✅ live
+
+After the v1.8.0 Chainlink switch, the bot went quiet — Chainlink is a smoother feed,
+so its drifts run smaller than Binance, and almost nothing cleared the 12bps bar
+(observed drifts 3–12bps in a calm window; one 12.7bps blocked by ETH confirm).
+The 12bps bar was tuned on *Binance* data and is too high for the (correct) Chainlink
+feed. Lowered `CLEAN_DRIFT_BPS` 12→10 to restore volume — now safe because the feed
+is correct (smaller drift = real signal, not the old cross-feed noise). Note: all
+backtest thresholds are Binance-derived; the research logger is now capturing
+Chainlink-era drifts+outcomes to re-tune properly. The one trade before the fix
+(10:33, SOL UP +19bps Binance → settled DOWN, −$2.85) was the cross-feed flip itself.
+
 ## v1.8.0 — 2026-06-22 — ROOT-CAUSE FIX: strike/spot on Chainlink (settlement feed), not Binance
 **Tag:** `cleanbot-v1.8.0` · **Status:** ✅ live · **the real bug**
 
