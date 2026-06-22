@@ -10,6 +10,18 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.8.6 — 2026-06-22 — FIX: exposure cap < minimum bet (was blocking ALL trades)
+**Tag:** `cleanbot-v1.8.6` · **Status:** ✅ live · the real "no trades" cause
+
+The [WATCH] log (v1.8.5) immediately exposed it: a clean signal (SOL UP +7.9bps,
+ask 67¢) was skipped as `exposure_or_timing`. Root cause: `max_open_pct` (25%) ×
+bankroll ($8.75) = $2.19 cap, but the **minimum bet is 5 shares ≈ $2.75–3.30** >
+$2.19 → the exposure check rejected EVERY trade. The minimum possible bet exceeded
+the exposure cap on the shrunken bankroll → mathematically zero trades, regardless
+of drift/ask. No drift tuning could ever fix this. Raised `CLEAN_MAX_OPEN_PCT`
+0.25→0.70 so a single 5-share bet fits. (On a small account the $6 daily stop is the
+real risk control, not the % exposure cap.) THIS is why it wasn't betting.
+
 ## v1.8.5 — 2026-06-22 — [WATCH] per-window visibility log (see what the bot is doing)
 **Tag:** `cleanbot-v1.8.5` · **Status:** ✅ live
 
