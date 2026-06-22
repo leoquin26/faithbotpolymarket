@@ -10,6 +10,17 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.8.4 — 2026-06-22 — drop ETH cross-coin confirmation (the last gate blocking trades)
+**Tag:** `cleanbot-v1.8.4` · **Status:** ✅ live · exploratory
+
+At drift≥7 the bot STILL didn't trade: ETH signals were blocked by `[NO CONFIRM]`
+(cross-coin confirmation) and SOL's qualifying drifts had ask>68¢. The confirmation
+was marginal (+0.5pt in tests) and is the active blocker. Dropped it
+(`CLEAN_CONFIRM_COINS=`) — fewer gates, more trades, per owner's standing direction.
+Now: drift≥7, ask 0.50–0.68, no confirmation, $6 stop + breaker. Goal unchanged:
+generate Chainlink-era trades so we can judge edge-vs-efficient-market from real
+numbers. Committing to LET IT RUN now — no more knob-tuning until the data is in.
+
 ## v1.8.3 — 2026-06-22 — drift 10→7 to GENERATE Chainlink data (was stuck between two skips)
 **Tag:** `cleanbot-v1.8.3` · **Status:** ✅ live · exploratory
 
