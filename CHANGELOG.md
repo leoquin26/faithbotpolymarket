@@ -10,6 +10,23 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.7.1 — 2026-06-22 — Restore volume (drift 20→12); close-prob engine tested & rejected
+**Tag:** `cleanbot-v1.7.1` · **Status:** ✅ live
+
+Owner: don't wait for rare bets — bet a lot on a real close-vs-threshold prediction.
+Built + backtested the close-probability engine (`close_prob_test.py`):
+`P(close>strike)=Φ(dist/(σ·√min_left))`, enter when confident.
+
+- It gives the volume (43k+ trades) and uses time-left — but **over-predicts**
+  (~80% claimed vs ~70% actual; Gaussian misses fat-tailed reversals) and is
+  **slightly worse than the plain drift rule** (75% vs 78%). The drift the bot
+  already uses *is* the close-vs-threshold prediction; the Φ-formula just adds
+  lower-quality volume. **Rejected** as redundant over-refinement.
+- **`CLEAN_DRIFT_BPS` 20 → 12** — restore volume (bet a lot, ~80% directional),
+  the drift IS the prediction. drift=20 was too restrictive (rare bets).
+- Honest: directional edge caps ~70-78% (reversals random); +EV at volume; the
+  real constraint is variance on a tiny account ($11.60). Tiny bets + $6 stop.
+
 ## v1.7.0 — 2026-06-22 — Clearer-signal entry (drift 10→20bps); strip the noise
 **Tag:** `cleanbot-v1.7.0` · **Status:** ✅ live
 
