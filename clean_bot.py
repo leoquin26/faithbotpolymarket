@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.8.4"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.8.5"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -345,6 +345,10 @@ class CleanBot:
             decision, reason = "SKIP", "ask_out_of_zone"
         else:
             decision, reason = "SKIP", "exposure_or_timing"
+        # live visibility: one line per real-move window so the dashboard shows what's happening
+        logger.info(f"[WATCH] {coin} {direction} drift={dist*1e4:+.1f}bps "
+                    f"ask={int(round(fav_ask*100)) if fav_ask else '?'}c t={int(t_rem)}s "
+                    f"-> {decision}" + (f":{reason}" if reason else ""))
         self._research[rk] = {
             "ts": datetime.datetime.utcnow().isoformat(timespec="seconds"),
             "window_start": ws, "coin": coin, "dir": direction,

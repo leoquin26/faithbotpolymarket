@@ -10,6 +10,16 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.8.5 — 2026-06-22 — [WATCH] per-window visibility log (see what the bot is doing)
+**Tag:** `cleanbot-v1.8.5` · **Status:** ✅ live
+
+Owner couldn't see what's happening (bot only logged heartbeats between trades).
+Added a `[WATCH]` line in `_research_scan` — one per real-move window (drift≥3bps):
+`[WATCH] ETH UP drift=+7.4bps ask=65c t=659s -> SKIP:weak_drift`. Shows drift, ask,
+time-left, and the decision/reason for every window, live in clean_bot.log → visible
+in the dashboard 🤖 CleanBot "Live log". No trading-logic change. Dashboard live-log
+line count bumped so more history shows.
+
 ## v1.8.4 — 2026-06-22 — drop ETH cross-coin confirmation (the last gate blocking trades)
 **Tag:** `cleanbot-v1.8.4` · **Status:** ✅ live · exploratory
 
