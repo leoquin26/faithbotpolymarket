@@ -10,6 +10,36 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.8.3 — 2026-06-22 — drift 10→7 to GENERATE Chainlink data (was stuck between two skips)
+**Tag:** `cleanbot-v1.8.3` · **Status:** ✅ live · exploratory
+
+Live scan diagnostic proved zero trades isn't a bug: the bot is wedged between
+`weak_drift` (small drift, cheap ask 50–62¢) and `ask_out_of_zone` (big drift,
+expensive ask 70–89¢). On the correct Chainlink feed the ask tracks the drift
+tightly — the "big drift + still cheap" window (the old edge) was mostly the ~10bps
+Binance basis illusion. So drift≥10 ∧ ask≤68 is a near-empty set.
+
+- **Hypothesis:** the basis flipped *near-money (small-drift)* bets worst, so the
+  small drifts we skip may actually WIN on the correct feed (no flip). Untested —
+  0 Chainlink trades so far.
+- **`CLEAN_DRIFT_BPS` 10→7** to trade the small/cheap-ask windows and finally
+  generate Chainlink-era win-rate data, instead of guessing thresholds tuned on the
+  wrong (Binance) feed.
+- Then LET IT RUN and judge from real numbers: thin edge to keep, or efficient
+  market = stop. No more blind tuning until we have Chainlink data.
+
+## v1.8.2 — 2026-06-22 — max-ask 0.62→0.68 (real drifts come priced; was skipping all)
+**Tag:** `cleanbot-v1.8.2` · **Status:** ✅ live
+
+Diagnosed "no trades": NOT a calm market — drifts up to 63bps exist, but on the
+(correct) Chainlink feed a real drift is already *priced*, so the favored ask is
+63–89¢. With `max_ask 0.62` the bot skipped them all (26 `ask_out_of_zone` skips vs
+0 entries). Raised `CLEAN_MAX_ASK` 0.62→0.68 to take the moderate drifts (63–68¢) and
+get trading on the correct feed + generate Chainlink-era data (we have ~0 chainlink
+trades). HONEST: big-drift→high-ask = efficient market; some of the old "cheap entry"
+edge was the ~10bps Binance basis illusion, so margins are thinner now (breakeven =
+ask). Exploratory — the research logger will tell us what's actually +EV on Chainlink.
+
 ## v1.8.1 — 2026-06-22 — drift 12→10 (Chainlink feed runs smaller drifts than Binance)
 **Tag:** `cleanbot-v1.8.1` · **Status:** ✅ live
 
