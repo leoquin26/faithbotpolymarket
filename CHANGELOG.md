@@ -10,6 +10,24 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.7.0 — 2026-06-22 — Clearer-signal entry (drift 10→20bps); strip the noise
+**Tag:** `cleanbot-v1.7.0` · **Status:** ✅ live
+
+Back to basics, owner-directed: the hair-trigger 10bps entry was the problem.
+Tested on 46k windows (`timing_test.py`): entering on a *clearer* drift sharply
+raises win rate — **10bps 78% → 20bps 85% → 25bps 87%** — and cuts the 3-loss
+wipeout streaks ~3–4×. The momentum "confirmation" overlay added only **+0.5pt**
+(noise), confirming we over-refined and buried the signal.
+
+- **`CLEAN_DRIFT_BPS` 10 → 20.** Enter only on a clear, high-conviction drift.
+  Higher WR = lower variance = a small account survives.
+- Bonus: drift≥20 *and still cheap* (ask ≤62¢) self-selects the inefficient/overnight
+  windows where the market is lagging — the regime the edge actually works in.
+- Simpler, not more complex — one clear trigger. Maker, ask-cap, $6 stop unchanged;
+  ML model stays benched (shadow) since it added noise live, not signal.
+- Note: backtest WRs are binance-directional; live runs lower, but the *relative*
+  lift (fewer losses on bigger drifts) transfers.
+
 ## v1.6.1 — 2026-06-21 — Entry-timed model retrain + gate→shadow (DRY validation)
 **Tag:** `cleanbot-v1.6.1` · **Status:** ✅ live (DRY shadow)
 
