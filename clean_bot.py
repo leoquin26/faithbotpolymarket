@@ -24,6 +24,7 @@ import force_tor  # noqa: applies proxy on import
 
 import httpx
 import binance_ws
+import chainlink_ws   # CRITICAL: Polymarket settles on Chainlink — strike+spot must be Chainlink, not Binance (~10bps cross-feed basis flips near-money bets)
 from market_data import get_market_info
 from order_manager import OrderManager
 from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
@@ -42,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.7.1"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.8.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -236,7 +237,7 @@ class CleanBot:
             try:
                 info = get_market_info(p)
                 strike = float(info.threshold_price or 0) if info else 0
-                px = float(binance_ws.get_price(p) or (info.current_crypto_price if info else 0))
+                px = float((info.current_crypto_price if info else 0) or binance_ws.get_price(p))
                 if strike <= 0 or px <= 0:
                     continue
                 d = (px - strike) / strike
@@ -313,7 +314,7 @@ class CleanBot:
         if age < CFG.warmup or t_rem < CFG.min_t:
             return
         strike = float(info.threshold_price or 0)
-        px = float(binance_ws.get_price(coin) or info.current_crypto_price or 0)
+        px = float(info.current_crypto_price or binance_ws.get_price(coin) or 0)
         if strike <= 0 or px <= 0:
             return
         dist = (px - strike) / strike
@@ -402,7 +403,7 @@ class CleanBot:
         if age < CFG.warmup or t_rem < CFG.min_t:     # early-only window
             return
         strike = float(info.threshold_price or 0)
-        px = binance_ws.get_price(coin) or info.current_crypto_price
+        px = info.current_crypto_price or binance_ws.get_price(coin)   # Chainlink spot (settlement feed) first
         px = float(px or 0)
         if strike <= 0 or px <= 0:
             return
@@ -554,6 +555,11 @@ class CleanBot:
                  f"{'/'.join(CFG.coins)} · early-drift ≥{CFG.drift_bps}bps · maker · "
                  f"💰 ${self.bankroll:.2f} · {_sz} · stop ${self._stop_amount():.2f}")
         binance_ws.start()
+        try:
+            chainlink_ws.start()                 # settlement-feed strike+spot (Polymarket = Chainlink)
+            logger.info("[CHAINLINK] feed started — strike/spot now on the settlement feed")
+        except Exception as e:
+            logger.warning(f"[CHAINLINK] start failed ({e}) — falling back to Binance (cross-feed basis risk)")
         time.sleep(90)
         n = 0
         while True:

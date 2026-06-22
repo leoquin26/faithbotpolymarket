@@ -10,6 +10,27 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.8.0 — 2026-06-22 — ROOT-CAUSE FIX: strike/spot on Chainlink (settlement feed), not Binance
+**Tag:** `cleanbot-v1.8.0` · **Status:** ✅ live · **the real bug**
+
+CleanBot was computing drift entirely on **Binance** (strike = binance_kline_open,
+spot = binance_ws) — but **Polymarket settles on Chainlink.** Measured live
+cross-feed basis: **BTC +9.0 / ETH +9.9 / SOL +11.3 bps** — i.e. ~10bps, the SAME
+size as the 12bps signal. So a "+12bps up" on Binance could be flat-or-DOWN on the
+Chainlink feed that actually pays out → near-the-money bets (where the bot lives)
+get their direction flipped. This is the documented audit-C1 (Jun 10) failure, and
+it's why the rebuild stopped working while the old (Chainlink-aligned) bot won.
+Owner called this out repeatedly ("something wrong in the calculations / the
+threshold / we won more before") — and was right; I was wrong to blame the regime.
+
+- **Start `chainlink_ws`** on boot (was never started → `get_strike`/`get_market_info`
+  always fell back to Binance: 724/724 reads today).
+- **Use the Chainlink strike + spot** that `get_market_info` already computes
+  (`info.threshold_price` + `info.current_crypto_price`) instead of overriding spot
+  with `binance_ws`. Fixed in scan(), `_research_scan`, `_market_confirms`.
+- Binance remains the graceful fallback if Chainlink drops. No other logic changed.
+- Expected: near-money bets stop getting flipped by the basis → the real edge.
+
 ## v1.7.1 — 2026-06-22 — Restore volume (drift 20→12); close-prob engine tested & rejected
 **Tag:** `cleanbot-v1.7.1` · **Status:** ✅ live
 
