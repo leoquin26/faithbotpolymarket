@@ -28,7 +28,7 @@ import chainlink_ws   # CRITICAL: Polymarket settles on Chainlink — strike+spo
 from market_data import get_market_info
 from order_manager import OrderManager
 from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
-from py_clob_client_v2.order_builder.constants import BUY
+from py_clob_client_v2.order_builder.constants import BUY, SELL
 from loguru import logger
 import telegram_notifier as tg
 
@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.8.6"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.9.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -81,6 +81,11 @@ class Cfg:
     model_path: str = os.getenv("CLEAN_MODEL_PATH", "drift_model_band.joblib")
     model_gate: bool = os.getenv("CLEAN_MODEL_GATE", "off").lower() in ("1", "true", "yes", "on")
     model_min_prob: float = float(os.getenv("CLEAN_MODEL_MIN_PROB", "0.80"))
+    # ── active exit (v1.9): book the favorable move; dodge the late settlement reversal ──
+    tp_enabled: bool = os.getenv("CLEAN_TP", "on").lower() in ("1", "true", "yes", "on")
+    tp_delta: float = float(os.getenv("CLEAN_TP_DELTA", "0.12"))       # sell when token gains >= this (lock profit)
+    exit_before_s: int = int(os.getenv("CLEAN_EXIT_BEFORE", "180"))    # sell N sec before close (dodge last-3min reversal)
+    tp_stop_delta: float = float(os.getenv("CLEAN_TP_STOP", "0.20"))   # cut early if token drops >= this
 
 
 CFG = Cfg()
@@ -454,7 +459,7 @@ class CleanBot:
             # paper-trade: assume the maker fills, then track the full lifecycle
             # (sim fill → gamma resolve → sim P&L/bankroll) exactly like a live trade.
             self.positions[f"{coin}:{ws}"] = {"coin": coin, "ws": ws, "dir": direction,
-                                              "entry": maker, "shares": shares,
+                                              "entry": maker, "shares": shares, "token": token,
                                               "status": "filled", "sim": True}
             logger.info(f"[SIM FILL] {coin} {direction} @ {maker*100:.0f}c x{shares} (paper)")
             self._save()
@@ -487,7 +492,7 @@ class CleanBot:
             status = str(od.get("status", "")).upper()
             if matched > 0:
                 self.positions[f"{o['coin']}:{o['ws']}"] = {
-                    "coin": o["coin"], "ws": o["ws"], "dir": o["dir"],
+                    "coin": o["coin"], "ws": o["ws"], "dir": o["dir"], "token": o["token"],
                     "entry": o["price"], "shares": int(matched), "status": "filled"}
                 logger.info(f"[FILLED] {o['coin']} {o['dir']} @ {o['price']*100:.0f}c "
                             f"x{int(matched)}")
@@ -502,6 +507,69 @@ class CleanBot:
                     pass
                 logger.info(f"[CANCEL] unfilled {o['coin']} {o['dir']} @ {o['price']*100:.0f}c")
                 self.open_orders.pop(oid, None); self._save()
+
+    # ── active exit: book the move, dodge the late reversal (v1.9) ─────
+    def manage_positions(self):
+        """For each open position, take profit if the token appreciated, cut if it
+        dropped, and ALWAYS exit a few minutes before close — so we capture the
+        favorable mid-window move instead of riding it into the settlement reversal."""
+        if not CFG.tp_enabled:
+            return
+        now = time.time()
+        for k, p in list(self.positions.items()):
+            if p["status"] != "filled" or not p.get("token"):
+                continue
+            try:
+                bid = (self.om.get_clob_book(p["token"]) or {}).get("bid")
+            except Exception:
+                continue
+            if bid is None:
+                continue
+            bid = float(bid)
+            gain = bid - p["entry"]
+            t_left = p["ws"] + 900 - now
+            if gain >= CFG.tp_delta:
+                self._close_position(k, p, bid, "TP")
+            elif gain <= -CFG.tp_stop_delta:
+                self._close_position(k, p, bid, "STOP")
+            elif 0 < t_left <= CFG.exit_before_s:
+                self._close_position(k, p, bid, "TIME")
+
+    def _close_position(self, k, p, bid, why):
+        """Sell the position now (marketable taker) and realize the P&L, instead of
+        holding to settlement. 7% taker fee = 0.07*p*(1-p)/share."""
+        sh = p["shares"]; entry = p["entry"]
+        sell_px = round(max(0.01, bid - 0.01), 2)        # cross the bid to ensure the fill
+        if not CFG.dry:
+            try:
+                res = self.client.create_and_post_order(
+                    OrderArgs(price=sell_px, size=sh, side=SELL, token_id=p["token"]),
+                    PartialCreateOrderOptions(tick_size="0.01"), OrderType.FOK)
+                matched = float((res or {}).get("size_matched") or (res or {}).get("sizeMatched") or 0)
+                if matched <= 0:
+                    if why == "TIME":
+                        logger.info(f"[EXIT-MISS] {p['coin']} {p['dir']} sell @ {sell_px*100:.0f}c "
+                                    f"no fill ({why}) — will retry / fall through to settlement")
+                    return
+            except Exception as e:
+                logger.warning(f"[EXIT FAIL] {p['coin']} {p['dir']}: {e}")
+                return
+        fee = 0.07 * sell_px * (1 - sell_px) * sh
+        pnl = (sell_px - entry) * sh - fee
+        p["status"] = "closed"; p["pnl"] = round(pnl, 2); p["exit"] = sell_px; p["exit_why"] = why
+        self.bankroll += pnl
+        if pnl >= 0:
+            self.wins += pnl; self.consec_losses = 0
+        else:
+            self.losses += -pnl; self.consec_losses += 1
+        net = self.wins - self.losses
+        logger.info(f"[EXIT-{why}] {p['coin']} {p['dir']} {entry*100:.0f}c -> sold {sell_px*100:.0f}c "
+                    f"| {pnl:+.2f} | bankroll ${self.bankroll:.2f} | day net {net:+.2f}"
+                    + (" [SIM]" if p.get("sim") else ""))
+        tg._send(f"{'🧪 ' if p.get('sim') else ''}🎯 <b>EXIT-{why}</b> {p['coin']} {p['dir']} "
+                 f"{entry*100:.0f}c→{sell_px*100:.0f}c | {pnl:+.2f} | 💰 ${self.bankroll:.2f}",
+                 dedup_key=f"exit-{k}")
+        self._save()
 
     # ── resolution ───────────────────────────────────────────────────
     def resolve(self):
@@ -571,6 +639,7 @@ class CleanBot:
             self._roll_day()
             try:
                 self.check_orders()
+                self.manage_positions()         # active exit: take profit / dodge late reversal
                 self.resolve()
                 if self._stopped():
                     if not self._stop_notified:

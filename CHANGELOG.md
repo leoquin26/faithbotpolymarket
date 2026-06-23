@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.9.0 — 2026-06-23 — ACTIVE EXIT: take-profit + time-exit (stop riding into the settlement reversal)
+**Tag:** `cleanbot-v1.9.0` · **Status:** ✅ live · owner's insight
+
+Owner observed the recurring pattern: positions WIN most of the window, then reverse
+in the last ~3 minutes and lose. Diagnosis: the drift moves the price our way
+mid-window (the token appreciates), but we held the binary to SETTLEMENT, where the
+near-money close is a coin flip — so we gave the gain back at the bell. FIX:
+`manage_positions()` marks each open position to market every loop and exits early:
+(1) TAKE-PROFIT — sell when the token gains >= CLEAN_TP_DELTA (0.12); (2) STOP — cut
+if it drops >= CLEAN_TP_STOP (0.20); (3) TIME-EXIT — always sell CLEAN_EXIT_BEFORE
+(180s) before close, dodging the last-3-min reversal window. Exit is a marketable FOK
+SELL (crosses the bid; 7% taker fee modeled). Closed positions free their exposure
+slot; resolve() skips them. Converts the binary settlement lottery into an active
+trade that books the favorable move the owner kept seeing.
+
 ## STRIKE FIX — 2026-06-23 — precise Chainlink strike snapshotter (owner was right: source corrupted)
 **Status:** ✅ live (DRY re-measurement) · the directional-signal corruption
 
