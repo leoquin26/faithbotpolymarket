@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## STRIKE FIX — 2026-06-23 — precise Chainlink strike snapshotter (owner was right: source corrupted)
+**Status:** ✅ live (DRY re-measurement) · the directional-signal corruption
+
+Re-audit found the directional signal wasn't broken — its **reference price was**.
+Polymarket settles 15m crypto on the **Chainlink BTC/USD data stream** (confirmed in
+market description), strike = Chainlink price at the window boundary. The bot only
+captured Chainlink if it read within 20s of the boundary, else fell back to Binance:
+audit showed **43% of recent strikes were `binance_kline_open` (wrong feed, ~10bps
+off)** → drift measured against a corrupted reference → near-money bets flip → signal
+looks like 50%. FIX: `strike_snapshotter.py` — a fast loop that captures the exact
+Chainlink boundary tick (within ~0.8s) for BTC/ETH/SOL every window and pre-populates
+`data/strike_cache.json`, so `get_strike` never falls back to Binance. Now
+re-measuring the true directional WR (DRY, no risk) with correct strikes. Also added
+`arb_monitor.py` (fee-aware arbitrage scanner; found 7% taker fee = crypto_fees_v2).
+
 ## v1.8.6 — 2026-06-22 — FIX: exposure cap < minimum bet (was blocking ALL trades)
 **Tag:** `cleanbot-v1.8.6` · **Status:** ✅ live · the real "no trades" cause
 
