@@ -113,20 +113,30 @@ def get_strike(
     source = "unknown"
     window_age = max(0.0, time.time() - float(event_start_unix_ts or 0))
 
-    # PRIMARY: Chainlink window-open snapshot — Polymarket resolves Chainlink
-    # spot vs strike, and the predictor reads Chainlink for live spot, so the
-    # strike MUST come from the same feed or dist_pct carries a cross-feed basis
-    # that flips near-strike direction (audit C1, Jun 10 2026).
+    # PRIMARY: Chainlink BOUNDARY tick. Polymarket settles Chainlink close vs the
+    # Chainlink value AT window open, and the predictor reads Chainlink for live
+    # spot, so the strike MUST come from the same feed at the same instant or
+    # dist_pct carries a cross-feed basis that flips near-strike direction
+    # (audit C1, Jun 10). ROBUST: scan the RTDS tick buffer (~330s) for the tick
+    # closest to the window open — works at ANY window_age, not just a 20s window,
+    # so the bot never silently reverts to the wrong Binance feed (Jun 23 fix).
     _cl_max_age = float(__import__("os").getenv("STRIKE_CHAINLINK_MAX_AGE", "20"))
-    if window_age <= _cl_max_age:
-        try:
-            import chainlink_ws
+    try:
+        import chainlink_ws
+        es = float(event_start_unix_ts or 0)
+        ticks = chainlink_ws.get_ticks(coin, 330)
+        if ticks:
+            ts0, px0 = min(ticks, key=lambda t: abs(t[0] - es))
+            if px0 and px0 > 0 and abs(ts0 - es) <= 12:   # a tick within 12s of the boundary
+                strike = float(px0)
+                source = "chainlink_window_open"
+        if strike <= 0 and window_age <= _cl_max_age:     # very near open: accept latest live tick
             cl = chainlink_ws.get_price(coin)
             if cl and cl > 0:
                 strike = cl
-                source = "chainlink_window_open"
-        except Exception:
-            pass
+                source = "chainlink_live_open"
+    except Exception:
+        pass
 
     # TIER 2: on-chain Chainlink aggregator (same oracle family as the Data
     # Stream Polymarket settles on). Used when the RTDS WS is unavailable so
@@ -157,14 +167,15 @@ def get_strike(
                 )
 
     if strike > 0:
-        cache[slug] = {
-            "coin": coin,
-            "strike": strike,
-            "source": source,
-            "event_start": event_start_unix_ts,
-            "ts": int(time.time()),
-        }
-        _save_strike_cache(cache)
+        if source.startswith("chainlink"):       # ONLY persist the correct feed — never
+            cache[slug] = {                        # cache a Binance fallback (it would stick
+                "coin": coin,                      # forever and re-corrupt the direction)
+                "strike": strike,
+                "source": source,
+                "event_start": event_start_unix_ts,
+                "ts": int(time.time()),
+            }
+            _save_strike_cache(cache)
         logger.info(f"[STRIKE] {coin} {slug}: ${strike:,.2f} ({source})")
     return strike, source
 

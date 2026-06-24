@@ -10,6 +10,36 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.9.2 — 2026-06-23 — FIX direction: robust Chainlink strike IN the bot + never trade Binance strike
+**Tag:** `cleanbot-v1.9.2` · **Status:** ✅ live · owner caught it again
+
+Owner: "the direction selector seems broken — 3 of 5 bets reversed." Audit: the
+strike_snapshotter.py process had HUNG (last capture window ...260100), so the bot
+silently reverted to `binance_kline_open` strikes (cache showed source=binance) while
+the spot is Chainlink → the ~10bps cross-feed basis flips near-strike direction = the
+reversals. Root flaw: the strike fix lived in a fragile separate process. FIX moves it
+INTO the bot: poly_resolution.get_strike now scans the Chainlink RTDS tick buffer
+(~330s) for the tick closest to the window boundary (robust at any window_age, not a
+20s race) and ONLY caches Chainlink results (never persists a Binance fallback that
+would stick). Plus a hard gate in clean_bot.scan: `[STRIKE SKIP]` — refuse to trade
+any window whose strike_source isn't chainlink. Snapshotter retired (get_strike is now
+self-sufficient). Binance cache entries cleared on deploy.
+
+## v1.9.1 — 2026-06-23 — EXIT v2: ride SOLID winners to the full reward (owner refinement)
+**Tag:** `cleanbot-v1.9.1` · **Status:** ✅ live · owner's refinement
+
+v1.9.0's exit was too eager — it bailed on EVERY position the same way (fixed +12c TP
++ always time-exit), so when the direction was genuinely solid it capped a small scalp
+instead of riding to the full +$1. Owner: "the take-profit saves us from reversals, but
+when we have a solid direction we should wait to the end for the full reward." New
+policy in manage_positions() reads the token's own price to tell SOLID from SHAKY:
+(1) HOLD — deep ITM near close (bid >= CLEAN_DEEP_ITM 0.85, within CLEAN_EXIT_BEFORE
+180s) → ride to settlement for the full $1 (reversal unlikely + settlement is fee-free);
+(2) TRAIL — armed after +CLEAN_TRAIL_ARM (0.08), sell if bid drops CLEAN_TRAIL_DELTA
+(0.06) off its PEAK (let runners run, exit only when they actually turn); (3) STOP —
+hard cut at -CLEAN_TP_STOP (0.20); (4) TIME — near close & NOT deep ITM → bail before
+the coin-flip. Tracks per-position peak. Replaces the fixed tp_delta.
+
 ## v1.9.0 — 2026-06-23 — ACTIVE EXIT: take-profit + time-exit (stop riding into the settlement reversal)
 **Tag:** `cleanbot-v1.9.0` · **Status:** ✅ live · owner's insight
 

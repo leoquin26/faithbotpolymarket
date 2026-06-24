@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.9.0"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.9.2"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -81,11 +81,13 @@ class Cfg:
     model_path: str = os.getenv("CLEAN_MODEL_PATH", "drift_model_band.joblib")
     model_gate: bool = os.getenv("CLEAN_MODEL_GATE", "off").lower() in ("1", "true", "yes", "on")
     model_min_prob: float = float(os.getenv("CLEAN_MODEL_MIN_PROB", "0.80"))
-    # ── active exit (v1.9): book the favorable move; dodge the late settlement reversal ──
+    # ── active exit (v1.9.1): ride SOLID winners to the full reward, bail on shaky ──
     tp_enabled: bool = os.getenv("CLEAN_TP", "on").lower() in ("1", "true", "yes", "on")
-    tp_delta: float = float(os.getenv("CLEAN_TP_DELTA", "0.12"))       # sell when token gains >= this (lock profit)
-    exit_before_s: int = int(os.getenv("CLEAN_EXIT_BEFORE", "180"))    # sell N sec before close (dodge last-3min reversal)
-    tp_stop_delta: float = float(os.getenv("CLEAN_TP_STOP", "0.20"))   # cut early if token drops >= this
+    exit_before_s: int = int(os.getenv("CLEAN_EXIT_BEFORE", "180"))    # near-close window: bail if NOT solid (deep ITM)
+    deep_itm: float = float(os.getenv("CLEAN_DEEP_ITM", "0.85"))       # near close + token bid>=this → HOLD to settlement for full $1
+    trail_arm: float = float(os.getenv("CLEAN_TRAIL_ARM", "0.08"))     # arm trailing stop after token gains >= this from entry
+    trail_delta: float = float(os.getenv("CLEAN_TRAIL_DELTA", "0.06")) # then sell if token drops >= this from its PEAK (it turned)
+    tp_stop_delta: float = float(os.getenv("CLEAN_TP_STOP", "0.20"))   # hard stop: cut if token drops >= this from entry
 
 
 CFG = Cfg()
@@ -416,6 +418,14 @@ class CleanBot:
         px = float(px or 0)
         if strike <= 0 or px <= 0:
             return
+        # NEVER trade on a non-Chainlink strike — Binance strike vs Chainlink spot is
+        # a ~10bps cross-feed basis that flips near-strike direction (the reversals).
+        if not str(info.strike_source or "").startswith("chainlink"):
+            if (coin, ws) not in self._nc_logged:
+                logger.info(f"[STRIKE SKIP] {coin} strike_source={info.strike_source} "
+                            f"(not chainlink) — skip to avoid wrong-feed direction")
+                self._nc_logged.add((coin, ws))
+            return
         dist = (px - strike) / strike
         if abs(dist) < CFG.drift_bps / 10000.0:        # need a clear early drift
             return
@@ -508,11 +518,14 @@ class CleanBot:
                 logger.info(f"[CANCEL] unfilled {o['coin']} {o['dir']} @ {o['price']*100:.0f}c")
                 self.open_orders.pop(oid, None); self._save()
 
-    # ── active exit: book the move, dodge the late reversal (v1.9) ─────
+    # ── active exit: ride solid winners to the full reward, bail on shaky (v1.9.1) ──
     def manage_positions(self):
-        """For each open position, take profit if the token appreciated, cut if it
-        dropped, and ALWAYS exit a few minutes before close — so we capture the
-        favorable mid-window move instead of riding it into the settlement reversal."""
+        """Exit policy that tells SOLID from SHAKY by the token's own price:
+        • deep ITM near the close (bid>=deep_itm) → HOLD to settlement for the full $1
+          (price is far from strike, reversal unlikely, and settlement pays no fee);
+        • trailing stop → let a winner run (peak rises), sell only when it turns off the peak;
+        • hard stop → cut a clear loser;
+        • near close & NOT deep ITM → bail before the settlement coin-flip."""
         if not CFG.tp_enabled:
             return
         now = time.time()
@@ -526,13 +539,27 @@ class CleanBot:
             if bid is None:
                 continue
             bid = float(bid)
-            gain = bid - p["entry"]
+            entry = p["entry"]
+            peak = max(p.get("peak", bid), bid)
+            p["peak"] = peak
+            gain = bid - entry
             t_left = p["ws"] + 900 - now
-            if gain >= CFG.tp_delta:
-                self._close_position(k, p, bid, "TP")
-            elif gain <= -CFG.tp_stop_delta:
+            near_close = 0 < t_left <= CFG.exit_before_s
+            # 1. SOLID: deep ITM near the close → hold for the full reward (don't sell the winner short)
+            if near_close and bid >= CFG.deep_itm:
+                if p.get("_holding") != True:
+                    p["_holding"] = True
+                    logger.info(f"[HOLD] {p['coin']} {p['dir']} bid={bid*100:.0f}c solid & "
+                                f"{int(t_left)}s left → riding to settlement for full reward")
+                continue
+            # 2. hard stop — clear loser
+            if gain <= -CFG.tp_stop_delta:
                 self._close_position(k, p, bid, "STOP")
-            elif 0 < t_left <= CFG.exit_before_s:
+            # 3. trailing stop — was winning, now turned off the peak → lock the gain
+            elif peak - entry >= CFG.trail_arm and bid <= peak - CFG.trail_delta:
+                self._close_position(k, p, bid, "TRAIL")
+            # 4. near close & not solid → dodge the settlement coin-flip
+            elif near_close:
                 self._close_position(k, p, bid, "TIME")
 
     def _close_position(self, k, p, bid, why):
