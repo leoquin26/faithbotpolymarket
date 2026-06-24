@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.9.3"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.10.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -88,6 +88,17 @@ class Cfg:
     trail_arm: float = float(os.getenv("CLEAN_TRAIL_ARM", "0.08"))     # arm trailing stop after token gains >= this from entry
     trail_delta: float = float(os.getenv("CLEAN_TRAIL_DELTA", "0.06")) # then sell if token drops >= this from its PEAK (it turned)
     tp_stop_delta: float = float(os.getenv("CLEAN_TP_STOP", "0.20"))   # hard stop: cut if token drops >= this from entry
+    # ── daytime trend confirmation (v1.10): overnight edge is trend-following. During
+    # the choppier US/EU hours only bet WITH a confirmed macro trend. OVERNIGHT IS
+    # UNCHANGED — this filter applies ONLY when day_start<=Lima_hour<day_end. ──
+    day_trend: bool = os.getenv("CLEAN_DAY_TREND", "on").lower() in ("1", "true", "yes", "on")
+    day_start: int = int(os.getenv("CLEAN_DAY_START", "9"))      # Lima hour daytime begins
+    day_end: int = int(os.getenv("CLEAN_DAY_END", "20"))         # Lima hour daytime ends
+    day_trend_min: float = float(os.getenv("CLEAN_DAY_TREND_MIN", "0.12"))   # min macro move % to confirm
+    day_trend_lookback: int = int(os.getenv("CLEAN_DAY_TREND_LOOKBACK", "45"))  # macro lookback minutes
+    # ── give-back stop (v1.10): lock a winning day — pause once day P&L falls this much
+    # from its peak (saves overnight gains from a reversal like the 9am one). 0=off. ──
+    giveback: float = float(os.getenv("CLEAN_GIVEBACK", "10"))
 
 
 CFG = Cfg()
@@ -151,6 +162,8 @@ class CleanBot:
         self.losses = 0.0
         self.bankroll = CFG.start_bankroll      # compounds with each resolved trade
         self.consec_losses = 0                  # whipsaw breaker counter
+        self._macro_cache = {}                  # coin -> (ts, pct) daytime trend cache
+        self.day_peak = 0.0                     # peak day P&L (for the give-back stop)
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
         self._nc_logged = set()                 # throttle [NO CONFIRM] logs (per window)
@@ -206,7 +219,7 @@ class CleanBot:
         if t != self.day:
             logger.info(f"=== new day {t}: resetting daily pnl (was net "
                         f"{self.wins - self.losses:+.2f}) ===")
-            self.day = t; self.wins = 0.0; self.losses = 0.0
+            self.day = t; self.wins = 0.0; self.losses = 0.0; self.day_peak = 0.0
             self._stop_notified = False
             self.traded = {k for k in self.traded}  # keep; windows are unique by epoch
 
@@ -215,7 +228,13 @@ class CleanBot:
         return max(CFG.daily_stop_floor, self.bankroll * CFG.stop_pct)
 
     def _stopped(self):
-        return (self.losses - self.wins) >= self._stop_amount()
+        net = self.wins - self.losses
+        if (self.losses - self.wins) >= self._stop_amount():       # absolute daily loss stop
+            return True
+        # give-back stop: locked a winning day, now handing it back -> pause for the day
+        if CFG.giveback > 0 and self.day_peak > 0 and (self.day_peak - net) >= CFG.giveback:
+            return True
+        return False
 
     def _open_exposure(self):
         exp = sum(o["price"] * o["shares"] for o in self.open_orders.values())
@@ -400,6 +419,36 @@ class CleanBot:
             self._research.pop(rk, None)
 
     # ── entry ────────────────────────────────────────────────────────
+    def _macro_trend(self, coin):
+        """Macro trend = Binance % change over ~day_trend_lookback minutes (cached 60s).
+        Direction matches Chainlink over this horizon; used ONLY as a daytime filter."""
+        now = time.time()
+        c = self._macro_cache.get(coin)
+        if c and now - c[0] < 60:
+            return c[1]
+        pct = 0.0
+        sym = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT",
+               "XRP": "XRPUSDT"}.get(coin, coin + "USDT")
+        n = max(2, CFG.day_trend_lookback // 15 + 1)
+        for base in ("https://api.binance.us/api/v3/klines",
+                     "https://api.binance.com/api/v3/klines",
+                     "https://data-api.binance.vision/api/v3/klines"):
+            try:
+                r = _h.get(base, params={"symbol": sym, "interval": "15m", "limit": n})
+                if r.status_code == 200:
+                    ks = r.json()
+                    if len(ks) >= 2:
+                        p0 = float(ks[0][1]); p1 = float(ks[-1][4])
+                        pct = (p1 - p0) / p0 * 100
+                    break
+            except Exception:
+                continue
+        self._macro_cache[coin] = (now, pct)
+        return pct
+
+    def _is_daytime(self):
+        return CFG.day_start <= ((time.gmtime().tm_hour - 5) % 24) < CFG.day_end  # Lima = UTC-5
+
     def scan(self, coin: str):
         info = get_market_info(coin)
         if not info:
@@ -432,6 +481,19 @@ class CleanBot:
         is_up = dist > 0
         token = info.up_token_id if is_up else info.down_token_id
         direction = "UP" if is_up else "DOWN"
+        # DAYTIME trend confirmation (overnight UNCHANGED): the edge is trend-following;
+        # during the choppier US/EU hours only bet when a real macro trend AGREES with
+        # the drift. Skips daytime chop / counter-trend bounces. (Won't catch sharp
+        # turning points — the give-back stop protects gains there.)
+        if CFG.day_trend and self._is_daytime():
+            mt = self._macro_trend(coin)
+            want_up = is_up
+            if abs(mt) < CFG.day_trend_min or (mt > 0) != want_up:
+                if (coin, ws) not in self._nc_logged:
+                    logger.info(f"[DAY-TREND SKIP] {coin} {direction} drift but macro="
+                                f"{mt:+.2f}% (need >={CFG.day_trend_min}% same dir) — daytime chop guard")
+                    self._nc_logged.add((coin, ws))
+                return
         # cross-coin confirmation for follower coins (ETH): only trade when the
         # broader market drifts the same way; skip ETH-solo / market-divergent.
         if coin in CFG.confirm_coins and not self._market_confirms(coin, direction):
@@ -698,14 +760,17 @@ class CleanBot:
                 self.check_orders()
                 self.manage_positions()         # active exit: take profit / dodge late reversal
                 self.resolve()
+                self.day_peak = max(self.day_peak, self.wins - self.losses)
                 if self._stopped():
                     if not self._stop_notified:
                         tg._send(f"🛑 <b>CleanBot daily stop</b> | net {self.wins - self.losses:+.2f} "
                                  f"≤ -{self._stop_amount():.2f} — no new entries today")
                         self._stop_notified = True
                     if n % 40 == 1:
-                        logger.info(f"[STOP] daily net {self.wins - self.losses:+.2f} "
-                                    f"<= -{self._stop_amount():.2f} — no new entries today")
+                        _net = self.wins - self.losses
+                        _gb = CFG.giveback > 0 and self.day_peak > 0 and (self.day_peak - _net) >= CFG.giveback
+                        logger.info(f"[STOP] {'give-back (locked day-peak ' + format(self.day_peak,'+.2f') + ')' if _gb else 'daily loss'}: "
+                                    f"net {_net:+.2f} — no new entries today")
                 elif time.time() < self.breaker_until:
                     if n % 40 == 1:
                         logger.info(f"[BREAKER] cooldown {int((self.breaker_until - time.time()) / 60)}m "

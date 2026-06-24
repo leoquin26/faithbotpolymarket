@@ -10,6 +10,23 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.10.0 — 2026-06-24 — daytime trend filter + give-back stop (keep the overnight wins)
+**Tag:** `cleanbot-v1.10.0` · **Status:** ✅ live · OVERNIGHT BEHAVIOR UNCHANGED
+
+Review of Jun 23-24: overnight 78% WR (39W/11L), peak $87.22, because the market
+TRENDED (ETH -1.53% into 8am) and the early-drift rode it (DOWN bets 86-87%). At 9am
+the trend REVERSED (+0.25%) and 4 DOWN bets lost (-$13) — a turning point. Two adds,
+both env-tunable, OVERNIGHT (Lima 20:00-09:00) is UNTOUCHED:
+(1) DAYTIME TREND FILTER (`_macro_trend` + `_is_daytime`): only when day_start<=Lima_hr
+<day_end (default 9-20) the drift must AGREE with the Binance macro trend over the last
+~45min (>=CLEAN_DAY_TREND_MIN 0.12%), else `[DAY-TREND SKIP]`. Keeps the bot trend-
+following + skips daytime chop/counter-trend bounces. (Note: a trend filter is late to
+sharp turning points like 9am — it guards chop, not tops/bottoms.)
+(2) GIVE-BACK STOP (`CLEAN_GIVEBACK` $10): tracks the day's peak P&L; once P&L falls
+>=giveback from the peak, stop for the day — locks in winning days (would've saved most
+of the $87->$69 give-back). Added to `_stopped()`; resets each day.
+Knobs: CLEAN_DAY_TREND, CLEAN_DAY_START/END, CLEAN_DAY_TREND_MIN/LOOKBACK, CLEAN_GIVEBACK.
+
 ## v1.9.3 — 2026-06-23 — strike snapshot in the bot loop (get_ticks buffer too short)
 **Tag:** `cleanbot-v1.9.3` · **Status:** ✅ live
 
