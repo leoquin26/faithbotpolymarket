@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.10.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.10.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -95,7 +95,7 @@ class Cfg:
     day_start: int = int(os.getenv("CLEAN_DAY_START", "9"))      # Lima hour daytime begins
     day_end: int = int(os.getenv("CLEAN_DAY_END", "20"))         # Lima hour daytime ends
     day_trend_min: float = float(os.getenv("CLEAN_DAY_TREND_MIN", "0.12"))   # min macro move % to confirm
-    day_trend_lookback: int = int(os.getenv("CLEAN_DAY_TREND_LOOKBACK", "45"))  # macro lookback minutes
+    day_trend_lookback: int = int(os.getenv("CLEAN_DAY_TREND_LOOKBACK", "30"))  # macro lookback min (shorter = resets faster on reversal)
     # ── give-back stop (v1.10): lock a winning day — pause once day P&L falls this much
     # from its peak (saves overnight gains from a reversal like the 9am one). 0=off. ──
     giveback: float = float(os.getenv("CLEAN_GIVEBACK", "10"))
@@ -420,13 +420,15 @@ class CleanBot:
 
     # ── entry ────────────────────────────────────────────────────────
     def _macro_trend(self, coin):
-        """Macro trend = Binance % change over ~day_trend_lookback minutes (cached 60s).
-        Direction matches Chainlink over this horizon; used ONLY as a daytime filter."""
+        """Returns (net_pct, last_candle_pct) over the recent Binance 15m candles
+        (cached 45s). net = overall trend; last = the most-recent candle, used to
+        detect a fresh reversal so the daytime trend RESETS instead of staying stuck
+        on a dead trend. Direction matches Chainlink over this horizon."""
         now = time.time()
         c = self._macro_cache.get(coin)
-        if c and now - c[0] < 60:
+        if c and now - c[0] < 45:
             return c[1]
-        pct = 0.0
+        net, last = 0.0, 0.0
         sym = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT",
                "XRP": "XRPUSDT"}.get(coin, coin + "USDT")
         n = max(2, CFG.day_trend_lookback // 15 + 1)
@@ -438,16 +440,36 @@ class CleanBot:
                 if r.status_code == 200:
                     ks = r.json()
                     if len(ks) >= 2:
-                        p0 = float(ks[0][1]); p1 = float(ks[-1][4])
-                        pct = (p1 - p0) / p0 * 100
+                        net = (float(ks[-1][4]) - float(ks[0][1])) / float(ks[0][1]) * 100
+                        last = (float(ks[-1][4]) - float(ks[-1][1])) / float(ks[-1][1]) * 100
                     break
             except Exception:
                 continue
-        self._macro_cache[coin] = (now, pct)
-        return pct
+        self._macro_cache[coin] = (now, (net, last))
+        return net, last
 
     def _is_daytime(self):
         return CFG.day_start <= ((time.gmtime().tm_hour - 5) % 24) < CFG.day_end  # Lima = UTC-5
+
+    def _sync_bankroll(self):
+        """Reconcile bankroll to the REAL on-chain USDC + open-position cost, so sizing
+        AND the dashboard show reality. The internal win/loss ledger drifts above the
+        chain (inconsistent proxy fills), so trust the chain balance as the source of truth."""
+        try:
+            from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
+            col = self.client.get_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)) or {}
+            usdc = int(col.get("balance", "0")) / 1e6
+            open_cost = sum(p["entry"] * p["shares"] for p in self.positions.values()
+                            if p.get("status") == "filled")
+            real = round(usdc + open_cost, 2)
+            if real > 0 and abs(real - self.bankroll) > 0.75:
+                logger.info(f"[BANKROLL SYNC] ${self.bankroll:.2f} -> ${real:.2f} "
+                            f"(on-chain USDC ${usdc:.2f} + open ${open_cost:.2f})")
+                self.bankroll = real
+                self._save()
+        except Exception as e:
+            logger.debug(f"bankroll sync err {e}")
 
     def scan(self, coin: str):
         info = get_market_info(coin)
@@ -486,12 +508,14 @@ class CleanBot:
         # the drift. Skips daytime chop / counter-trend bounces. (Won't catch sharp
         # turning points — the give-back stop protects gains there.)
         if CFG.day_trend and self._is_daytime():
-            mt = self._macro_trend(coin)
-            want_up = is_up
-            if abs(mt) < CFG.day_trend_min or (mt > 0) != want_up:
+            net, last = self._macro_trend(coin)
+            trend_ok = abs(net) >= CFG.day_trend_min and ((net > 0) if is_up else (net < 0))
+            recent_ok = (last > 0) if is_up else (last < 0)   # latest candle still our way (not reversing)
+            if not (trend_ok and recent_ok):
                 if (coin, ws) not in self._nc_logged:
-                    logger.info(f"[DAY-TREND SKIP] {coin} {direction} drift but macro="
-                                f"{mt:+.2f}% (need >={CFG.day_trend_min}% same dir) — daytime chop guard")
+                    why = "no trend" if not trend_ok else "trend REVERSING (last candle flipped)"
+                    logger.info(f"[DAY-TREND SKIP] {coin} {direction} net={net:+.2f}% "
+                                f"last={last:+.2f}% — {why} (rebuild trend first)")
                     self._nc_logged.add((coin, ws))
                 return
         # cross-coin confirmation for follower coins (ETH): only trade when the
@@ -751,6 +775,7 @@ class CleanBot:
         except Exception as e:
             logger.warning(f"[CHAINLINK] start failed ({e}) — falling back to Binance (cross-feed basis risk)")
         time.sleep(90)
+        self._sync_bankroll()       # start from the REAL on-chain balance, not the saved ledger
         n = 0
         while True:
             n += 1
@@ -791,6 +816,7 @@ class CleanBot:
                 logger.info(f"… alive scan#{n} open={len(self.open_orders)} "
                             f"positions={len(self.positions)} bankroll=${self.bankroll:.2f} "
                             f"day_net={self.wins-self.losses:+.2f}")
+                self._sync_bankroll()       # keep bankroll honest vs the chain (~every 40 scans)
             time.sleep(5)
 
 

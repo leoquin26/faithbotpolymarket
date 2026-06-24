@@ -10,6 +10,24 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.10.1 — 2026-06-24 — trend RESET on reversal + on-chain bankroll sync (honest numbers)
+**Tag:** `cleanbot-v1.10.1` · **Status:** ✅ live · OVERNIGHT UNCHANGED
+
+Owner: the daytime trend was "stuck" on the dead overnight trend after the morning
+reversal, and the bot's bankroll diverged from the real Polymarket balance. TWO fixes:
+(1) TREND RESET: `_macro_trend` now returns (net, last_candle); the daytime filter
+requires BOTH the net trend AND the most-recent candle to agree with the drift — so a
+reversal (last candle flips) immediately breaks the signal -> `[DAY-TREND SKIP] trend
+REVERSING`, and trading only resumes once the NEW trend rebuilds (recent + net realign).
+Lookback shortened 45->30min so it adapts faster. This would have skipped the 9:18+
+DOWN bets (last candle had flipped UP). (2) BANKROLL SYNC: `_sync_bankroll` reconciles
+bankroll to REAL on-chain USDC + open-position cost on startup and every ~40 scans —
+the internal win/loss ledger drifts ABOVE the chain (inconsistent proxy fills: chain
+realized +$1.24 vs ledger +$12), so the chain balance is now the source of truth for
+sizing + the dashboard. NOTE: the $80 peak owner saw WAS real (portfolio mark-to-market
+of open winning positions mid-window); the 9am reversal settled them as losses before
+they locked — exactly what the give-back stop now guards.
+
 ## v1.10.0 — 2026-06-24 — daytime trend filter + give-back stop (keep the overnight wins)
 **Tag:** `cleanbot-v1.10.0` · **Status:** ✅ live · OVERNIGHT BEHAVIOR UNCHANGED
 
