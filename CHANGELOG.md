@@ -10,6 +10,17 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.9.3 — 2026-06-23 — strike snapshot in the bot loop (get_ticks buffer too short)
+**Tag:** `cleanbot-v1.9.3` · **Status:** ✅ live
+
+v1.9.2's get_ticks-from-buffer approach still served Binance because the RTDS tick
+buffer is too short/sparse to cover a boundary that opened minutes ago. FIX:
+`_snapshot_strikes()` runs every main-loop iteration and, the instant a window opens
+(age<45s), caches the live Chainlink `get_price` as that window's strike (get_price is
+proven-good — it's the spot feed). Runs in the always-alive bot loop (no fragile
+separate process). Combined with the v1.9.2 gate, the bot now reliably trades on the
+Chainlink strike or not at all.
+
 ## v1.9.2 — 2026-06-23 — FIX direction: robust Chainlink strike IN the bot + never trade Binance strike
 **Tag:** `cleanbot-v1.9.2` · **Status:** ✅ live · owner caught it again
 

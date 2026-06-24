@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.9.2"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.9.3"   # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -518,6 +518,35 @@ class CleanBot:
                 logger.info(f"[CANCEL] unfilled {o['coin']} {o['dir']} @ {o['price']*100:.0f}c")
                 self.open_orders.pop(oid, None); self._save()
 
+    # ── strike snapshot: cache the Chainlink strike AT window-open (v1.9.3) ─────
+    def _snapshot_strikes(self):
+        """Runs every loop. The instant a window opens (age<45s) it caches the live
+        Chainlink price as that window's strike — using get_price, which is proven to
+        work (it's the same feed the spot reads). Robust replacement for the strike
+        snapshotter (which hung): so get_strike always serves the correct feed and the
+        bot never reverts to the Binance strike that flips direction."""
+        import poly_resolution as pr
+        now = time.time()
+        ws = int(now // 900) * 900
+        age = now - ws
+        if age > 45:
+            return
+        for coin in tuple(CFG.coins) + ("BTC",):
+            slug = f"{coin.lower()}-updown-15m-{ws}"
+            try:
+                cache = pr._load_strike_cache()
+                cur = cache.get(slug)
+                if cur and str(cur.get("source", "")).startswith("chainlink"):
+                    continue
+                px = chainlink_ws.get_price(coin)
+                if px and px > 0:
+                    cache[slug] = {"coin": coin, "strike": float(px),
+                                   "source": "chainlink_window_open", "ts": int(now)}
+                    pr._save_strike_cache(cache)
+                    logger.info(f"[STRIKE-SNAP] {coin} {slug} ${px:.2f} (age {age:.0f}s)")
+            except Exception as e:
+                logger.debug(f"snap err {e}")
+
     # ── active exit: ride solid winners to the full reward, bail on shaky (v1.9.1) ──
     def manage_positions(self):
         """Exit policy that tells SOLID from SHAKY by the token's own price:
@@ -665,6 +694,7 @@ class CleanBot:
             n += 1
             self._roll_day()
             try:
+                self._snapshot_strikes()        # cache the Chainlink strike at window-open (correct feed)
                 self.check_orders()
                 self.manage_positions()         # active exit: take profit / dodge late reversal
                 self.resolve()
