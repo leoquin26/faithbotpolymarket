@@ -10,6 +10,18 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.10.2 — 2026-06-24 — PROFIT LOCK: trailing high-water-mark stop (keep the gains)
+**Tag:** `cleanbot-v1.10.2` · **Status:** ✅ live
+
+Owner: "we topped $80 overnight, fell to $55 — how do we KEEP the profit?" Added a
+trailing high-water-mark stop on the REAL (chain-synced) bankroll: track `self.hwm`
+(peak bankroll, persisted, resets to the day's opening balance each day); once
+`hwm - bankroll >= CLEAN_TRAIL_STOP` ($15 default) the bot STOPS for the day —
+`[STOP] PROFIT-LOCK` + Telegram alert. So an $80 peak halts ~$65 instead of bleeding to
+$55. Layered with the existing daily-loss stop + day_net give-back. Env: CLEAN_TRAIL_STOP
+($, 0=off). Resumes next day (peak resets) or on restart. Manual ultimate safeguard:
+withdraw profit off Polymarket when up — the bot can only STOP to preserve, not withdraw.
+
 ## v1.10.1 — 2026-06-24 — trend RESET on reversal + on-chain bankroll sync (honest numbers)
 **Tag:** `cleanbot-v1.10.1` · **Status:** ✅ live · OVERNIGHT UNCHANGED
 
