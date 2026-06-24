@@ -4,7 +4,7 @@ Reads clean_bot_state.json + clean_bot.log → live metrics (P&L, win rate, trad
 equity curve, open positions). Single file, no deps beyond Flask. Port 8095."""
 import json, re, time
 from pathlib import Path
-from flask import Flask, jsonify, Response
+from flask import Flask, jsonify, Response, request
 
 BOT = Path(__file__).resolve().parent
 STATE = BOT / "clean_bot_state.json"
@@ -107,6 +107,19 @@ def data():
     })
 
 
+@app.route("/api/logs")
+def logs():
+    try:
+        n = min(int(request.args.get("n", 600)), 4000)
+    except Exception:
+        n = 600
+    try:
+        lines = LOG.read_text(errors="ignore").splitlines()[-n:]
+    except Exception:
+        lines = []
+    return jsonify({"lines": lines, "ts": time.time()})
+
+
 @app.route("/")
 def index():
     return Response(HTML, mimetype="text/html")
@@ -171,6 +184,17 @@ tbody tr:hover{background:rgba(77,141,255,.05)}
 .openpos{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:11px 13px;margin-bottom:9px;display:flex;justify-content:space-between;align-items:center;font-size:13px}
 .empty{color:var(--mut);font-size:13px;text-align:center;padding:18px}
 .foot{text-align:center;color:var(--mut);font-size:12px;margin-top:22px}
+#logbox{height:460px;overflow-y:auto;background:#05080f;border:1px solid var(--line);border-radius:12px;
+  padding:12px 14px;font-family:ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace;font-size:12px;line-height:1.6}
+#logbox::-webkit-scrollbar{width:9px}#logbox::-webkit-scrollbar-thumb{background:#22304f;border-radius:5px}
+.logln{white-space:pre-wrap;word-break:break-all;padding:1px 5px;border-radius:3px;color:#9fb0d0}
+.logln:hover{background:rgba(255,255,255,.04)}
+.l-win{color:#1fe096;background:rgba(22,199,132,.07)}
+.l-loss{color:#ff7b86;background:rgba(255,77,93,.08)}
+.l-enter{color:#6aa6ff}.l-fill{color:#4d8dff}.l-strike{color:#b98bff}
+.l-watch{color:#647596}.l-exit{color:#f5b94a}.l-hold{color:#3fd6c8}
+.l-warn{color:#ff9d4d;background:rgba(255,157,77,.07)}
+.l-stop{color:#f5b94a;background:rgba(245,185,74,.07)}
 .wr-ring{display:flex;align-items:center;gap:14px}
 .ring{--p:0;width:54px;height:54px;border-radius:50%;background:conic-gradient(var(--grn) calc(var(--p)*1%),#22304f 0);display:grid;place-items:center}
 .ring i{width:42px;height:42px;border-radius:50%;background:var(--card);display:grid;place-items:center;font-size:13px;font-weight:700;font-style:normal}
@@ -226,7 +250,19 @@ tbody tr:hover{background:rgba(77,141,255,.05)}
     </tr></thead><tbody id="rows"></tbody></table>
     </div>
   </div>
-  <div class="foot">Auto-refreshing every 4s · CleanBot live dashboard</div>
+  <div class="panel" style="margin-top:16px">
+    <h3>Live Log
+      <span style="display:flex;align-items:center;gap:12px;font-size:12px;text-transform:none;letter-spacing:0">
+        <label class="mut" style="display:flex;align-items:center;gap:5px;cursor:pointer">
+          <input type="checkbox" id="autoscroll" checked> auto-scroll</label>
+        <input id="filter" placeholder="filter… (e.g. WIN, ENTER, ETH)"
+          style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:6px 10px;font-size:12px;width:200px;outline:none">
+        <span class="mut num" id="logcount"></span>
+      </span>
+    </h3>
+    <div id="logbox"></div>
+  </div>
+  <div class="foot">Live — log refreshes every 2s · metrics every 4s · CleanBot dashboard</div>
 </div>
 
 <script>
@@ -295,6 +331,31 @@ async function load(){
   }else{chart.data.labels=labels;chart.data.datasets[0].data=vals;chart.update('none');}
 }
 load();setInterval(load,4000);
+
+function logClass(l){
+  if(/\[WIN\]/.test(l))return'l-win';
+  if(/\[LOSS\]/.test(l))return'l-loss';
+  if(/EXIT FAIL|ORDER FAIL|WARNING|\berror\b|Error|Traceback|FAIL/.test(l))return'l-warn';
+  if(/\[EXIT/.test(l))return'l-exit';
+  if(/\[ENTER\]/.test(l))return'l-enter';
+  if(/\[FILLED\]|\[GTC\]|\[CANCEL\]/.test(l))return'l-fill';
+  if(/\[STRIKE/.test(l))return'l-strike';
+  if(/\[WATCH\]/.test(l))return'l-watch';
+  if(/\[HOLD\]/.test(l))return'l-hold';
+  if(/\[STOP\]|\[BREAKER\]/.test(l))return'l-stop';
+  return'';
+}
+const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+async function loadLogs(){
+  let d; try{ d=await (await fetch('/api/logs?n=1000')).json(); }catch(e){return;}
+  const f=$('filter').value.trim().toLowerCase();
+  let lines=f?d.lines.filter(l=>l.toLowerCase().includes(f)):d.lines;
+  $('logcount').textContent=lines.length+' lines';
+  const box=$('logbox');
+  box.innerHTML=lines.map(l=>'<div class="logln '+logClass(l)+'">'+esc(l)+'</div>').join('');
+  if($('autoscroll').checked) box.scrollTop=box.scrollHeight;
+}
+loadLogs();setInterval(loadLogs,2000);
 </script>
 </body>
 </html>"""
