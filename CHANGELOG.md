@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.11.0 — 2026-06-24 — NIGHT-ONLY w/ strong-trend daytime exception (the edge is at night)
+**Tag:** `cleanbot-v1.11.0` · **Status:** ✅ live
+
+Data settled it: NIGHT (20-09 Lima) = 84% WR / +$36.52; DAY (09-20) = 51% / -$24.26 —
+the day gives back the night's profit (Asia-session trends vs US/EU chop). NIGHT-ONLY
+mode (`CLEAN_NIGHT_ONLY=on`): night trades freely (proven winner, UNCHANGED); daytime
+only fires on a STRONG macro trend (`CLEAN_DAY_STRONG` 0.25%, vs the old 0.12% filter) +
+the last-candle agreement; and after `CLEAN_DAY_LOSS_BLOCK` (2) DAYTIME losses in a row
+the bot BLOCKS daytime entirely until night (`[DAY-BLOCK]` + Telegram). day_blocked /
+day_loss_streak reset each night + persisted. So: catch strong daytime trends, bail fast
+when they fail, sleep through the chop, and work the trending night. Knobs:
+CLEAN_NIGHT_ONLY, CLEAN_DAY_STRONG, CLEAN_DAY_LOSS_BLOCK.
+
 ## v1.10.2 — 2026-06-24 — PROFIT LOCK: trailing high-water-mark stop (keep the gains)
 **Tag:** `cleanbot-v1.10.2` · **Status:** ✅ live
 

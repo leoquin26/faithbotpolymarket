@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.10.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.11.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -103,6 +103,12 @@ class Cfg:
     # Once bankroll gives back >= trail_stop from its peak, STOP — locks the good profit
     # (peak $80 -> halt ~$65 at $15). Peak resets each day. 0 = off. ──
     trail_stop: float = float(os.getenv("CLEAN_TRAIL_STOP", "15"))
+    # ── NIGHT-ONLY w/ strong-trend daytime exception (v1.11): night (20-09) trades
+    # freely; daytime (09-20) only on a STRONG macro trend; after N daytime losses in a
+    # row, daytime is BLOCKED until night. ──
+    night_only: bool = os.getenv("CLEAN_NIGHT_ONLY", "on").lower() in ("1", "true", "yes", "on")
+    day_strong_trend: float = float(os.getenv("CLEAN_DAY_STRONG", "0.25"))  # macro % needed for a daytime trade
+    day_loss_block: int = int(os.getenv("CLEAN_DAY_LOSS_BLOCK", "2"))       # daytime losses in a row -> block till night
 
 
 CFG = Cfg()
@@ -169,6 +175,8 @@ class CleanBot:
         self._macro_cache = {}                  # coin -> (ts, pct) daytime trend cache
         self.day_peak = 0.0                     # peak day P&L (for the give-back stop)
         self.hwm = 0.0                          # bankroll high-water mark (profit-lock trail stop)
+        self.day_loss_streak = 0                # consecutive DAYTIME losses
+        self.day_blocked = False                # daytime trading blocked until night
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
         self._nc_logged = set()                 # throttle [NO CONFIRM] logs (per window)
@@ -196,6 +204,7 @@ class CleanBot:
                        "mode": "DRY" if CFG.dry else "LIVE", "version": VERSION,
                        "consec_losses": self.consec_losses, "breaker_until": self.breaker_until,
                        "hwm": round(self.hwm, 2),
+                       "day_blocked": self.day_blocked, "day_loss_streak": self.day_loss_streak,
                        "positions": self.positions,
                        "traded": [list(t) for t in self.traded]},
                       open(STATE, "w"))
@@ -213,6 +222,8 @@ class CleanBot:
             self.consec_losses = d.get("consec_losses", 0)
             self.breaker_until = d.get("breaker_until", 0.0)
             self.hwm = d.get("hwm", 0.0)
+            self.day_blocked = d.get("day_blocked", False)
+            self.day_loss_streak = d.get("day_loss_streak", 0)
             self.positions = d.get("positions", {})
             self.traded = {tuple(t) for t in d.get("traded", [])}
             logger.info(f"state reloaded: {len(self.positions)} positions, bankroll "
@@ -519,14 +530,23 @@ class CleanBot:
         # the drift. Skips daytime chop / counter-trend bounces. (Won't catch sharp
         # turning points — the give-back stop protects gains there.)
         if CFG.day_trend and self._is_daytime():
+            # daytime blocked after consecutive day losses (until night)
+            if CFG.night_only and self.day_blocked:
+                if (coin, ws) not in self._nc_logged:
+                    logger.info(f"[DAY-BLOCK] {coin} {direction} — daytime blocked "
+                                f"({self.day_loss_streak} day losses in a row) until night")
+                    self._nc_logged.add((coin, ws))
+                return
+            # daytime needs a STRONG trend (night-only) or the normal trend (filter mode)
             net, last = self._macro_trend(coin)
-            trend_ok = abs(net) >= CFG.day_trend_min and ((net > 0) if is_up else (net < 0))
+            thr = CFG.day_strong_trend if CFG.night_only else CFG.day_trend_min
+            trend_ok = abs(net) >= thr and ((net > 0) if is_up else (net < 0))
             recent_ok = (last > 0) if is_up else (last < 0)   # latest candle still our way (not reversing)
             if not (trend_ok and recent_ok):
                 if (coin, ws) not in self._nc_logged:
-                    why = "no trend" if not trend_ok else "trend REVERSING (last candle flipped)"
-                    logger.info(f"[DAY-TREND SKIP] {coin} {direction} net={net:+.2f}% "
-                                f"last={last:+.2f}% — {why} (rebuild trend first)")
+                    why = "no STRONG trend" if not trend_ok else "trend REVERSING (last candle flipped)"
+                    logger.info(f"[DAY-TREND SKIP] {coin} {direction} net={net:+.2f}% last={last:+.2f}% "
+                                f"(need >={thr}% same dir) — {why}")
                     self._nc_logged.add((coin, ws))
                 return
         # cross-coin confirmation for follower coins (ETH): only trade when the
@@ -754,6 +774,18 @@ class CleanBot:
                     tg._send(f"🧊 <b>Loss-breaker</b>: {self.consec_losses} in a row → "
                              f"pause {CFG.breaker_cooldown // 60}min (whipsaw protection)")
                     self.consec_losses = 0   # fresh start after the cooldown
+            # night-only: track DAYTIME loss streak -> block daytime after N in a row (until night)
+            if CFG.night_only and self._is_daytime():
+                if won:
+                    self.day_loss_streak = 0
+                else:
+                    self.day_loss_streak += 1
+                    if self.day_loss_streak >= CFG.day_loss_block and not self.day_blocked:
+                        self.day_blocked = True
+                        logger.info(f"[DAY-BLOCK] {self.day_loss_streak} daytime losses in a row "
+                                    f"— blocking daytime trading until night")
+                        tg._send(f"🚫 <b>Daytime blocked</b> — {self.day_loss_streak} day losses in a "
+                                 f"row; the trend failed. Pausing daytime until night hours.")
             net = self.wins - self.losses
             logger.info(f"[{'WIN' if won else 'LOSS'}] {p['coin']} {p['dir']} @ "
                         f"{entry*100:.0f}c -> {w} | {pnl:+.2f} | bankroll ${self.bankroll:.2f} "
@@ -791,6 +823,9 @@ class CleanBot:
         while True:
             n += 1
             self._roll_day()
+            if not self._is_daytime():          # night clears the daytime block, fresh for next day
+                self.day_blocked = False
+                self.day_loss_streak = 0
             try:
                 self._snapshot_strikes()        # cache the Chainlink strike at window-open (correct feed)
                 self.check_orders()
