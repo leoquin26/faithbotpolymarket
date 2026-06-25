@@ -10,6 +10,23 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.11.1 — 2026-06-25 — adaptive regime backoff + rolling profit-lock (the choppy-night fix)
+**Tag:** `cleanbot-v1.11.1` · **Status:** ✅ live
+
+Loss review (Jun 24->25 night): the night CHOPPED (58% WR vs the usual 84%) — constant
+reversals (22:21 2L, 00:18-00:33 3L). Two real gaps fixed, NO new hard-blocking (owner:
+"don't go back to over-blocking / waiting for rare signals"):
+(1) ROLLING PROFIT-LOCK: hwm no longer resets at the midnight day-roll (the night session
+spans midnight, so the overnight $80 peak protection was being discarded at 00:00). It's
+now a rolling peak across the run; reset only on (re)start. Would've stopped ~$65 vs $48.
+(2) ADAPTIVE REGIME BACKOFF: the loss-breaker now ESCALATES — each repeat trip pauses
+longer (base CLEAN_BREAKER_COOLDOWN 20m × trips, capped CLEAN_BREAKER_MAX 90m) so
+persistent chop backs off harder; a CLEAN_BREAKER_RESET_WINS (2) win-streak clears the
+escalation (regime recovered) and it trades freely again. It RE-PROBES after every
+cooldown — never a permanent block. Regime signal = the bot's own results (regime persists
+at session level). Removed the old daytime "block-till-night" hard block (replaced by this
+re-probing backoff). Knobs: CLEAN_BREAKER_ESCALATE, CLEAN_BREAKER_MAX, CLEAN_BREAKER_RESET_WINS.
+
 ## v1.11.0 — 2026-06-24 — NIGHT-ONLY w/ strong-trend daytime exception (the edge is at night)
 **Tag:** `cleanbot-v1.11.0` · **Status:** ✅ live
 

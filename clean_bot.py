@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.11.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.11.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -68,7 +68,13 @@ class Cfg:
     daily_stop_floor: float = float(os.getenv("CLEAN_DAILY_STOP", "6.0"))  # $ floor for the stop
     # ── whipsaw protection: pause after N losses in a row ──
     loss_breaker: int = int(os.getenv("CLEAN_LOSS_BREAKER", "3"))      # 0 = off
-    breaker_cooldown: int = int(os.getenv("CLEAN_BREAKER_COOLDOWN", "1800"))  # pause sec (30m)
+    breaker_cooldown: int = int(os.getenv("CLEAN_BREAKER_COOLDOWN", "1200"))  # base pause sec (20m)
+    # ── ADAPTIVE regime backoff (v1.11.1): each repeat breaker trip pauses LONGER
+    # (chop persisting), capped; a win-streak resets it (regime recovered). Re-probes —
+    # never a permanent block, so it keeps trading the moment the trend returns. ──
+    breaker_escalate: bool = os.getenv("CLEAN_BREAKER_ESCALATE", "on").lower() in ("1", "true", "yes", "on")
+    breaker_max_cooldown: int = int(os.getenv("CLEAN_BREAKER_MAX", "5400"))   # cap (90m) — still re-probes
+    breaker_reset_wins: int = int(os.getenv("CLEAN_BREAKER_RESET_WINS", "2")) # win-streak that clears escalation
     # ── cross-coin confirmation: follower coins (ETH) only trade when the broader
     # market drifts the same way (ETH-solo/divergent drifts revert ~22%/0%) ──
     confirm_coins: tuple = tuple(c for c in os.getenv("CLEAN_CONFIRM_COINS", "ETH").split(",") if c)
@@ -177,6 +183,8 @@ class CleanBot:
         self.hwm = 0.0                          # bankroll high-water mark (profit-lock trail stop)
         self.day_loss_streak = 0                # consecutive DAYTIME losses
         self.day_blocked = False                # daytime trading blocked until night
+        self.breaker_trips = 0                  # repeat breaker firings (escalating regime backoff)
+        self.win_streak = 0                     # consecutive wins (resets the escalation)
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
         self._nc_logged = set()                 # throttle [NO CONFIRM] logs (per window)
@@ -238,7 +246,9 @@ class CleanBot:
             logger.info(f"=== new day {t}: resetting daily pnl (was net "
                         f"{self.wins - self.losses:+.2f}) ===")
             self.day = t; self.wins = 0.0; self.losses = 0.0; self.day_peak = 0.0
-            self.hwm = self.bankroll            # profit-lock peak resets to the day's opening balance
+            self.breaker_trips = 0              # fresh regime-escalation each day
+            # NOTE: hwm (profit-lock peak) does NOT reset here — it's a ROLLING peak so the
+            # overnight high is protected across midnight (the night session spans the day-roll).
             self._stop_notified = False
             self.traded = {k for k in self.traded}  # keep; windows are unique by epoch
 
@@ -530,14 +540,8 @@ class CleanBot:
         # the drift. Skips daytime chop / counter-trend bounces. (Won't catch sharp
         # turning points — the give-back stop protects gains there.)
         if CFG.day_trend and self._is_daytime():
-            # daytime blocked after consecutive day losses (until night)
-            if CFG.night_only and self.day_blocked:
-                if (coin, ws) not in self._nc_logged:
-                    logger.info(f"[DAY-BLOCK] {coin} {direction} — daytime blocked "
-                                f"({self.day_loss_streak} day losses in a row) until night")
-                    self._nc_logged.add((coin, ws))
-                return
-            # daytime needs a STRONG trend (night-only) or the normal trend (filter mode)
+            # daytime needs a STRONG trend (night-only) or the normal trend (filter mode).
+            # (Persistent chop is handled by the adaptive re-probing breaker, not a hard block.)
             net, last = self._macro_trend(coin)
             thr = CFG.day_strong_trend if CFG.night_only else CFG.day_trend_min
             trend_ok = abs(net) >= thr and ((net > 0) if is_up else (net < 0))
@@ -762,30 +766,28 @@ class CleanBot:
                 self.losses += entry * sh
             p["status"] = "resolved"; p["pnl"] = round(pnl, 2)
             self.bankroll += pnl                       # ← compound
-            # whipsaw breaker: pause after N losses in a row (choppy regimes invert the edge)
+            # ADAPTIVE regime backoff: chop persisting -> escalate the pause; a win-streak
+            # resets it (regime recovered). Re-probes after each cooldown — never permanent.
             if won:
                 self.consec_losses = 0
+                self.win_streak += 1
+                if self.breaker_trips and self.win_streak >= CFG.breaker_reset_wins:
+                    logger.info(f"[BREAKER] regime recovered ({self.win_streak} wins in a row) — "
+                                f"escalation reset, trading freely")
+                    self.breaker_trips = 0
             else:
                 self.consec_losses += 1
+                self.win_streak = 0
                 if CFG.loss_breaker > 0 and self.consec_losses >= CFG.loss_breaker:
-                    self.breaker_until = time.time() + CFG.breaker_cooldown
-                    logger.info(f"[BREAKER] {self.consec_losses} losses in a row — "
-                                f"pausing {CFG.breaker_cooldown // 60}min (whipsaw)")
-                    tg._send(f"🧊 <b>Loss-breaker</b>: {self.consec_losses} in a row → "
-                             f"pause {CFG.breaker_cooldown // 60}min (whipsaw protection)")
+                    self.breaker_trips += 1
+                    mult = self.breaker_trips if CFG.breaker_escalate else 1
+                    cd = min(CFG.breaker_cooldown * mult, CFG.breaker_max_cooldown)
+                    self.breaker_until = time.time() + cd
+                    logger.info(f"[BREAKER] trip #{self.breaker_trips}: {self.consec_losses} losses in a row "
+                                f"— pause {cd // 60}min (chop regime; escalating, re-probes after)")
+                    tg._send(f"🧊 <b>Regime backoff</b> #{self.breaker_trips}: pause {cd // 60}min (chop). "
+                             f"Auto-resumes; a {CFG.breaker_reset_wins}-win streak clears it.")
                     self.consec_losses = 0   # fresh start after the cooldown
-            # night-only: track DAYTIME loss streak -> block daytime after N in a row (until night)
-            if CFG.night_only and self._is_daytime():
-                if won:
-                    self.day_loss_streak = 0
-                else:
-                    self.day_loss_streak += 1
-                    if self.day_loss_streak >= CFG.day_loss_block and not self.day_blocked:
-                        self.day_blocked = True
-                        logger.info(f"[DAY-BLOCK] {self.day_loss_streak} daytime losses in a row "
-                                    f"— blocking daytime trading until night")
-                        tg._send(f"🚫 <b>Daytime blocked</b> — {self.day_loss_streak} day losses in a "
-                                 f"row; the trend failed. Pausing daytime until night hours.")
             net = self.wins - self.losses
             logger.info(f"[{'WIN' if won else 'LOSS'}] {p['coin']} {p['dir']} @ "
                         f"{entry*100:.0f}c -> {w} | {pnl:+.2f} | bankroll ${self.bankroll:.2f} "
@@ -819,6 +821,7 @@ class CleanBot:
             logger.warning(f"[CHAINLINK] start failed ({e}) — falling back to Binance (cross-feed basis risk)")
         time.sleep(90)
         self._sync_bankroll()       # start from the REAL on-chain balance, not the saved ledger
+        self.hwm = self.bankroll    # fresh profit-lock peak each run (rolling within the run, incl. across midnight)
         n = 0
         while True:
             n += 1
