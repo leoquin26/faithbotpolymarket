@@ -17,6 +17,31 @@ RE_RES = re.compile(
 RE_ENTER = re.compile(
     r'(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| \[ENTER\] (\w+) (UP|DOWN) '
     r'drift=([+-][\d.]+)% ask=(\d+)c')
+RE_ADAPT = re.compile(r'\[ADAPT\] rolling WR (\d+)% \(last (\d+)\) -> drift bar ([\d.]+)bps \(base (\d+)\)')
+
+
+def compute_adapt(recent):
+    """Live rolling WR + adaptive drift bar from the bot's recent_trades (matches the
+    bot's _eff_drift: base 10, target 0.60, +35bps per WR-deficit point, cap 20)."""
+    r = recent[-15:]
+    if len(r) < 5:
+        return None
+    wr = sum(r) / len(r)
+    bar = min(10 + max(0.0, 0.60 - wr) * 35, 20)
+    return {"wr": round(wr * 100), "n": len(r), "bar": round(bar, 1), "base": 10}
+
+
+def latest_adapt():
+    """Most recent [ADAPT] line from the log -> the bot's own rolling WR + drift bar."""
+    try:
+        for ln in reversed(LOG.read_text(errors="ignore").splitlines()):
+            m = RE_ADAPT.search(ln)
+            if m:
+                return {"wr": int(m.group(1)), "n": int(m.group(2)),
+                        "bar": float(m.group(3)), "base": int(m.group(4))}
+    except Exception:
+        pass
+    return None
 
 
 def read_state():
@@ -102,6 +127,8 @@ def data():
         "trades": trades[-60:][::-1],
         "equity": equity[-240:],
         "open_positions": open_pos,
+        "adapt": compute_adapt(st.get("recent_trades", [])),
+        "recent": st.get("recent_trades", [])[-20:],
         "running": running,
         "ts": time.time(),
     })
@@ -181,6 +208,8 @@ tbody tr:hover{background:rgba(77,141,255,.05)}
 .res.L{background:rgba(255,77,93,.15);color:var(--red)}
 .stat{display:flex;justify-content:space-between;padding:10px 2px;border-bottom:1px solid rgba(30,42,74,.5);font-size:13.5px}
 .stat:last-child{border:none}.stat .k{color:var(--mut)}
+.dot-w{width:14px;height:14px;border-radius:3px;background:var(--grn)}
+.dot-l{width:14px;height:14px;border-radius:3px;background:var(--red)}
 .openpos{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:11px 13px;margin-bottom:9px;display:flex;justify-content:space-between;align-items:center;font-size:13px}
 .empty{color:var(--mut);font-size:13px;text-align:center;padding:18px}
 .foot{text-align:center;color:var(--mut);font-size:12px;margin-top:22px}
@@ -237,6 +266,11 @@ tbody tr:hover{background:rgba(77,141,255,.05)}
       <div class="stat"><span class="k">Avg win</span><span class="num grn" id="s_aw">—</span></div>
       <div class="stat"><span class="k">Avg loss</span><span class="num red" id="s_al">—</span></div>
       <div class="stat"><span class="k">Best · Worst</span><span class="num" id="s_bw">—</span></div>
+      <h3 style="margin-top:18px">🧠 Adaptive Accuracy</h3>
+      <div class="stat"><span class="k">Rolling win rate</span><span class="num" id="a_wr">—</span></div>
+      <div class="stat"><span class="k">Drift bar (adaptive)</span><span class="num" id="a_bar">—</span></div>
+      <div id="a_dots" style="display:flex;gap:4px;flex-wrap:wrap;padding:10px 2px 4px"></div>
+      <div class="mut" style="font-size:11px">recent trades · green=win red=loss — bar rises when losing, drops when winning</div>
       <h3 style="margin-top:18px">Open Positions <span class="mut num" id="nopen"></span></h3>
       <div id="open"></div>
     </div>
@@ -296,6 +330,14 @@ async function load(){
   $('s_aw').textContent=money(m.avg_win);
   $('s_al').textContent=money(m.avg_loss);
   $('s_bw').innerHTML='<span class="grn">'+money(m.best)+'</span> · <span class="red">'+money(m.worst)+'</span>';
+
+  const ad=d.adapt;
+  $('a_wr').textContent=ad?(ad.wr+'% (last '+ad.n+')'):'learning…';
+  $('a_wr').className='num '+(ad?(ad.wr>=60?'grn':ad.wr>=50?'gold':'red'):'mut');
+  $('a_bar').innerHTML=ad?(ad.bar.toFixed(1)+'bps <span class="mut">(base '+ad.base+')</span> '
+    +(ad.bar>ad.base+0.05?'<span class="gold">▲ tightened</span>':'<span class="grn">● open</span>')):'—';
+  $('a_dots').innerHTML=(d.recent||[]).map(x=>'<span class="'+(x?'dot-w':'dot-l')+'"></span>').join('')
+    ||'<span class="mut" style="font-size:12px">no trades yet</span>';
 
   $('nopen').textContent=d.open_positions.length?('('+d.open_positions.length+')'):'';
   $('open').innerHTML=d.open_positions.length?d.open_positions.map(p=>
