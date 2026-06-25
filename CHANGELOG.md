@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.12.0 — 2026-06-25 — ADAPTIVE ACCURACY: learn from every trade, adjust the quality bar
+**Tag:** `cleanbot-v1.12.0` · **Status:** ✅ live · owner: "learn from losses, measure + adjust accuracy, don't block"
+
+Instead of blocking, the bot now LEARNS. `_rolling_wr()` measures the win rate over the
+last CLEAN_ADAPT_WINDOW (15) resolved trades; `_eff_drift()` raises the drift bar when
+that rolling accuracy drops below CLEAN_ADAPT_TARGET (0.60) — +CLEAN_ADAPT_K (35) bps per
+point of WR deficit, capped at CLEAN_ADAPT_MAX_DRIFT (20). So when it's losing it takes
+ONLY the strongest, historically-highest-WR setups (drift 10-15bps = 89% in the data);
+when it's winning it drops back to the base 10bps and trades freely. Self-correcting,
+NOT a hard block. `[ADAPT] rolling WR X% -> drift bar Ybps` logged on every resolution
+(measure on every window). recent_trades persisted. HONEST NOTE: this improves SELECTIVITY
+(concentrate on what's working), not the raw direction call (market is efficiently priced).
+Layers under night-only + adaptive breaker + rolling profit-lock.
+
 ## v1.11.1 — 2026-06-25 — adaptive regime backoff + rolling profit-lock (the choppy-night fix)
 **Tag:** `cleanbot-v1.11.1` · **Status:** ✅ live
 

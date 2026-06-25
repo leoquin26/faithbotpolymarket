@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.11.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.12.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -115,6 +115,14 @@ class Cfg:
     night_only: bool = os.getenv("CLEAN_NIGHT_ONLY", "on").lower() in ("1", "true", "yes", "on")
     day_strong_trend: float = float(os.getenv("CLEAN_DAY_STRONG", "0.25"))  # macro % needed for a daytime trade
     day_loss_block: int = int(os.getenv("CLEAN_DAY_LOSS_BLOCK", "2"))       # daytime losses in a row -> block till night
+    # ── ADAPTIVE ACCURACY (v1.12): measure rolling win rate; when accuracy drops, RAISE
+    # the drift bar to take only higher-quality setups; when it's high, trade freely.
+    # Learns from every resolved trade — quality knob, NOT a hard block. ──
+    adapt: bool = os.getenv("CLEAN_ADAPT", "on").lower() in ("1", "true", "yes", "on")
+    adapt_window: int = int(os.getenv("CLEAN_ADAPT_WINDOW", "15"))      # rolling trades measured
+    adapt_target: float = float(os.getenv("CLEAN_ADAPT_TARGET", "0.60"))  # target win rate
+    adapt_k: float = float(os.getenv("CLEAN_ADAPT_K", "35"))            # bps added per point of WR deficit
+    adapt_max_drift: float = float(os.getenv("CLEAN_ADAPT_MAX_DRIFT", "20"))  # cap the adaptive bar
 
 
 CFG = Cfg()
@@ -185,6 +193,7 @@ class CleanBot:
         self.day_blocked = False                # daytime trading blocked until night
         self.breaker_trips = 0                  # repeat breaker firings (escalating regime backoff)
         self.win_streak = 0                     # consecutive wins (resets the escalation)
+        self.recent_trades = []                 # rolling 1/0 outcomes (adaptive accuracy)
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
         self._nc_logged = set()                 # throttle [NO CONFIRM] logs (per window)
@@ -213,6 +222,7 @@ class CleanBot:
                        "consec_losses": self.consec_losses, "breaker_until": self.breaker_until,
                        "hwm": round(self.hwm, 2),
                        "day_blocked": self.day_blocked, "day_loss_streak": self.day_loss_streak,
+                       "recent_trades": self.recent_trades[-60:],
                        "positions": self.positions,
                        "traded": [list(t) for t in self.traded]},
                       open(STATE, "w"))
@@ -232,6 +242,7 @@ class CleanBot:
             self.hwm = d.get("hwm", 0.0)
             self.day_blocked = d.get("day_blocked", False)
             self.day_loss_streak = d.get("day_loss_streak", 0)
+            self.recent_trades = d.get("recent_trades", [])
             self.positions = d.get("positions", {})
             self.traded = {tuple(t) for t in d.get("traded", [])}
             logger.info(f"state reloaded: {len(self.positions)} positions, bankroll "
@@ -483,6 +494,22 @@ class CleanBot:
     def _is_daytime(self):
         return CFG.day_start <= ((time.gmtime().tm_hour - 5) % 24) < CFG.day_end  # Lima = UTC-5
 
+    def _rolling_wr(self):
+        """Win rate over the last adapt_window resolved trades (None if too few)."""
+        r = self.recent_trades[-CFG.adapt_window:]
+        return (sum(r) / len(r)) if len(r) >= 5 else None
+
+    def _eff_drift(self):
+        """Adaptive drift bar: when rolling accuracy is below target, RAISE the bar so
+        only stronger (historically higher-WR) setups qualify; at/above target, base bar.
+        This is the learn-and-adjust knob — concentrates on quality when losing."""
+        if not CFG.adapt:
+            return CFG.drift_bps
+        wr = self._rolling_wr()
+        if wr is None or wr >= CFG.adapt_target:
+            return CFG.drift_bps
+        return min(CFG.drift_bps + (CFG.adapt_target - wr) * CFG.adapt_k, CFG.adapt_max_drift)
+
     def _sync_bankroll(self):
         """Reconcile bankroll to the REAL on-chain USDC + open-position cost, so sizing
         AND the dashboard show reality. The internal win/loss ledger drifts above the
@@ -530,7 +557,8 @@ class CleanBot:
                 self._nc_logged.add((coin, ws))
             return
         dist = (px - strike) / strike
-        if abs(dist) < CFG.drift_bps / 10000.0:        # need a clear early drift
+        eff_drift = self._eff_drift()                  # adaptive bar: tighter when recently losing
+        if abs(dist) < eff_drift / 10000.0:            # need a clear early drift (learned quality bar)
             return
         is_up = dist > 0
         token = info.up_token_id if is_up else info.down_token_id
@@ -789,6 +817,16 @@ class CleanBot:
                              f"Auto-resumes; a {CFG.breaker_reset_wins}-win streak clears it.")
                     self.consec_losses = 0   # fresh start after the cooldown
             net = self.wins - self.losses
+            # ADAPTIVE ACCURACY: record this outcome + re-measure -> the drift bar self-adjusts
+            if CFG.adapt:
+                self.recent_trades.append(1 if won else 0)
+                if len(self.recent_trades) > 60:
+                    self.recent_trades = self.recent_trades[-60:]
+                _wr = self._rolling_wr()
+                if _wr is not None:
+                    logger.info(f"[ADAPT] rolling WR {_wr*100:.0f}% (last "
+                                f"{len(self.recent_trades[-CFG.adapt_window:])}) -> drift bar "
+                                f"{self._eff_drift():.1f}bps (base {CFG.drift_bps:.0f})")
             logger.info(f"[{'WIN' if won else 'LOSS'}] {p['coin']} {p['dir']} @ "
                         f"{entry*100:.0f}c -> {w} | {pnl:+.2f} | bankroll ${self.bankroll:.2f} "
                         f"| day net {net:+.2f}" + (" [SIM]" if p.get("sim") else ""))
