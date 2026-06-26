@@ -10,6 +10,22 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.15.0 — 2026-06-26 — correlated-pair control: stop doubling ETH+SOL same-dir bets
+**Tag:** `cleanbot-v1.15.0` · **Status:** ✅ live · from the on-chain session analysis
+
+Analysis of the 2026-06-26 on-chain history (16 trades, 69% WR, net +$0.49 — flat day on
+good accuracy) found a second compounding leak beyond entry price: **correlated double-bets**.
+ETH and SOL move together (~0.85), so betting BOTH coins the same direction in the same 15m
+window is one 2x bet, not two diversified trades — a wrong call loses both legs at once. The
+worst event of the day was 01:46 ETH Down + SOL Down, **both lost = -$7.25 in one window**,
+which erased the rest of the night. The 25% open-exposure cap didn't catch it ($7.20 fit
+under it). FIX: new `_corr_sibling` check + `CLEAN_CORR_PAIR_FRAC` (default 0.5) — when a coin
+already has a live bet in the same window+direction, size the new leg at half so the pair ≈
+one normal position (`[CORR HALF]`); if half falls below the 5-share exchange floor (small
+bankroll), take ONE leg only and skip the duplicate (`[CORR SKIP]`). Opposite-direction legs
+(genuine divergence, e.g. SOL Up + ETH Down) are unaffected. Would have turned the -$7.25
+window into ~-$3.62 and the day green. Knob: CLEAN_CORR_PAIR_FRAC (1.0 = off).
+
 ## v1.14.0 — 2026-06-26 — COMPOUND FIX: cheaper entries (ask 58-70c) — stop wasting wins
 **Tag:** `cleanbot-v1.14.0` · **Status:** ✅ live · data-driven (`_compound_study.py`, 552 windows)
 

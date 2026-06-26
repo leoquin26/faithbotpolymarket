@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.14.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.15.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -68,6 +68,7 @@ class Cfg:
     kelly_bump_at: float = float(os.getenv("CLEAN_KELLY_BUMP_AT", "70"))  # bankroll $ to start sizing up
     max_bet_pct: float = float(os.getenv("CLEAN_MAX_BET_PCT", "0.12")) # never >this % of bankroll/bet
     max_open_pct: float = float(os.getenv("CLEAN_MAX_OPEN_PCT", "0.25"))  # cap total open exposure
+    corr_pair_frac: float = float(os.getenv("CLEAN_CORR_PAIR_FRAC", "0.5"))  # ETH+SOL same dir same window = 1 correlated bet, not 2: size each leg at this frac (skip 2nd leg if half < exchange min)
     stop_pct: float = float(os.getenv("CLEAN_STOP_PCT", "0.15"))       # daily stop = 15% of bankroll
     daily_stop_floor: float = float(os.getenv("CLEAN_DAILY_STOP", "6.0"))  # $ floor for the stop
     # ── whipsaw protection: pause after N losses in a row ──
@@ -302,6 +303,20 @@ class CleanBot:
         exp += sum(p["entry"] * p["shares"] for p in self.positions.values()
                    if p.get("status") == "filled")
         return exp
+
+    def _corr_sibling(self, coin, ws, direction):
+        """True if ANOTHER coin already has a live bet (resting order or filled position)
+        in the SAME 15m window and the SAME direction. ETH/SOL are ~0.85 correlated, so
+        a same-window same-direction pair is one 2x bet, not two — a wrong call loses both
+        legs at once (e.g. 2026-06-26 01:46 ETH+SOL Down both lost, -$7.25 in one window)."""
+        for o in self.open_orders.values():
+            if o.get("coin") != coin and o.get("ws") == ws and o.get("dir") == direction:
+                return True
+        for p in self.positions.values():
+            if (p.get("coin") != coin and p.get("ws") == ws and p.get("dir") == direction
+                    and p.get("status") in ("filled", "open")):
+                return True
+        return False
 
     def _size_shares(self, price):
         """Tiered Kelly: conservative while rebuilding, bigger once bankroll recovers past
@@ -677,6 +692,21 @@ class CleanBot:
             return
         maker = round(max(0.02, float(ask) - CFG.maker_offset), 2)
         shares = self._size_shares(maker)
+        # correlated-pair control: ETH+SOL same dir, same window = one 2x bet, not two.
+        # Size each leg at corr_pair_frac so the pair ~= one normal position. If half falls
+        # below the exchange share floor (small bankroll), take ONE leg only (skip the 2nd).
+        if CFG.corr_pair_frac < 1.0 and self._corr_sibling(coin, ws, direction):
+            half = int(round(self._size_shares(maker) * CFG.corr_pair_frac))
+            if half >= CFG.shares:
+                logger.info(f"[CORR HALF] {coin} {direction} — pairs with sibling same dir/window, "
+                            f"sizing {half}sh ({CFG.corr_pair_frac:.0%}) to cap correlated risk")
+                shares = half
+            else:
+                if (coin, ws, "corr") not in self._nc_logged:
+                    logger.info(f"[CORR SKIP] {coin} {direction} — already long the same direction "
+                                f"in another coin this window; not doubling a correlated bet")
+                    self._nc_logged.add((coin, ws, "corr"))
+                return
         # cap total simultaneous exposure (correlated crypto risk)
         if self._open_exposure() + maker * shares > self.bankroll * CFG.max_open_pct:
             return  # too much already at risk right now — wait for a slot
