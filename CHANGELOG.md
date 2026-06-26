@@ -10,6 +10,13 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.13.3 — 2026-06-26 — FIX: silence datetime.utcnow() DeprecationWarning in research log
+**Tag:** `cleanbot-v1.13.3` · **Status:** ✅ live · cleanup
+
+`utcnow()` is deprecated (removal scheduled). Swapped the research `ts` field to
+`datetime.now(timezone.utc).replace(tzinfo=None)` — same naive-UTC ISO string, no
+`+00:00` suffix, so `clean_bot_research.csv` format is byte-identical. No behavior change.
+
 ## v1.13.2 — 2026-06-26 — FIX: cross-coin confirm now checks the WHOLE market (was blind to ETH)
 **Tag:** `cleanbot-v1.13.2` · **Status:** ✅ live · bug fix
 

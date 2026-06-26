@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.13.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.13.3"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -439,7 +439,7 @@ class CleanBot:
                     f"ask={int(round(fav_ask*100)) if fav_ask else '?'}c t={int(t_rem)}s "
                     f"-> {decision}" + (f":{reason}" if reason else ""))
         self._research[rk] = {
-            "ts": datetime.datetime.utcnow().isoformat(timespec="seconds"),
+            "ts": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds"),
             "window_start": ws, "coin": coin, "dir": direction,
             "drift_pct": round(dist * 100, 4),
             "roc60_bps": round(roc60 * 10000, 1), "roc300_bps": round(roc300 * 10000, 1),
