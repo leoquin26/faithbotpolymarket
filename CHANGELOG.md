@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.13.0 — 2026-06-26 — PROACTIVE regime detector (efficiency ratio): trade trends, sit out chop
+**Tag:** `cleanbot-v1.13.0` · **Status:** ✅ live
+
+The edge is trend-following: trends ~84%, chop ~53%. New PROACTIVE detector measures the
+Kaufman efficiency ratio (`_efficiency_ratio`: |net move|/total path over the last hour
+of 5m candles) BEFORE betting — ~1 = clean trend, ~0 = chop. When ER < CLEAN_ER_TREND
+(0.32) the regime is choppy, so the drift bar is raised to CLEAN_ER_CHOP_DRIFT (16bps) —
+i.e. in chop we ONLY take the strongest moves (which historically hit ~89%), and in
+trends we trade freely. `[REGIME SKIP ... chop(ER=x)]` logged. Stacks with the reactive
+adaptive-accuracy bar (`_eff_drift`). This attacks the chop-loss problem at the source —
+detecting the regime up front instead of reacting after losses. Also bumped CLEAN_ADAPT_K
+(reactive tightening) for sharper survival in poor regimes. Knobs: CLEAN_ER_FILTER,
+CLEAN_ER_TREND, CLEAN_ER_CHOP_DRIFT.
+
 ## v1.12.1 — 2026-06-25 — tiered Kelly (compound up on recovery) + EV-tuned ask band
 **Tag:** `cleanbot-v1.12.1` · **Status:** ✅ live
 

@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.12.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.13.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -127,6 +127,12 @@ class Cfg:
     adapt_target: float = float(os.getenv("CLEAN_ADAPT_TARGET", "0.60"))  # target win rate
     adapt_k: float = float(os.getenv("CLEAN_ADAPT_K", "35"))            # bps added per point of WR deficit
     adapt_max_drift: float = float(os.getenv("CLEAN_ADAPT_MAX_DRIFT", "20"))  # cap the adaptive bar
+    # ── PROACTIVE regime detector (v1.13): efficiency ratio = |net move| / total path
+    # over the last hour. High = trending (our edge), low = chop. In chop we demand a
+    # STRONGER drift so we lean into trends and sit out the noise — measured BEFORE betting. ──
+    er_filter: bool = os.getenv("CLEAN_ER_FILTER", "on").lower() in ("1", "true", "yes", "on")
+    er_trend: float = float(os.getenv("CLEAN_ER_TREND", "0.32"))        # ER below this = choppy regime
+    er_chop_drift: float = float(os.getenv("CLEAN_ER_CHOP_DRIFT", "16"))  # min drift bar when choppy
 
 
 CFG = Cfg()
@@ -191,6 +197,7 @@ class CleanBot:
         self.bankroll = CFG.start_bankroll      # compounds with each resolved trade
         self.consec_losses = 0                  # whipsaw breaker counter
         self._macro_cache = {}                  # coin -> (ts, pct) daytime trend cache
+        self._er_cache = {}                     # coin -> (ts, er) efficiency-ratio cache
         self.day_peak = 0.0                     # peak day P&L (for the give-back stop)
         self.hwm = 0.0                          # bankroll high-water mark (profit-lock trail stop)
         self.day_loss_streak = 0                # consecutive DAYTIME losses
@@ -500,6 +507,33 @@ class CleanBot:
     def _is_daytime(self):
         return CFG.day_start <= ((time.gmtime().tm_hour - 5) % 24) < CFG.day_end  # Lima = UTC-5
 
+    def _efficiency_ratio(self, coin):
+        """Kaufman efficiency ratio over the last hour (12x 5m candles): |net move| /
+        total path. ~1 = clean trend (our edge), ~0 = chop. Cached 60s."""
+        now = time.time()
+        c = self._er_cache.get(coin)
+        if c and now - c[0] < 60:
+            return c[1]
+        er = None
+        sym = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT",
+               "XRP": "XRPUSDT"}.get(coin, coin + "USDT")
+        for base in ("https://api.binance.us/api/v3/klines",
+                     "https://api.binance.com/api/v3/klines",
+                     "https://data-api.binance.vision/api/v3/klines"):
+            try:
+                r = _h.get(base, params={"symbol": sym, "interval": "5m", "limit": 13})
+                if r.status_code == 200:
+                    closes = [float(k[4]) for k in r.json()]
+                    if len(closes) >= 4:
+                        net = abs(closes[-1] - closes[0])
+                        path = sum(abs(closes[i] - closes[i - 1]) for i in range(1, len(closes)))
+                        er = (net / path) if path > 0 else 0.0
+                    break
+            except Exception:
+                continue
+        self._er_cache[coin] = (now, er)
+        return er
+
     def _rolling_wr(self):
         """Win rate over the last adapt_window resolved trades (None if too few)."""
         r = self.recent_trades[-CFG.adapt_window:]
@@ -563,8 +597,17 @@ class CleanBot:
                 self._nc_logged.add((coin, ws))
             return
         dist = (px - strike) / strike
-        eff_drift = self._eff_drift()                  # adaptive bar: tighter when recently losing
-        if abs(dist) < eff_drift / 10000.0:            # need a clear early drift (learned quality bar)
+        eff_drift = self._eff_drift()                  # reactive: tighter when recently losing
+        regime = ""
+        if CFG.er_filter:
+            er = self._efficiency_ratio(coin)          # PROACTIVE: trend vs chop, measured before betting
+            if er is not None and er < CFG.er_trend:   # choppy regime -> demand a stronger drift
+                eff_drift = max(eff_drift, CFG.er_chop_drift)
+                regime = f" chop(ER={er:.2f})"
+        if abs(dist) < eff_drift / 10000.0:            # need a clear early drift (adaptive quality bar)
+            if abs(dist) >= CFG.drift_bps / 10000.0 and (coin, ws) not in self._nc_logged:
+                logger.info(f"[REGIME SKIP] {coin} drift={dist*1e4:+.1f}bps < bar {eff_drift:.0f}bps{regime}")
+                self._nc_logged.add((coin, ws))
             return
         is_up = dist > 0
         token = info.up_token_id if is_up else info.down_token_id
