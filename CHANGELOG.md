@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.12.1 — 2026-06-25 — tiered Kelly (compound up on recovery) + EV-tuned ask band
+**Tag:** `cleanbot-v1.12.1` · **Status:** ✅ live
+
+Owner: "compound more efficiently — each win is small, one loss wipes several." (1) EV-by-
+ask audit settled the real drag (config, .env): <=60c=50%WR -$4.66, 75c+=neg-EV -$2.79,
+while 69-74c=77%WR +$6.50 is the sweet spot -> tightened band to CLEAN_MIN_ASK 0.61 /
+CLEAN_MAX_ASK 0.74 (cut the two losing buckets, keep the two winners; +$7.45 on sample).
+(2) TIERED KELLY: `_size_shares` now uses CLEAN_KELLY_BUMP (0.08-0.10) once bankroll >=
+CLEAN_KELLY_BUMP_AT ($70), else the conservative CLEAN_KELLY_FRAC (0.06) — so it stays
+small while rebuilding and sizes UP as it recovers (5sh@$54 -> ~8sh@$70 -> more as it
+grows). max_bet_pct raised 0.10->0.12 so the bump isn't clipped. HONEST: betting favorites
+is inherently small-win/big-loss; efficiency = cut negative-EV prices + compound size as
+the balance grows, not bigger individual wins (cheaper entries = 50% coin-flips).
+
 ## v1.12.0 — 2026-06-25 — ADAPTIVE ACCURACY: learn from every trade, adjust the quality bar
 **Tag:** `cleanbot-v1.12.0` · **Status:** ✅ live · owner: "learn from losses, measure + adjust accuracy, don't block"
 

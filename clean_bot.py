@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.12.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.12.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -62,7 +62,11 @@ class Cfg:
     compound: bool = os.getenv("CLEAN_COMPOUND", "true").lower() in ("1", "true", "yes", "on")
     start_bankroll: float = float(os.getenv("CLEAN_START_BANKROLL", "48"))  # seed; set to real balance
     kelly_frac: float = float(os.getenv("CLEAN_KELLY_FRAC", "0.08"))   # half-Kelly (~8% of bankroll)
-    max_bet_pct: float = float(os.getenv("CLEAN_MAX_BET_PCT", "0.10")) # never >10% of bankroll/bet
+    # ── tiered Kelly (v1.12.1): conservative while rebuilding; size UP once the bankroll
+    # recovers past the bump threshold so wins compound bigger as you grow. ──
+    kelly_bump: float = float(os.getenv("CLEAN_KELLY_BUMP", "0.10"))   # Kelly fraction above the threshold
+    kelly_bump_at: float = float(os.getenv("CLEAN_KELLY_BUMP_AT", "70"))  # bankroll $ to start sizing up
+    max_bet_pct: float = float(os.getenv("CLEAN_MAX_BET_PCT", "0.12")) # never >this % of bankroll/bet
     max_open_pct: float = float(os.getenv("CLEAN_MAX_OPEN_PCT", "0.25"))  # cap total open exposure
     stop_pct: float = float(os.getenv("CLEAN_STOP_PCT", "0.15"))       # daily stop = 15% of bankroll
     daily_stop_floor: float = float(os.getenv("CLEAN_DAILY_STOP", "6.0"))  # $ floor for the stop
@@ -286,10 +290,12 @@ class CleanBot:
         return exp
 
     def _size_shares(self, price):
-        """Bet size = half-Kelly fraction of current bankroll, share-floored + capped."""
+        """Tiered Kelly: conservative while rebuilding, bigger once bankroll recovers past
+        kelly_bump_at — so wins compound up as you grow. Share-floored + capped."""
         if not CFG.compound:
             return CFG.shares
-        stake = min(self.bankroll * CFG.kelly_frac, self.bankroll * CFG.max_bet_pct)
+        kf = CFG.kelly_bump if self.bankroll >= CFG.kelly_bump_at else CFG.kelly_frac
+        stake = min(self.bankroll * kf, self.bankroll * CFG.max_bet_pct)
         return max(CFG.shares, int(round(stake / max(0.02, price))))
 
     def _market_confirms(self, coin, direction):
