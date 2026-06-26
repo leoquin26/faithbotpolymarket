@@ -10,6 +10,26 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.16.0 — 2026-06-26 — reversal cooldown: stop chasing the whipsaw that traps us
+**Tag:** `cleanbot-v1.16.0` · **Status:** ✅ live · from a live loss post-mortem
+
+SOL DOWN @69c (2026-06-26 17:31) was entered straight into a reversal and lost. Post-mortem
+of the log showed the bot's OWN reversal filter fired first, then got overridden 45s later:
+```
+17:31:10 [DAY-TREND SKIP] SOL DOWN ... trend REVERSING (last candle flipped)
+17:31:55 [ENTER]          SOL DOWN -15.8bps 69c
+```
+Cause: the day-trend gate passes on `trend_ok AND recent_ok`, where `recent_ok` = the FORMING
+15m candle still points our way. Early in a window that candle is ~noise, so a sharp 45s
+counter-spike (drift -5→-16bps) re-flipped it down, the gate passed, entry fired — then the
+spike exhausted and price reversed back up. The flip-then-spike-back-within-a-minute IS the
+chop. Tonight's research rows confirm the regime: drift_correct=0 on nearly every recent SOL
+window (drift is anti-predictive right now). FIX: hysteresis — when a reversal is flagged
+(macro trend intact but forming candle flipped), arm `CLEAN_REV_COOLDOWN` (150s) for that coin;
+entries are blocked (`[REV COOLDOWN]`) until it expires, even if a counter-spike un-flips the
+candle. Lets the early-window whipsaw settle before committing. Daytime-scoped (night = the
+trending regime, handled by the momentum filter). Knob: CLEAN_REV_COOLDOWN (0=off).
+
 ## v1.15.1 — 2026-06-26 — FIX: silence the second datetime.utcfromtimestamp() DeprecationWarning
 **Tag:** `cleanbot-v1.15.1` · **Status:** ✅ live · cleanup
 

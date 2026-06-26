@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.15.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.16.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -107,6 +107,7 @@ class Cfg:
     day_end: int = int(os.getenv("CLEAN_DAY_END", "20"))         # Lima hour daytime ends
     day_trend_min: float = float(os.getenv("CLEAN_DAY_TREND_MIN", "0.12"))   # min macro move % to confirm
     day_trend_lookback: int = int(os.getenv("CLEAN_DAY_TREND_LOOKBACK", "30"))  # macro lookback min (shorter = resets faster on reversal)
+    rev_cooldown: int = int(os.getenv("CLEAN_REV_COOLDOWN", "150"))  # after a reversal flag, wait this many s before entering that coin — a counter-spike that un-flips the forming candle is the whipsaw that traps us (0=off)
     # ── give-back stop (v1.10): lock a winning day — pause once day P&L falls this much
     # from its peak (saves overnight gains from a reversal like the 9am one). 0=off. ──
     giveback: float = float(os.getenv("CLEAN_GIVEBACK", "10"))
@@ -205,6 +206,7 @@ class CleanBot:
         self.bankroll = CFG.start_bankroll      # compounds with each resolved trade
         self.consec_losses = 0                  # whipsaw breaker counter
         self._macro_cache = {}                  # coin -> (ts, pct) daytime trend cache
+        self._rev_until = {}                    # coin -> ts: block entries until (reversal whipsaw cooldown)
         self._er_cache = {}                     # coin -> (ts, er) efficiency-ratio cache
         self.day_peak = 0.0                     # peak day P&L (for the give-back stop)
         self.hwm = 0.0                          # bankroll high-water mark (profit-lock trail stop)
@@ -660,6 +662,20 @@ class CleanBot:
             thr = CFG.day_strong_trend if CFG.night_only else CFG.day_trend_min
             trend_ok = abs(net) >= thr and ((net > 0) if is_up else (net < 0))
             recent_ok = (last > 0) if is_up else (last < 0)   # latest candle still our way (not reversing)
+            # hysteresis: a reversal flag (macro trend intact but the forming candle flipped
+            # against us) arms a cooldown. Early in a window the forming candle is mostly noise,
+            # so a sharp counter-spike can briefly un-flip it and trip an entry — that flip-flop
+            # IS the chop that traps us (e.g. 2026-06-26 17:31 SOL DOWN @69c: skipped reversing,
+            # then a 45s down-spike re-flipped the candle, entered, reversed back up, lost).
+            nowt = time.time()
+            if CFG.rev_cooldown and trend_ok and not recent_ok:
+                self._rev_until[coin] = nowt + CFG.rev_cooldown
+            if nowt < self._rev_until.get(coin, 0):
+                if (coin, ws) not in self._nc_logged:
+                    logger.info(f"[REV COOLDOWN] {coin} {direction} net={net:+.2f}% last={last:+.2f}% "
+                                f"— reversal flagged <{CFG.rev_cooldown}s ago, waiting out the whipsaw")
+                    self._nc_logged.add((coin, ws))
+                return
             if not (trend_ok and recent_ok):
                 if (coin, ws) not in self._nc_logged:
                     why = "no STRONG trend" if not trend_ok else "trend REVERSING (last candle flipped)"
