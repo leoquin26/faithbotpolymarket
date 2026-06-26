@@ -10,6 +10,17 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.16.1 — 2026-06-26 — reversal cooldown only ARMS in chop (keep trading in trends)
+**Tag:** `cleanbot-v1.16.1` · **Status:** ✅ live · refinement (don't over-block)
+
+Guardrail against the cooldown turning the bot into a sit-and-wait machine: the v1.16.0
+reversal cooldown now only arms when the efficiency ratio says the regime is CHOPPY
+(er < CLEAN_ER_TREND). In a trend a candle flip is usually just a pullback to buy and real
+reversals are rare, so the cooldown never fires there — zero impact on trending-regime
+trading. It only waits out whipsaws in the chop where they actually trap us. Context: the
+bot already trades ~16x/day and the dominant skip reason is "no move" (weak_drift), not the
+filters — this keeps it that way while still dodging the chop traps.
+
 ## v1.16.0 — 2026-06-26 — reversal cooldown: stop chasing the whipsaw that traps us
 **Tag:** `cleanbot-v1.16.0` · **Status:** ✅ live · from a live loss post-mortem
 

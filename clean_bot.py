@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.16.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.16.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -667,13 +667,18 @@ class CleanBot:
             # so a sharp counter-spike can briefly un-flip it and trip an entry — that flip-flop
             # IS the chop that traps us (e.g. 2026-06-26 17:31 SOL DOWN @69c: skipped reversing,
             # then a 45s down-spike re-flipped the candle, entered, reversed back up, lost).
+            # Only ARM the cooldown in a CHOPPY regime (low efficiency ratio). In a trend a
+            # candle flip is usually a pullback to buy, and reversals are rare — so this never
+            # suppresses trending-regime trades; it only waits out whipsaws where they trap us.
             nowt = time.time()
-            if CFG.rev_cooldown and trend_ok and not recent_ok:
+            er = self._efficiency_ratio(coin)
+            choppy = er is not None and er < CFG.er_trend
+            if CFG.rev_cooldown and choppy and trend_ok and not recent_ok:
                 self._rev_until[coin] = nowt + CFG.rev_cooldown
             if nowt < self._rev_until.get(coin, 0):
                 if (coin, ws) not in self._nc_logged:
                     logger.info(f"[REV COOLDOWN] {coin} {direction} net={net:+.2f}% last={last:+.2f}% "
-                                f"— reversal flagged <{CFG.rev_cooldown}s ago, waiting out the whipsaw")
+                                f"er={er:.2f} — reversal flagged in chop <{CFG.rev_cooldown}s ago, waiting it out")
                     self._nc_logged.add((coin, ws))
                 return
             if not (trend_ok and recent_ok):
