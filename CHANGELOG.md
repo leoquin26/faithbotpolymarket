@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.13.2 — 2026-06-26 — FIX: cross-coin confirm now checks the WHOLE market (was blind to ETH)
+**Tag:** `cleanbot-v1.13.2` · **Status:** ✅ live · bug fix
+
+The cross-coin confirmation filter (`_market_confirms`, the 84% tier gate) was silently
+checking only ONE other coin. `CLEAN_CONFIRM_MARKET` defaulted to `BTC,SOL`, and the loop
+skips the bet's own coin (`if p == coin: continue`) — so a **SOL** bet only ever checked
+**BTC** and never saw **ETH**. That let the losing SOL UP @73c through: BTC was up but ETH
+was down (a divergent, reversal-prone market) — exactly the "whole market is DOWN but the
+bot bet UP" case the owner flagged. FIX: default `CLEAN_CONFIRM_MARKET=BTC,ETH,SOL` (in code
+and `.env`) so every bet is validated against the OTHER two coins (SOL bet → checks BTC+ETH;
+ETH bet → checks BTC+SOL). Verified live: with BTC/ETH/SOL all up, `_market_confirms` returns
+True for UP and False for DOWN on both coins; the counterfactual (BTC up + ETH down) now nets
+votes 0 → not confirmed → the divergent SOL UP is correctly skipped. No logic change — the
+`votes > 0` net-agreement rule is unchanged, it now just sees all three coins.
+
 ## v1.13.1 — 2026-06-26 — MOMENTUM CONFIRMATION (the data-found edge): skip fading moves
 **Tag:** `cleanbot-v1.13.1` · **Status:** ✅ live · quantitative analysis result
 
