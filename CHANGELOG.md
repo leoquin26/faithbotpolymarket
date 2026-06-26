@@ -10,6 +10,22 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.14.0 — 2026-06-26 — COMPOUND FIX: cheaper entries (ask 58-70c) — stop wasting wins
+**Tag:** `cleanbot-v1.14.0` · **Status:** ✅ live · data-driven (`_compound_study.py`, 552 windows)
+
+"One loss wipes 3 wins" is the arithmetic of buying expensive favorites: at 68.5c avg
+entry (old 61-74c band) a win pays only $0.47/$1 staked, so one loss erases ~2.2 wins.
+Studied geometric (Kelly log-) growth, not just WR, across price bands:
+  • 58-62c: 75.8% WR, win pays $0.67, one loss = 1.5 wins, +5.8% growth/trade
+  • 70-74c: 81% WR but win pays only $0.40, one loss = 2.5 wins, +2.7%
+  • 74-80c: 79% WR, win pays $0.32, one loss = 3.1 wins, +0.3% (looks safe, barely grows)
+The bot was REFUSING its best-compounding band: floor was 61c, but 58-62c is 76% WR with
+the live filters (the cliff is sharp — 50-58c is 54%, 58c+ jumps to 76%). FIX: ask band
+0.61-0.74 → **0.58-0.70** (avg entry 68.5c→~63c). EV/trade ~doubles (+0.17→+0.30), one loss
+now erases ~1.7 wins not 2.2. Sequential sim (start $46, 8%/bet, real sequence): old 61-74c
+→ $111 (2.4x) maxDD 22.5%; new 58-70c → $117 (2.6x) maxDD **15.4%** — more growth AND
+shallower drawdowns. Knobs unchanged: CLEAN_MIN_ASK, CLEAN_MAX_ASK. Sizing/cap untouched.
+
 ## v1.13.3 — 2026-06-26 — FIX: silence datetime.utcnow() DeprecationWarning in research log
 **Tag:** `cleanbot-v1.13.3` · **Status:** ✅ live · cleanup
 

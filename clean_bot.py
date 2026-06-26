@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.13.3"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.14.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -52,8 +52,8 @@ class Cfg:
     drift_bps: float = float(os.getenv("CLEAN_DRIFT_BPS", "7"))      # min early move
     min_t: int = int(os.getenv("CLEAN_MIN_T", "600"))               # only enter with >=10min left
     warmup: int = int(os.getenv("CLEAN_WARMUP", "60"))              # let strike settle
-    max_ask: float = float(os.getenv("CLEAN_MAX_ASK", "0.66"))      # never overpay
-    min_ask: float = float(os.getenv("CLEAN_MIN_ASK", "0.45"))      # avoid junk longshots
+    max_ask: float = float(os.getenv("CLEAN_MAX_ASK", "0.70"))      # cap: expensive favs pay too little to compound (one loss = 2.5+ wins)
+    min_ask: float = float(os.getenv("CLEAN_MIN_ASK", "0.58"))      # floor: below 58c the "favorite" is a coinflip (54% WR); 58c+ jumps to 76%
     maker_offset: float = float(os.getenv("CLEAN_MAKER_OFFSET", "0.01"))
     shares: int = int(os.getenv("CLEAN_SHARES", "5"))               # exchange min (floor)
     gtc_max_age: int = int(os.getenv("CLEAN_GTC_MAX_AGE", "180"))   # cancel unfilled after
