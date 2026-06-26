@@ -10,6 +10,13 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.15.1 — 2026-06-26 — FIX: silence the second datetime.utcfromtimestamp() DeprecationWarning
+**Tag:** `cleanbot-v1.15.1` · **Status:** ✅ live · cleanup
+
+The model-feature path computed the window hour via deprecated `utcfromtimestamp(ws).hour`.
+Swapped to `datetime.fromtimestamp(ws, timezone.utc).hour` — same UTC hour, timezone-aware,
+no warning. No behavior change. (Companion to v1.13.3, which fixed the research-log `ts`.)
+
 ## v1.15.0 — 2026-06-26 — correlated-pair control: stop doubling ETH+SOL same-dir bets
 **Tag:** `cleanbot-v1.15.0` · **Status:** ✅ live · from the on-chain session analysis
 
