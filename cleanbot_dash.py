@@ -3,6 +3,10 @@
 Reads clean_bot_state.json + clean_bot.log → live metrics (P&L, win rate, trades,
 equity curve, open positions). Single file, no deps beyond Flask. Port 8095."""
 import json, re, time
+try:
+    import httpx
+except Exception:
+    httpx = None
 from pathlib import Path
 from flask import Flask, jsonify, Response, request
 
@@ -18,6 +22,37 @@ RE_ENTER = re.compile(
     r'(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| \[ENTER\] (\w+) (UP|DOWN) '
     r'drift=([+-][\d.]+)% ask=(\d+)c')
 RE_ADAPT = re.compile(r'\[ADAPT\] rolling WR (\d+)% \(last (\d+)\) -> drift bar ([\d.]+)bps \(base (\d+)\)')
+
+
+_ER_CACHE = {}
+ER_TREND = 0.32
+
+
+def efficiency_ratio(coin):
+    """Kaufman ER over the last hour (12x 5m candles): ~1 trend, ~0 chop. Cached 60s."""
+    now = time.time()
+    c = _ER_CACHE.get(coin)
+    if c and now - c[0] < 60:
+        return c[1]
+    er = None
+    if httpx:
+        sym = {"ETH": "ETHUSDT", "SOL": "SOLUSDT", "BTC": "BTCUSDT"}.get(coin)
+        for base in ("https://api.binance.us/api/v3/klines",
+                     "https://data-api.binance.vision/api/v3/klines"):
+            try:
+                r = httpx.get(base, params={"symbol": sym, "interval": "5m", "limit": 13},
+                              timeout=6, trust_env=False)
+                if r.status_code == 200:
+                    cl = [float(k[4]) for k in r.json()]
+                    if len(cl) >= 4:
+                        net = abs(cl[-1] - cl[0])
+                        path = sum(abs(cl[i] - cl[i - 1]) for i in range(1, len(cl)))
+                        er = round((net / path) if path > 0 else 0.0, 2)
+                    break
+            except Exception:
+                continue
+    _ER_CACHE[coin] = (now, er)
+    return er
 
 
 def compute_adapt(recent):
@@ -129,6 +164,8 @@ def data():
         "open_positions": open_pos,
         "adapt": compute_adapt(st.get("recent_trades", [])),
         "recent": st.get("recent_trades", [])[-20:],
+        "regime": {c: efficiency_ratio(c) for c in ("BTC", "ETH", "SOL")},
+        "er_trend": ER_TREND,
         "running": running,
         "ts": time.time(),
     })
@@ -254,6 +291,11 @@ tbody tr:hover{background:rgba(77,141,255,.05)}
       <div class="big num" id="total">—</div><div class="meta" id="streak"></div></div>
   </div>
 
+  <div class="panel" style="margin-bottom:16px">
+    <h3>🎯 Market Regime <span class="mut" style="text-transform:none;letter-spacing:0;font-weight:500">efficiency ratio · &lt;0.32 = chop (bot demands stronger signals) · ≥0.32 = trend (trades freely)</span></h3>
+    <div id="regime" style="display:flex;gap:26px;flex-wrap:wrap"></div>
+  </div>
+
   <div class="grid2">
     <div class="panel">
       <h3>Equity Curve <span class="mut num" id="ntrades"></span></h3>
@@ -338,6 +380,17 @@ async function load(){
     +(ad.bar>ad.base+0.05?'<span class="gold">▲ tightened</span>':'<span class="grn">● open</span>')):'—';
   $('a_dots').innerHTML=(d.recent||[]).map(x=>'<span class="'+(x?'dot-w':'dot-l')+'"></span>').join('')
     ||'<span class="mut" style="font-size:12px">no trades yet</span>';
+
+  const reg=d.regime||{}, ert=d.er_trend||0.32;
+  $('regime').innerHTML=['BTC','ETH','SOL'].map(c=>{
+    const er=reg[c];
+    if(er==null) return '<div style="min-width:150px"><b>'+c+'</b> <span class="mut">—</span></div>';
+    const trend=er>=ert, col=trend?'#16c784':'#ff5d6c', pct=Math.min(100,Math.round(er*100));
+    return '<div style="min-width:155px"><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">'+
+      '<b>'+c+'</b><span class="num" style="color:'+col+';font-weight:700">'+er.toFixed(2)+' · '+(trend?'TREND':'CHOP')+'</span></div>'+
+      '<div style="height:9px;background:#1a2440;border-radius:5px;overflow:hidden">'+
+      '<div style="height:100%;width:'+pct+'%;background:'+col+';transition:width .4s"></div></div></div>';
+  }).join('');
 
   $('nopen').textContent=d.open_positions.length?('('+d.open_positions.length+')'):'';
   $('open').innerHTML=d.open_positions.length?d.open_positions.map(p=>
