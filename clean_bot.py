@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.13.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.13.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -133,6 +133,13 @@ class Cfg:
     er_filter: bool = os.getenv("CLEAN_ER_FILTER", "on").lower() in ("1", "true", "yes", "on")
     er_trend: float = float(os.getenv("CLEAN_ER_TREND", "0.32"))        # ER below this = choppy regime
     er_chop_drift: float = float(os.getenv("CLEAN_ER_CHOP_DRIFT", "16"))  # min drift bar when choppy
+    # ── MOMENTUM CONFIRMATION (v1.13.1): the data says fading moves (drift one way but
+    # 5-min momentum the other) are the reversals. Only bet WITH momentum. ──
+    mom_filter: bool = os.getenv("CLEAN_MOM_FILTER", "on").lower() in ("1", "true", "yes", "on")
+    mom_lookback: int = int(os.getenv("CLEAN_MOM_LOOKBACK", "300"))    # seconds of momentum
+    mom_min_bps: float = float(os.getenv("CLEAN_MOM_MIN_BPS", "2"))    # skip if momentum opposes drift by > this
+    # ── cross-coin agreement boost (data: |drift|>=10 + both coins agree = 80%->84%) ──
+    mom_need_coin: bool = os.getenv("CLEAN_MOM_NEED_COIN", "off").lower() in ("1", "true", "yes", "on")
 
 
 CFG = Cfg()
@@ -612,6 +619,21 @@ class CleanBot:
         is_up = dist > 0
         token = info.up_token_id if is_up else info.down_token_id
         direction = "UP" if is_up else "DOWN"
+        # MOMENTUM CONFIRMATION (data: fading moves = the reversals). Skip when the 5-min
+        # momentum opposes the drift; optionally require the broader market to agree too.
+        if CFG.mom_filter:
+            roc = _roc(chainlink_ws.get_ticks(coin, CFG.mom_lookback + 40), CFG.mom_lookback) * 1e4
+            if (roc if is_up else -roc) < -CFG.mom_min_bps:
+                if (coin, ws) not in self._nc_logged:
+                    logger.info(f"[MOM SKIP] {coin} {direction} drift={dist*1e4:+.1f}bps but "
+                                f"roc{CFG.mom_lookback}s={roc:+.1f}bps (fading/reversing) — skip")
+                    self._nc_logged.add((coin, ws))
+                return
+            if CFG.mom_need_coin and not self._market_confirms(coin, direction):
+                if (coin, ws) not in self._nc_logged:
+                    logger.info(f"[MOM SKIP] {coin} {direction} — broader market doesn't agree")
+                    self._nc_logged.add((coin, ws))
+                return
         # DAYTIME trend confirmation (overnight UNCHANGED): the edge is trend-following;
         # during the choppier US/EU hours only bet when a real macro trend AGREES with
         # the drift. Skips daytime chop / counter-trend bounces. (Won't catch sharp

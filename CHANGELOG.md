@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.13.1 — 2026-06-26 — MOMENTUM CONFIRMATION (the data-found edge): skip fading moves
+**Tag:** `cleanbot-v1.13.1` · **Status:** ✅ live · quantitative analysis result
+
+Deep analysis of 517 logged windows (`_quant_edge.py`, drift_correct vs every feature)
+found the real edge. Directional accuracy: drift 3-7bps=62%, 13-18bps=85%, 30+=86%
+(big drifts far more accurate); roc300 SAME dir as drift=69% vs OPP 64%; roc60 SAME=70%
+vs OPP 62%. STACKED: |drift|>=10 + momentum same dir = 80% (n=103); + both coins agree =
+84% (n=69); while |drift|>=10 with momentum OPPOSITE (fading) = 71% — that's where the
+reversal losses live. FIX: `[MOM SKIP]` momentum-confirmation gate in scan — skip when the
+CLEAN_MOM_LOOKBACK (300s) Chainlink momentum opposes the drift by > CLEAN_MOM_MIN_BPS (2);
+optional CLEAN_MOM_NEED_COIN for the 84% cross-coin tier. This directly attacks the
+fading-move reversals that wipe the wins. Stacks with the ER regime detector + adaptive
+bar. Knobs: CLEAN_MOM_FILTER, CLEAN_MOM_LOOKBACK, CLEAN_MOM_MIN_BPS, CLEAN_MOM_NEED_COIN.
+
 ## v1.13.0 — 2026-06-26 — PROACTIVE regime detector (efficiency ratio): trade trends, sit out chop
 **Tag:** `cleanbot-v1.13.0` · **Status:** ✅ live
 
