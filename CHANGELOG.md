@@ -10,6 +10,13 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.17.1 — 2026-06-26 — prune persists immediately (disk/dashboard match memory)
+**Tag:** `cleanbot-v1.17.1` · **Status:** ✅ live · follow-up to v1.17.0
+
+v1.17.0's startup prune ran in memory but the state file only rewrote on the next trade,
+so the dashboard could still show the old count until then. `_prune_positions()` now calls
+`_save()` right after removing stale rows, so disk + dashboard reflect the pruned set at once.
+
 ## v1.17.0 — 2026-06-26 — honest accounting: reconcile bankroll to chain after every resolve + prune
 **Tag:** `cleanbot-v1.17.0` · **Status:** ✅ live · trust fix
 
