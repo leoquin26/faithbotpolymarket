@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.16.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.17.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -69,6 +69,7 @@ class Cfg:
     max_bet_pct: float = float(os.getenv("CLEAN_MAX_BET_PCT", "0.12")) # never >this % of bankroll/bet
     max_open_pct: float = float(os.getenv("CLEAN_MAX_OPEN_PCT", "0.25"))  # cap total open exposure
     corr_pair_frac: float = float(os.getenv("CLEAN_CORR_PAIR_FRAC", "0.5"))  # ETH+SOL same dir same window = 1 correlated bet, not 2: size each leg at this frac (skip 2nd leg if half < exchange min)
+    position_keep_h: int = int(os.getenv("CLEAN_POSITION_KEEP_H", "48"))  # prune resolved positions older than this (state hygiene)
     stop_pct: float = float(os.getenv("CLEAN_STOP_PCT", "0.15"))       # daily stop = 15% of bankroll
     daily_stop_floor: float = float(os.getenv("CLEAN_DAILY_STOP", "6.0"))  # $ floor for the stop
     # ── whipsaw protection: pause after N losses in a row ──
@@ -210,6 +211,7 @@ class CleanBot:
         self._er_cache = {}                     # coin -> (ts, er) efficiency-ratio cache
         self.day_peak = 0.0                     # peak day P&L (for the give-back stop)
         self.hwm = 0.0                          # bankroll high-water mark (profit-lock trail stop)
+        self.day_start_bankroll = CFG.start_bankroll  # chain-reconciled bankroll at session/day start (honest day net)
         self.day_loss_streak = 0                # consecutive DAYTIME losses
         self.day_blocked = False                # daytime trading blocked until night
         self.breaker_trips = 0                  # repeat breaker firings (escalating regime backoff)
@@ -278,6 +280,7 @@ class CleanBot:
             logger.info(f"=== new day {t}: resetting daily pnl (was net "
                         f"{self.wins - self.losses:+.2f}) ===")
             self.day = t; self.wins = 0.0; self.losses = 0.0; self.day_peak = 0.0
+            self.day_start_bankroll = self.bankroll  # re-anchor honest day net at midnight
             self.breaker_trips = 0              # fresh regime-escalation each day
             # NOTE: hwm (profit-lock peak) does NOT reset here — it's a ROLLING peak so the
             # overnight high is protected across midnight (the night session spans the day-roll).
@@ -573,6 +576,20 @@ class CleanBot:
         if wr is None or wr >= CFG.adapt_target:
             return CFG.drift_bps
         return min(CFG.drift_bps + (CFG.adapt_target - wr) * CFG.adapt_k, CFG.adapt_max_drift)
+
+    def _prune_positions(self):
+        """Drop resolved positions older than position_keep_h. They're settled (not counted
+        in open_cost), so they only bloat the state file + dashboard. Keep a recent window
+        for the trades table / equity curve. Returns how many were pruned."""
+        cutoff = time.time() - CFG.position_keep_h * 3600
+        stale = [k for k, p in self.positions.items()
+                 if p.get("status") == "resolved" and p.get("ws", 0) < cutoff]
+        for k in stale:
+            del self.positions[k]
+        if stale:
+            logger.info(f"[PRUNE] removed {len(stale)} resolved positions older than "
+                        f"{CFG.position_keep_h}h ({len(self.positions)} kept)")
+        return len(stale)
 
     def _sync_bankroll(self):
         """Reconcile bankroll to the REAL on-chain USDC + open-position cost, so sizing
@@ -901,6 +918,7 @@ class CleanBot:
     # ── resolution ───────────────────────────────────────────────────
     def resolve(self):
         now = time.time()
+        real_resolved = False
         for k, p in list(self.positions.items()):
             if p["status"] != "filled" or now < p["ws"] + 960:
                 continue
@@ -956,6 +974,20 @@ class CleanBot:
                      f"{' (sim)' if p.get('sim') else ''} {p['coin']} {p['dir']} @ "
                      f"{entry*100:.0f}c → {w} | {pnl:+.2f} | 💰 ${self.bankroll:.2f} | day net {net:+.2f}",
                      dedup_key=f"res-{k}")
+            if not p.get("sim"):
+                real_resolved = True
+            self._save()
+        # after a real resolution batch: reconcile to the chain so the logged/dashboard
+        # bankroll is the TRUTH (the running ledger drifts above chain on proxy fills/fees),
+        # and prune settled positions so the state file doesn't bloat.
+        if real_resolved:
+            before = self.bankroll
+            self._sync_bankroll()
+            self._prune_positions()
+            day = self.bankroll - self.day_start_bankroll
+            logger.info(f"[RECONCILED] bankroll ${self.bankroll:.2f} (chain truth) | "
+                        f"session net {day:+.2f}" + (f" | ledger said ${before:.2f}"
+                        if abs(before - self.bankroll) > 0.01 else ""))
             self._save()
 
     # ── loop ─────────────────────────────────────────────────────────
@@ -982,6 +1014,8 @@ class CleanBot:
         time.sleep(90)
         self._sync_bankroll()       # start from the REAL on-chain balance, not the saved ledger
         self.hwm = self.bankroll    # fresh profit-lock peak each run (rolling within the run, incl. across midnight)
+        self.day_start_bankroll = self.bankroll   # anchor honest day net to the reconciled start
+        self._prune_positions()     # clear stale resolved positions accumulated across runs
         n = 0
         while True:
             n += 1

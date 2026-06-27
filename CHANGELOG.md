@@ -10,6 +10,23 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.17.0 — 2026-06-26 — honest accounting: reconcile bankroll to chain after every resolve + prune
+**Tag:** `cleanbot-v1.17.0` · **Status:** ✅ live · trust fix
+
+The logged bankroll/day-net ran ABOVE the real wallet: the win/loss ledger credits a win
+immediately but only reconciled to the chain every 40 scans, so between syncs the number
+overshot (e.g. logged $52.24 while the wallet held $44.24). That made wins look like they
+vanished — they were partly never real, then the next sync clawed them back. Owner caught it.
+Root: ledger drifts above chain on proxy fills/fees (here +$1.76 vs chain over a session).
+Also found 127 resolved positions in the state file (102 >24h stale) bloating it. FIXES:
+(1) after every REAL resolution batch, `_sync_bankroll()` immediately → the logged
+`[RECONCILED] bankroll $X (chain truth)` line and the dashboard now show the wallet number,
+not the optimistic running one; (2) honest `session net = reconciled_bankroll −
+day_start_bankroll` (anchored at the chain-reconciled session/day start), replacing the
+drifting wins−losses as the number to trust; (3) `_prune_positions()` drops resolved
+positions older than `CLEAN_POSITION_KEEP_H` (48h) on startup + after each resolve. No change
+to trading logic — purely making the numbers truthful. Knob: CLEAN_POSITION_KEEP_H.
+
 ## v1.16.1 — 2026-06-26 — reversal cooldown only ARMS in chop (keep trading in trends)
 **Tag:** `cleanbot-v1.16.1` · **Status:** ✅ live · refinement (don't over-block)
 
