@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.21.0 — 2026-06-29 — entry timing: wait for the move to establish (test, ~66%→81%)
+**Tag:** `cleanbot-v1.21.0` · **Status:** ✅ live · TEST (validate over a few days)
+
+Data review (`_new_angles.py`): entries with 750-900s left (first ~2 min of the window) win
+66% (n=1023), but entries with 600-750s left win 81% (n=48). The first-2-min twitch fakes out;
+the move is more reliable once it establishes. FIX: new `CLEAN_ENTRY_MIN_AGE` (150s) — the entry
+path now waits until ≥150s into the window before betting (was just the 60s strike-settle
+warmup). With min_t=600 this lands entries in the proven 600-750s-left zone. ONLY timing changes
+— same coins, drift bar, price band, sizing, and all safeguards. Side effect: early signals that
+fade in the wait won't re-qualify (those were the noise/losers) so volume dips slightly toward
+higher quality; a few fast strong trends may run past the 70c band during the wait and be
+skipped. TEST: the 81% is n=48, so watch live before trusting. Knob: CLEAN_ENTRY_MIN_AGE (60 = old
+behavior).
+
 ## v1.20.0 — 2026-06-29 — block divergent correlated bets (the 55% coinflip)
 **Tag:** `cleanbot-v1.20.0` · **Status:** ✅ live · data-driven (full review, 1067 windows)
 

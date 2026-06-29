@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.20.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.21.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -52,6 +52,7 @@ class Cfg:
     drift_bps: float = float(os.getenv("CLEAN_DRIFT_BPS", "7"))      # min early move
     min_t: int = int(os.getenv("CLEAN_MIN_T", "600"))               # only enter with >=10min left
     warmup: int = int(os.getenv("CLEAN_WARMUP", "60"))              # let strike settle
+    entry_min_age: int = int(os.getenv("CLEAN_ENTRY_MIN_AGE", "150"))  # wait this long into the window before ENTERING — let the move establish, don't chase the first twitch (data: 600-750s left = 81% vs 750-900s = 66%). With min_t=600 → entries land in the 600-750s-left zone.
     max_ask: float = float(os.getenv("CLEAN_MAX_ASK", "0.70"))      # cap: expensive favs pay too little to compound (one loss = 2.5+ wins)
     min_ask: float = float(os.getenv("CLEAN_MIN_ASK", "0.58"))      # floor: below 58c the "favorite" is a coinflip (54% WR); 58c+ jumps to 76%
     maker_offset: float = float(os.getenv("CLEAN_MAKER_OFFSET", "0.01"))
@@ -645,7 +646,9 @@ class CleanBot:
         now = time.time()
         t_rem = ws + 900 - now
         age = now - ws
-        if age < CFG.warmup or t_rem < CFG.min_t:     # early-only window
+        # wait for the move to ESTABLISH before entering (entry_min_age) — don't chase the
+        # first-2-min twitch that fakes out (data: 600-750s left = 81% vs 750-900s = 66%).
+        if age < max(CFG.warmup, CFG.entry_min_age) or t_rem < CFG.min_t:
             return
         strike = float(info.threshold_price or 0)
         px = info.current_crypto_price or binance_ws.get_price(coin)   # Chainlink spot (settlement feed) first
