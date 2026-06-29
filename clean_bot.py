@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.19.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.20.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -69,6 +69,7 @@ class Cfg:
     max_bet_pct: float = float(os.getenv("CLEAN_MAX_BET_PCT", "0.12")) # never >this % of bankroll/bet
     max_open_pct: float = float(os.getenv("CLEAN_MAX_OPEN_PCT", "0.25"))  # cap total open exposure
     corr_pair_frac: float = float(os.getenv("CLEAN_CORR_PAIR_FRAC", "0.5"))  # ETH+SOL same dir same window = 1 correlated bet, not 2: size each leg at this frac (skip 2nd leg if half < exchange min)
+    corr_opposite_block: bool = os.getenv("CLEAN_CORR_OPPOSITE_BLOCK", "on").lower() in ("1","true","yes","on")  # skip a coin bet OPPOSITE a held correlated leg (divergent pairs = 55% coinflip in the data)
     position_keep_h: int = int(os.getenv("CLEAN_POSITION_KEEP_H", "48"))  # prune resolved positions older than this (state hygiene)
     stop_pct: float = float(os.getenv("CLEAN_STOP_PCT", "0.15"))       # daily stop = 15% of bankroll
     daily_stop_floor: float = float(os.getenv("CLEAN_DAILY_STOP", "6.0"))  # $ floor for the stop
@@ -326,6 +327,20 @@ class CleanBot:
                 return True
         for p in self.positions.values():
             if (p.get("coin") != coin and p.get("ws") == ws and p.get("dir") == direction
+                    and p.get("status") in ("filled", "open")):
+                return True
+        return False
+
+    def _corr_opposite(self, coin, ws, direction):
+        """True if ANOTHER coin already has a live bet in the SAME window but the OPPOSITE
+        direction. Data (1067 windows): divergent correlated pairs win only 55% (n=168) vs
+        69% when aligned — betting ETH/SOL to decorrelate is a coinflip that loses at favorite
+        prices (e.g. 2026-06-29 SOL DOWN won but ETH UP lost, both actually closed DOWN)."""
+        for o in self.open_orders.values():
+            if o.get("coin") != coin and o.get("ws") == ws and o.get("dir") != direction:
+                return True
+        for p in self.positions.values():
+            if (p.get("coin") != coin and p.get("ws") == ws and p.get("dir") != direction
                     and p.get("status") in ("filled", "open")):
                 return True
         return False
@@ -738,6 +753,15 @@ class CleanBot:
             return
         maker = round(max(0.02, float(ask) - CFG.maker_offset), 2)
         shares = self._size_shares(maker)
+        # divergent correlated bet: ETH/SOL move ~0.85 together, so betting one OPPOSITE a leg
+        # already held this window is a bet on decorrelation — 55% in the data (vs 69% aligned),
+        # a loser at favorite prices. Skip it (this is the ETH-UP-while-SOL-DOWN case).
+        if CFG.corr_opposite_block and self._corr_opposite(coin, ws, direction):
+            if (coin, ws, "div") not in self._nc_logged:
+                logger.info(f"[CORR DIVERGE] {coin} {direction} — opposite a held correlated leg "
+                            f"this window (divergence = 55% coinflip in the data); skip")
+                self._nc_logged.add((coin, ws, "div"))
+            return
         # correlated-pair control: ETH+SOL same dir, same window = one 2x bet, not two.
         # Size each leg at corr_pair_frac so the pair ~= one normal position. If half falls
         # below the exchange share floor (small bankroll), take ONE leg only (skip the 2nd).

@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.20.0 — 2026-06-29 — block divergent correlated bets (the 55% coinflip)
+**Tag:** `cleanbot-v1.20.0` · **Status:** ✅ live · data-driven (full review, 1067 windows)
+
+Full data review (`_full_review.py`) found the clearest robust edge yet: when ETH & SOL are bet
+in OPPOSITE directions in the same window, they win only **55% (n=168)** vs **69% (n=884)** when
+aligned. ETH/SOL move ~0.85 together, so betting them to decorrelate is a coinflip — and a
+coinflip loses at favorite prices (break-even WR = the entry price, 58-74%). This is exactly the
+case the owner flagged: 2026-06-29 SOL DOWN (won) + ETH UP (lost) — both actually closed DOWN.
+FIX: `_corr_opposite` + `CLEAN_CORR_OPPOSITE_BLOCK` (on) — skip a coin bet OPPOSITE a correlated
+leg already held this window (`[CORR DIVERGE]`). Removes a proven money-loser (~16% of legs that
+were losing anyway), so it lifts WR without cutting good volume. Also documented from the review:
+momentum roc300 shows ~no edge in the full data (agree 67% vs oppose 66%) and cross-coin agree is
+weak (65%→68%); the strong-looking 81% full stack is only n=27 (overfit) — the divergent-pair
+block is the one large, reliable signal.
+
 ## v1.19.0 — 2026-06-29 — FIX THE LEAK: phantom fills on "canceled" orders (where profit vanished)
 **Tag:** `cleanbot-v1.19.0` · **Status:** ✅ live · root cause of "wins keep vanishing"
 
