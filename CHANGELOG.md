@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.18.0 — 2026-06-29 — FIX profit-lock: it was locking LOSSES and blocking fresh days
+**Tag:** `cleanbot-v1.18.0` · **Status:** ✅ live · owner caught it Monday morning
+
+Monday AM the bot refused to trade: `[STOP] PROFIT-LOCK 🔒 (peak $56.29 -> $40.79, kept the
+gains)` — but $40.79 was BELOW Friday's $44.24 start, so it kept nothing; it locked a loss and
+blocked the new day. Three bugs: (1) `hwm` never reset daily (comment claimed it did) — the
+weekend's $56.29 peak carried into Monday and tripped the stop immediately; (2) the peak was
+inflated by open-position cost (the $56.29 included a $3.40 open leg); (3) the $15 trail is ~37%
+of a $40 bankroll, so it only fires after all profit AND principal are gone, then lied "kept the
+gains." FIXES: profit-lock now ARMS only once the day's peak is >= trail_stop ABOVE the day-start
+(genuinely green) and fires on giving back trail_stop from peak — so it ALWAYS ends >= day-start
+(locks real profit, never a loss); `hwm` resets at day-roll (prior day can't block a fresh day);
+trail_stop default 15 -> 6 (sane for this bankroll) + .env; honest message shows locked +$ vs day
+start. Knob: CLEAN_TRAIL_STOP.
+
 ## v1.17.1 — 2026-06-26 — prune persists immediately (disk/dashboard match memory)
 **Tag:** `cleanbot-v1.17.1` · **Status:** ✅ live · follow-up to v1.17.0
 

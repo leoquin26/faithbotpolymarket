@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.17.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.18.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -112,10 +112,12 @@ class Cfg:
     # ── give-back stop (v1.10): lock a winning day — pause once day P&L falls this much
     # from its peak (saves overnight gains from a reversal like the 9am one). 0=off. ──
     giveback: float = float(os.getenv("CLEAN_GIVEBACK", "10"))
-    # ── PROFIT LOCK (v1.10.2): trailing high-water-mark stop on the REAL bankroll.
-    # Once bankroll gives back >= trail_stop from its peak, STOP — locks the good profit
-    # (peak $80 -> halt ~$65 at $15). Peak resets each day. 0 = off. ──
-    trail_stop: float = float(os.getenv("CLEAN_TRAIL_STOP", "15"))
+    # ── PROFIT LOCK (v1.18: arms ONLY when actually up on the day). Trailing high-water-mark
+    # stop on the REAL bankroll: once the day's peak is >= trail_stop ABOVE the day-start AND
+    # bankroll gives back >= trail_stop from that peak, STOP — so it always locks REAL profit
+    # (ends >= day-start), never a loss. hwm resets each day so a prior day's peak can't block
+    # a fresh day. 0 = off. ──
+    trail_stop: float = float(os.getenv("CLEAN_TRAIL_STOP", "6"))
     # ── NIGHT-ONLY w/ strong-trend daytime exception (v1.11): night (20-09) trades
     # freely; daytime (09-20) only on a STRONG macro trend; after N daytime losses in a
     # row, daytime is BLOCKED until night. ──
@@ -281,6 +283,7 @@ class CleanBot:
                         f"{self.wins - self.losses:+.2f}) ===")
             self.day = t; self.wins = 0.0; self.losses = 0.0; self.day_peak = 0.0
             self.day_start_bankroll = self.bankroll  # re-anchor honest day net at midnight
+            self.hwm = self.bankroll           # reset profit-lock peak daily (a prior day's peak must not block a fresh day)
             self.breaker_trips = 0              # fresh regime-escalation each day
             # NOTE: hwm (profit-lock peak) does NOT reset here — it's a ROLLING peak so the
             # overnight high is protected across midnight (the night session spans the day-roll).
@@ -298,8 +301,12 @@ class CleanBot:
         # give-back stop: locked a winning day, now handing it back -> pause for the day
         if CFG.giveback > 0 and self.day_peak > 0 and (self.day_peak - net) >= CFG.giveback:
             return True
-        # PROFIT LOCK: trailing high-water-mark on the real bankroll — protect the peak
-        if CFG.trail_stop > 0 and self.hwm > 0 and (self.hwm - self.bankroll) >= CFG.trail_stop:
+        # PROFIT LOCK: arms ONLY once the day's peak is >= trail_stop above the day-start
+        # (we genuinely went green), then fires when we give back trail_stop from that peak.
+        # Guarantees we end >= day-start — locks REAL profit, never a loss.
+        if (CFG.trail_stop > 0
+                and (self.hwm - self.day_start_bankroll) >= CFG.trail_stop
+                and (self.hwm - self.bankroll) >= CFG.trail_stop):
             return True
         return False
 
@@ -1033,17 +1040,21 @@ class CleanBot:
                 self.hwm = max(self.hwm, self.bankroll)        # track bankroll peak for the profit-lock
                 if self._stopped():
                     if not self._stop_notified:
-                        if CFG.trail_stop > 0 and self.hwm > 0 and (self.hwm - self.bankroll) >= CFG.trail_stop:
-                            tg._send(f"🔒 <b>PROFIT-LOCK</b> — bankroll peaked ${self.hwm:.2f}, stopped at "
-                                     f"${self.bankroll:.2f} to keep the gains. No new entries today (restart to resume).")
+                        if (CFG.trail_stop > 0 and (self.hwm - self.day_start_bankroll) >= CFG.trail_stop
+                                and (self.hwm - self.bankroll) >= CFG.trail_stop):
+                            tg._send(f"🔒 <b>PROFIT-LOCK</b> — peaked ${self.hwm:.2f} (day start ${self.day_start_bankroll:.2f}), "
+                                     f"stopped at ${self.bankroll:.2f}, locked +${self.bankroll - self.day_start_bankroll:.2f}. "
+                                     f"No new entries today (restart to resume).")
                         else:
                             tg._send(f"🛑 <b>CleanBot daily stop</b> | net {self.wins - self.losses:+.2f} "
                                      f"— no new entries today")
                         self._stop_notified = True
                     if n % 40 == 1:
                         _net = self.wins - self.losses
-                        if CFG.trail_stop > 0 and self.hwm > 0 and (self.hwm - self.bankroll) >= CFG.trail_stop:
-                            _why = f"PROFIT-LOCK 🔒 (peak ${self.hwm:.2f} -> ${self.bankroll:.2f}, kept the gains)"
+                        if (CFG.trail_stop > 0 and (self.hwm - self.day_start_bankroll) >= CFG.trail_stop
+                                and (self.hwm - self.bankroll) >= CFG.trail_stop):
+                            _why = (f"PROFIT-LOCK 🔒 (peak ${self.hwm:.2f} -> ${self.bankroll:.2f}, "
+                                    f"locked +${self.bankroll - self.day_start_bankroll:.2f} vs day start)")
                         elif CFG.giveback > 0 and self.day_peak > 0 and (self.day_peak - _net) >= CFG.giveback:
                             _why = f"give-back (day-peak {self.day_peak:+.2f})"
                         else:
