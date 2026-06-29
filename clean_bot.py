@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.18.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.19.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -811,7 +811,28 @@ class CleanBot:
                     self.client.cancel(oid)
                 except Exception:
                     pass
-                logger.info(f"[CANCEL] unfilled {o['coin']} {o['dir']} @ {o['price']*100:.0f}c")
+                # A cancel can LOSE a race with a fill: the order fills on-chain right as we
+                # cancel, leaving a phantom position that silently drains the wallet when it
+                # loses (e.g. 2026-06-28 06:36 "canceled" SOL DOWN @69c actually filled → −$3.45
+                # untracked). ALWAYS re-verify before assuming unfilled, and track any real fill.
+                matched_after = 0.0
+                try:
+                    od2 = self.client.get_order(oid) or {}
+                    matched_after = float(od2.get("size_matched") or od2.get("sizeMatched") or 0)
+                except Exception:
+                    matched_after = 0.0
+                if matched_after > 0:
+                    self.positions[f"{o['coin']}:{o['ws']}"] = {
+                        "coin": o["coin"], "ws": o["ws"], "dir": o["dir"], "token": o["token"],
+                        "entry": o["price"], "shares": int(matched_after), "status": "filled"}
+                    logger.warning(f"[FILLED-RACE] {o['coin']} {o['dir']} @ {o['price']*100:.0f}c "
+                                   f"x{int(matched_after)} — order filled during cancel; now TRACKED "
+                                   f"(this was the silent leak)")
+                    tg._send(f"⚠️ <b>FILLED (cancel race)</b> {o['coin']} {o['dir']} @ "
+                             f"{o['price']*100:.0f}c x{int(matched_after)} — now tracked",
+                             dedup_key=f"race-{oid}")
+                else:
+                    logger.info(f"[CANCEL] unfilled {o['coin']} {o['dir']} @ {o['price']*100:.0f}c")
                 self.open_orders.pop(oid, None); self._save()
 
     # ── strike snapshot: cache the Chainlink strike AT window-open (v1.9.3) ─────

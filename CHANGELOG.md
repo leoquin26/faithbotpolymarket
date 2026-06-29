@@ -10,6 +10,28 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.19.0 — 2026-06-29 — FIX THE LEAK: phantom fills on "canceled" orders (where profit vanished)
+**Tag:** `cleanbot-v1.19.0` · **Status:** ✅ live · root cause of "wins keep vanishing"
+
+THE answer to "good win rate but no growth / 2 losses wipe 3 wins". Diagnosed from the weekend:
+ledger said +$3.65 but the wallet went −$3.45 (a ~$7 gap). Proof — Sunday:
+```
+06:33:32 [ENTER]  SOL DOWN maker 69c x5 ($3.45)
+06:36:31 [CANCEL] unfilled SOL DOWN @ 69c     ← bot thinks: never filled
+06:42:24 [SYNC]   $52.89 → $49.44  (−$3.45)   ← wallet drops EXACTLY 5×$0.69
+```
+The order the bot "canceled as unfilled" had actually FILLED on-chain (a fill-vs-cancel race),
+then settled as a loss — never logged as a fill, position, or loss. These phantom fills are
+adversely selected (a resting bid fills when price moves against you), so they're almost always
+losers, silently eating the real profit underneath a genuine ~80% win rate. ROOT CAUSE: the
+cancel path called `client.cancel()`, swallowed any error, and assumed "unfilled" without
+re-checking. FIX: after canceling, re-verify `size_matched`; if it filled, TRACK it as a
+position (`[FILLED-RACE]`) so it's managed, resolved, and counted — instead of leaking.
+Also rejected conviction-weighted sizing this session: the "high-conviction" tier wins 80% vs
+79% marginal — no separation, so sizing up = pure leverage (more growth AND more drawdown), not
+a fix. The edge is real (flat 8% backtests ~4x); the job is making LIVE match it by plugging
+this leak. Analysis: `_conviction_sizing.py`.
+
 ## v1.18.0 — 2026-06-29 — FIX profit-lock: it was locking LOSSES and blocking fresh days
 **Tag:** `cleanbot-v1.18.0` · **Status:** ✅ live · owner caught it Monday morning
 
