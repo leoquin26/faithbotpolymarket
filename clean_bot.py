@@ -44,7 +44,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.23.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.24.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -92,6 +92,7 @@ class Cfg:
     # ── research data capture (read-only; every real-move window, traded or not) ──
     research: bool = os.getenv("CLEAN_RESEARCH", "on").lower() in ("1", "true", "yes", "on")
     research_min_bps: float = float(os.getenv("CLEAN_RESEARCH_MIN_BPS", "3"))  # log windows >= this drift
+    research_coins: tuple = tuple(c for c in os.getenv("CLEAN_RESEARCH_COINS", "BTC,XRP").split(",") if c)  # extra coins to SHADOW-LOG (data only, never traded) — gather edge data before expanding markets
     # ── ML model gate (v1.6): calibrated P(drift wins) from drift_model_band.joblib ──
     model_path: str = os.getenv("CLEAN_MODEL_PATH", "drift_model_band.joblib")
     model_gate: bool = os.getenv("CLEAN_MODEL_GATE", "off").lower() in ("1", "true", "yes", "on")
@@ -1126,9 +1127,11 @@ class CleanBot:
                         self.scan(c)
             except Exception as e:
                 logger.warning(f"loop error: {e}")
-            # research data capture — fully isolated, never places orders / affects trading
+            # research data capture — fully isolated, never places orders / affects trading.
+            # Includes research_coins (BTC/XRP) for SHADOW-LOGGING only: they're scanned for
+            # data here but NEVER passed to scan()/trading above, so no real bets are placed.
             try:
-                for c in CFG.coins:
+                for c in tuple(CFG.coins) + tuple(c for c in CFG.research_coins if c not in CFG.coins):
                     self._research_scan(c)
                 self._research_resolve()
             except Exception as e:

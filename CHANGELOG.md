@@ -10,6 +10,16 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.24.0 — 2026-06-30 — shadow-log BTC + XRP (data only, no bets) to test market expansion
+**Tag:** `cleanbot-v1.24.0` · **Status:** ✅ live · zero-risk data gathering
+
+To test doubling volume by adding MARKETS (not loosening filters), we need BTC/XRP edge data
+first. New `CLEAN_RESEARCH_COINS` (BTC,XRP) feeds those coins into the existing isolated
+`_research_scan` (logs window features + gamma outcome to clean_bot_research.csv) — they are
+NEVER passed to scan()/trading, so NO real bets are placed. The trading loop stays ETH/SOL only.
+After ~a week we measure BTC/XRP win rate vs break-even; if they clear it, enable them as
+tradeable for real volume expansion. Knob: CLEAN_RESEARCH_COINS (empty = ETH/SOL only).
+
 ## v1.23.0 — 2026-06-30 — MORE volume on ETH/SOL: drift bar 10→7bps (the band already filters quality)
 **Tag:** `cleanbot-v1.23.0` · **Status:** ✅ live · data-driven volume expansion (owner wants more bets)
 
