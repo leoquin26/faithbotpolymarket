@@ -10,6 +10,16 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.21.2 — 2026-06-30 — log ER (regime) per window — groundwork for regime-conditional sizing
+**Tag:** `cleanbot-v1.21.2` · **Status:** ✅ live · data-gathering only (no behavior change)
+
+To test "bet smaller in chop, full-size in trends" with evidence (not another guess like active
+exit, which lost money selling winners early), we need the regime recorded on every trade.
+Added `er` (efficiency ratio: trend vs chop) to `clean_bot_research.csv`. NO behavior change —
+it only records a number already computed. After ~a week we can measure WR by ER and decide if
+chop trades genuinely lose more, then size down in chop (smaller reversal losses) WITHOUT
+over-blocking or exiting. Existing CSV migrated (old rows get empty er; history preserved).
+
 ## v1.21.1 — 2026-06-30 — FIX profit-lock fired on a phantom (ledger-inflated) peak
 **Tag:** `cleanbot-v1.21.1` · **Status:** ✅ live · caught in the daily review
 
