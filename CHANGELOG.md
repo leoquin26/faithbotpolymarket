@@ -10,6 +10,18 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.23.0 — 2026-06-30 — MORE volume on ETH/SOL: drift bar 10→7bps (the band already filters quality)
+**Tag:** `cleanbot-v1.23.0` · **Status:** ✅ live · data-driven volume expansion (owner wants more bets)
+
+Within the new 58-66c band, low drifts are STILL profitable: 6-8bps=70% (n=100), 8-10bps=75%
+(n=72) vs break-even ~62%. The bot's 10bps bar was SKIPPING the 6-10bps band — good, above-break-
+even volume — because the price band (58-66c) already does the quality filtering; demanding a big
+drift on top was redundant. FIX: `CLEAN_DRIFT_BPS` 10→7 (.env; code default was already 7).
+Roughly DOUBLES eligible ETH/SOL windows at 70-75% WR, all above break-even. Chop is still
+protected (ER raises the bar to 16 in chop) and the adaptive bar still raises it when WR dips.
+This is "bet more on the coins we have data for," done with evidence — not loosening into the
+weak/chop losers. Pairs with v1.22.0 (cheaper band); watch the combined live effect.
+
 ## v1.22.0 — 2026-06-30 — THE diagnosis: WR ≈ break-even. Cheaper band (58-66c) to get real edge
 **Tag:** `cleanbot-v1.22.0` · **Status:** ✅ live · the root cause of "stuck at $40-50 for a week"
 
