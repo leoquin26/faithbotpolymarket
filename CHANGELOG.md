@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.22.0 — 2026-06-30 — THE diagnosis: WR ≈ break-even. Cheaper band (58-66c) to get real edge
+**Tag:** `cleanbot-v1.22.0` · **Status:** ✅ live · the root cause of "stuck at $40-50 for a week"
+
+Live week: 154 trades, ~65-69% WR, bankroll FLAT ($45.9→$45.3). Found why: avg win **+$1.72**,
+avg loss **−$3.32** (loss ≈ 2× win), so break-even WR = 3.32/(1.72+3.32) = **~66%**. The bot's
+~65% WR is right AT break-even → it treads water. A positive WR isn't positive ENOUGH for these
+payouts. The lever is to lower break-even by buying cheaper: data bands 58-62c=67%/+7edge,
+62-66c=72%/+8edge, but 66-70c=only +4edge (the marginal drag). FIX: max_ask 0.70→**0.66** (+ .env).
+Avg entry ~66c→~62c, avg win ~$1.72→~$1.95, break-even ~66%→~62% — turning the same ~69% WR from
++2% over break-even into +7%, ~doubling per-trade EV (~+$0.17→+$0.30) with no added risk. Trades
+fewer (drops marginal 66-70c) but each is meaningfully +EV. HONEST: still a thin edge on a small
+bankroll — grows slowly, variance rules week-to-week; no tweak makes $45 grow fast without ruin risk.
+
 ## v1.21.2 — 2026-06-30 — log ER (regime) per window — groundwork for regime-conditional sizing
 **Tag:** `cleanbot-v1.21.2` · **Status:** ✅ live · data-gathering only (no behavior change)
 
