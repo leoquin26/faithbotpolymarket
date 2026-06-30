@@ -43,7 +43,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.21.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.21.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -627,11 +627,17 @@ class CleanBot:
             open_cost = sum(p["entry"] * p["shares"] for p in self.positions.values()
                             if p.get("status") == "filled")
             real = round(usdc + open_cost, 2)
-            if real > 0 and abs(real - self.bankroll) > 0.75:
-                logger.info(f"[BANKROLL SYNC] ${self.bankroll:.2f} -> ${real:.2f} "
-                            f"(on-chain USDC ${usdc:.2f} + open ${open_cost:.2f})")
-                self.bankroll = real
-                self._save()
+            if real > 0:
+                # profit-lock peak tracks CHAIN TRUTH, not the drifting ledger — else the
+                # win/loss ledger creeps ~$0.75/win above chain and inflates hwm, firing the
+                # lock on a phantom peak (2026-06-30: hwm $53.38 vs real peak $50.38 → locked
+                # after a $3.20 giveback that looked like $6.20). Update from `real` only.
+                self.hwm = max(self.hwm, real)
+                if abs(real - self.bankroll) > 0.75:
+                    logger.info(f"[BANKROLL SYNC] ${self.bankroll:.2f} -> ${real:.2f} "
+                                f"(on-chain USDC ${usdc:.2f} + open ${open_cost:.2f})")
+                    self.bankroll = real
+                    self._save()
         except Exception as e:
             logger.debug(f"bankroll sync err {e}")
 
@@ -1085,7 +1091,8 @@ class CleanBot:
                 self.manage_positions()         # active exit: take profit / dodge late reversal
                 self.resolve()
                 self.day_peak = max(self.day_peak, self.wins - self.losses)
-                self.hwm = max(self.hwm, self.bankroll)        # track bankroll peak for the profit-lock
+                # hwm is updated from CHAIN TRUTH inside _sync_bankroll (not here) so the
+                # profit-lock peak can't be inflated by ledger drift and fire prematurely.
                 if self._stopped():
                     if not self._stop_notified:
                         if (CFG.trail_stop > 0 and (self.hwm - self.day_start_bankroll) >= CFG.trail_stop

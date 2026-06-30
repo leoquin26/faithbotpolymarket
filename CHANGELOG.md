@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.21.1 — 2026-06-30 — FIX profit-lock fired on a phantom (ledger-inflated) peak
+**Tag:** `cleanbot-v1.21.1` · **Status:** ✅ live · caught in the daily review
+
+The profit-lock's high-water mark (`hwm`) was tracking `self.bankroll` in the main loop, but
+that's the win/loss LEDGER which creeps ~$0.75/win above chain (the sync only corrects gaps
+>$0.75, so small drift accumulates). 2026-06-30: hwm hit $53.38 while the real reconciled peak
+was $50.38. After one normal loss (real giveback $3.20), the inflated hwm made it look like
+$6.20 — over the $6 trail — so the lock fired and stopped the bot for the day having kept only
++$0.71, when it should still be trading. FIX: `hwm` now updates from CHAIN TRUTH inside
+`_sync_bankroll` (from `real` = on-chain USDC + open cost), and the main-loop hwm update is
+removed. So the profit-lock peak can't be inflated by ledger drift; it fires only on a real
+giveback. With this, today's $3.20 giveback stays under the $6 trail → bot keeps trading; big
+real run-ups still lock real profit. (Restart resets hwm to the live $47.18, clearing the bad lock.)
+
 ## v1.21.0 — 2026-06-29 — entry timing: wait for the move to establish (test, ~66%→81%)
 **Tag:** `cleanbot-v1.21.0` · **Status:** ✅ live · TEST (validate over a few days)
 
