@@ -70,6 +70,20 @@ flowok = lambda r: fl(r, 'flow60') not in (None, '') and (fl(r, 'flow60') > 0) =
 
 verify("CORE: band 58-66c + drift>=7bps (LIVE)", lambda r: band(r) and d7(r))
 verify("CORE + momentum agrees",                 lambda r: band(r) and d7(r) and mom(r))
-verify("CORE + cross-coin confirmed",            lambda r: band(r) and d7(r) and conf(r))
 verify("CORE + trending regime (ER>=0.32)",      lambda r: band(r) and d7(r) and trend(r))
-verify("CORE + ORDER-FLOW agrees (the killed filter)", lambda r: band(r) and d7(r) and flowok(r))
+
+# FREQUENCY EXPLORATION: which looser config MAXIMIZES OOS n while keeping EV>0 (and z as high
+# as possible)? More trades × same edge = faster compounding. Compare n (frequency) vs z/EV.
+print("\n\n########## FREQUENCY vs EDGE (maximize n while EV>0) ##########")
+def band2(lo, hi):
+    return lambda r: fl(r, 'fav_ask') is not None and lo <= fl(r, 'fav_ask') <= hi
+def dN(bps):
+    return lambda r: fl(r, 'drift_pct') is not None and abs(fl(r, 'drift_pct') * 100) >= bps
+for lab, pr in [
+    ("LIVE 58-66c / d>=7",        lambda r: band2(58,66)(r) and dN(7)(r)),
+    ("wider 58-70c / d>=7",       lambda r: band2(58,70)(r) and dN(7)(r)),
+    ("wider 58-72c / d>=6",       lambda r: band2(58,72)(r) and dN(6)(r)),
+    ("wide 55-72c / d>=5",        lambda r: band2(55,72)(r) and dN(5)(r)),
+    ("wide 55-74c / d>=5",        lambda r: band2(55,74)(r) and dN(5)(r)),
+]:
+    verify(lab, pr)

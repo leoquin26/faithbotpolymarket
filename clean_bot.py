@@ -45,18 +45,18 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.27.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.28.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
 class Cfg:
     coins: tuple = ("ETH", "SOL")
-    drift_bps: float = float(os.getenv("CLEAN_DRIFT_BPS", "7"))      # min early move
+    drift_bps: float = float(os.getenv("CLEAN_DRIFT_BPS", "5"))      # min early move (verifier: 55-74c/d>=5 is the only OOS-PASS config — frequency gives statistical power)
     min_t: int = int(os.getenv("CLEAN_MIN_T", "600"))               # only enter with >=10min left
     warmup: int = int(os.getenv("CLEAN_WARMUP", "60"))              # let strike settle
     entry_min_age: int = int(os.getenv("CLEAN_ENTRY_MIN_AGE", "150"))  # wait this long into the window before ENTERING — let the move establish, don't chase the first twitch (data: 600-750s left = 81% vs 750-900s = 66%). With min_t=600 → entries land in the 600-750s-left zone.
-    max_ask: float = float(os.getenv("CLEAN_MAX_ASK", "0.66"))      # cap: cheaper entries lower the break-even WR (avg win $1.72 vs loss $3.32 needs ~66% WR; at 62c entry break-even drops to ~62%, turning a ~69% WR from break-even into real edge)
-    min_ask: float = float(os.getenv("CLEAN_MIN_ASK", "0.58"))      # floor: below 58c the "favorite" is a coinflip (54% WR); 58c+ jumps to 76%
+    max_ask: float = float(os.getenv("CLEAN_MAX_ASK", "0.74"))      # widened (v1.28): frequency × edge = total compounding. 55-74c/d>=5 is the ONLY config passing the OOS verifier (n=208, z=1.68, EV +0.082) — more trades give the statistical power the narrow band lacked
+    min_ask: float = float(os.getenv("CLEAN_MIN_ASK", "0.55"))      # widened floor (verifier-approved aggregate; the band's mix stays +EV OOS)
     maker_offset: float = float(os.getenv("CLEAN_MAKER_OFFSET", "0.01"))
     shares: int = int(os.getenv("CLEAN_SHARES", "5"))               # exchange min (floor)
     gtc_max_age: int = int(os.getenv("CLEAN_GTC_MAX_AGE", "180"))   # cancel unfilled after

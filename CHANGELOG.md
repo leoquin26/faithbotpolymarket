@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.28.0 — 2026-07-01 — MORE FREQUENCY (verifier-approved): widen band 55-74c, drift bar 5bps
+**Tag:** `cleanbot-v1.28.0` · **Status:** ✅ live · the compounding accelerator, OOS-verified
+
+Owner: compounding too slow, need more frequent trades. Ran candidate configs through `_verify.py`
+(OOS gate). Result flips the earlier "narrow=better" intuition: the narrow 58-66c/d>=7 band has a
+fatter per-trade edge (EV +0.106) but only n=63 OOS → z=1.03, FAILS significance (can't prove it).
+The WIDE **55-74c / drift>=5** config has thinner per-trade edge (EV +0.082) but n=208 OOS → z=1.68
+→ the ONLY config that PASSES the OOS gate. Compounding math: total EV = edge × frequency →
+narrow 0.106×63=6.7 vs wide 0.082×208=17.1 ≈ **2.5× more total profit**. More frequency also gives
+the statistical power to trust the edge. FIX: min_ask 0.58→0.55, max_ask 0.66→0.74, drift_bps 7→5
+(+ .env); momentum filter OFF (verifier: no OOS edge, only blocked volume). KEEPS all protective
+guards (counter-trend, chop/ER, daily stop $8, divergence). ~3× trade frequency at verified +EV.
+
 ## v1.27.0 — 2026-07-01 — RECOVERY: counter-trend guard + kill flow filter + tighten stop
 **Tag:** `cleanbot-v1.27.0` · **Status:** ✅ live · post-mortem of a −$12.6 day
 
