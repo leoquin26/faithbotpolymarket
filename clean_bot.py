@@ -37,14 +37,15 @@ RESEARCH_CSV = os.path.join(V3, "clean_bot_research.csv")  # per-window feature+
 RESEARCH_COLS = ["ts", "window_start", "coin", "dir", "drift_pct", "roc60_bps", "roc300_bps",
                  "sigma", "fav_ask", "up_ask", "down_ask", "btc_drift_pct", "sol_drift_pct",
                  "confirmed", "model_prob", "decision", "reason", "t_left", "winner", "drift_correct",
-                 "er"]  # efficiency ratio (regime: trend vs chop) — for regime-conditional sizing analysis
+                 "er",       # efficiency ratio (regime: trend vs chop) — for regime-conditional sizing analysis
+                 "flow60"]   # order-flow: 60s buy/sell PRESSURE [-1..+1] (volume direction) — testing as a leading signal
 logger.remove()
 logger.add(sys.stdout, level="INFO", format="{time:HH:mm:ss} | {message}")
 logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.24.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.25.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -497,7 +498,8 @@ class CleanBot:
             "confirmed": int(bool(confirmed)),
             "model_prob": round(mp, 3) if mp is not None else "",
             "decision": decision, "reason": reason, "t_left": int(t_rem),
-            "er": (lambda e: round(e, 3) if e is not None else "")(self._efficiency_ratio(coin))}
+            "er": (lambda e: round(e, 3) if e is not None else "")(self._efficiency_ratio(coin)),
+            "flow60": (lambda fl: round(fl, 3) if fl is not None else "")(binance_ws.get_order_flow(coin, 60))}
 
     def _research_resolve(self):
         """Resolve logged research windows via gamma; append the complete row

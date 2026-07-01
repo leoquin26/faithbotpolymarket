@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.25.0 — 2026-07-01 — capture ORDER FLOW (buy/sell volume pressure) — a real-time leading signal
+**Tag:** `cleanbot-v1.25.0` · **Status:** ✅ live · new signal, shadow-logged first (zero latency)
+
+The bot's Binance aggTrade WS already streams every trade with size (`q`) + side (`m`) sub-100ms,
+but the handler discarded both, keeping only price. Now it captures them (2 extra field reads, NO
+added latency) into `_flow_history`, and `binance_ws.get_order_flow(coin, 60)` returns real-time
+buy/sell PRESSURE = (buy_vol − sell_vol)/total ∈ [−1,+1]. Volume typically LEADS price, so this is
+a faster, genuinely NEW directional signal (everything before was price-based; momentum had ~no
+edge). Logged as `flow60` on every research row (incl. BTC/XRP shadow coins). NOT yet used for
+betting — validate first (momentum looked obvious and failed). After ~a week: measure WR vs flow
+direction; if aggressive-buy windows win UP more (and sell→DOWN), add it as a signal. Reaction
+cadence is still the 5s loop (fine for 15m windows; can go event-driven later if flow proves out).
+
 ## v1.24.0 — 2026-06-30 — shadow-log BTC + XRP (data only, no bets) to test market expansion
 **Tag:** `cleanbot-v1.24.0` · **Status:** ✅ live · zero-risk data gathering
 
