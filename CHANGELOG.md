@@ -10,6 +10,30 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.29.0 — 2026-07-01 — FULL AUDIT: retire the ER chop-bar (verifier-convicted) + fix XRP feed
+**Tag:** `cleanbot-v1.29.0` · **Status:** ✅ live · complete-system audit (`_full_audit.py`, 1542 windows)
+
+Owner asked for a complete accuracy/growth audit. Every logged signal re-tested through the OOS
+discipline. Findings:
+(1) **ER chop-bar RETIRED** (`CLEAN_ER_FILTER=off`): in-band drift≥5 signals in CHOP win **72.7%
+    OOS (n=88, z=1.67, EV +0.129)** — passes the gate. The chop bar (16bps) was the #2 volume
+    blocker (~95 windows/day) and was blocking +EV trades. The real chop disasters (counter-trend
+    dip-shorting, whipsaw re-entries) are guarded by the trend guard + rev-cooldown + $8 stop,
+    which all stay.
+(2) **Order-flow polarity is INVERTED** (absorption): flow AGREES → 62.7% WR, EV −0.004 (nothing);
+    flow OPPOSES → **77.1% WR, EV +0.243** (n=35, below gate). Price rising against net selling =
+    absorption = strength. Explains precisely why the v1.26 veto filter lost: it vetoed the 77%
+    winners. Keep shadow-logging; candidate signal at n≥80.
+(3) **BTC nearly tradeable**: shadow 80% WR OOS, z=1.66, EV +0.210 — but n=30 < 80. Keep shadowing;
+    enable when the gate passes. **XRP feed was dead** (BOT_COIN_WHITELIST lacked XRP → no price
+    feed → zero shadow rows): whitelist now BTC,ETH,SOL,XRP (feed only; trading stays ETH/SOL).
+(4) **UP/DOWN asymmetry**: UP bets 74.0% OOS (z=2.06, PASSES alone); DOWN 69.8% (z=1.16, positive
+    but unproven). Both stay (DOWN is +EV; trend guard covers its failure mode); monitor.
+(5) **Hour-of-day filters REJECTED**: EU block flipped 75.9% IS → 64.0% OOS (regime-unstable).
+(6) **Sizing is floor-bound**: 5-share min ≈ 12.7% of the $25 book ≈ full Kelly (f*=20.7%, half
+    =10.4%) — the exchange minimum already bets more than half-Kelly. No sizing lever until ~$45+.
+    Log-growth at floor size if the OOS edge holds: ~+1.0%/trade.
+
 ## v1.28.1 — 2026-07-01 — remove the entry-timing delay that was choking the widened config
 **Tag:** `cleanbot-v1.28.1` · **Status:** ✅ live · frequency fix
 

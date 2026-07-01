@@ -45,7 +45,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.28.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.29.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -140,7 +140,7 @@ class Cfg:
     # ── PROACTIVE regime detector (v1.13): efficiency ratio = |net move| / total path
     # over the last hour. High = trending (our edge), low = chop. In chop we demand a
     # STRONGER drift so we lean into trends and sit out the noise — measured BEFORE betting. ──
-    er_filter: bool = os.getenv("CLEAN_ER_FILTER", "on").lower() in ("1", "true", "yes", "on")
+    er_filter: bool = os.getenv("CLEAN_ER_FILTER", "off").lower() in ("1", "true", "yes", "on")  # v1.29: OFF — verifier convicted it: in-band d>=5 signals in CHOP win 72.7% OOS (n=88, z=1.67, EV+0.129); the chop bar was blocking ~95 +EV windows/day. Disaster modes stay guarded (counter-trend, rev-cooldown, $8 stop).
     er_trend: float = float(os.getenv("CLEAN_ER_TREND", "0.32"))        # ER below this = choppy regime
     er_chop_drift: float = float(os.getenv("CLEAN_ER_CHOP_DRIFT", "16"))  # min drift bar when choppy
     # ── MOMENTUM CONFIRMATION (v1.13.1): the data says fading moves (drift one way but
