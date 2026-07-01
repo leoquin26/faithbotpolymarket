@@ -45,7 +45,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.26.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.27.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -148,6 +148,8 @@ class Cfg:
     mom_filter: bool = os.getenv("CLEAN_MOM_FILTER", "on").lower() in ("1", "true", "yes", "on")
     flow_filter: bool = os.getenv("CLEAN_FLOW_FILTER", "on").lower() in ("1", "true", "yes", "on")  # LIVE TEST: veto a bet when 60s order-flow strongly OPPOSES it (volume fighting the move). off = shadow-log only
     flow_min: float = float(os.getenv("CLEAN_FLOW_MIN", "0.4"))  # only veto when |opposing flow| >= this (0..1); conservative so it rarely over-blocks
+    trend_guard: bool = os.getenv("CLEAN_TREND_GUARD", "on").lower() in ("1", "true", "yes", "on")  # never bet AGAINST a strong ~30m macro trend (all hours) — stops counter-trend dip-shorting
+    trend_guard_min: float = float(os.getenv("CLEAN_TREND_GUARD_MIN", "0.25"))  # macro % move that counts as a "strong trend" not to fight
     mom_lookback: int = int(os.getenv("CLEAN_MOM_LOOKBACK", "300"))    # seconds of momentum
     mom_min_bps: float = float(os.getenv("CLEAN_MOM_MIN_BPS", "2"))    # skip if momentum opposes drift by > this
     # ── cross-coin agreement boost (data: |drift|>=10 + both coins agree = 80%->84%) ──
@@ -692,6 +694,18 @@ class CleanBot:
         is_up = dist > 0
         token = info.up_token_id if is_up else info.down_token_id
         direction = "UP" if is_up else "DOWN"
+        # COUNTER-TREND GUARD (v1.27, ALL hours incl. night): never fight a strong established
+        # macro trend. 2026-07-01: 6/6 losses were DOWN bets shorting dips into a sustained
+        # overnight UP-trend (night had no macro guard). If the ~30m macro move is strong and
+        # the bet OPPOSES it, skip. Fires only vs a strong trend → doesn't over-block chop.
+        if CFG.trend_guard:
+            mnet, _ = self._macro_trend(coin)
+            if abs(mnet) >= CFG.trend_guard_min and ((mnet > 0) != is_up):
+                if (coin, ws) not in self._nc_logged:
+                    logger.info(f"[COUNTER-TREND SKIP] {coin} {direction} vs macro {mnet:+.2f}% "
+                                f"(>={CFG.trend_guard_min}%) — not fighting a strong trend")
+                    self._nc_logged.add((coin, ws))
+                return
         # ORDER-FLOW confirmation (LIVE TEST, v1.26 — revert via CLEAN_FLOW_FILTER=off): veto
         # only when 60s aggressive volume STRONGLY opposes the bet (buying into a DOWN bet, or
         # selling into an UP bet) — the volume is fighting the price move. Hypothesis: flow

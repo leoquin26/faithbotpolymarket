@@ -10,6 +10,23 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.27.0 — 2026-07-01 — RECOVERY: counter-trend guard + kill flow filter + tighten stop
+**Tag:** `cleanbot-v1.27.0` · **Status:** ✅ live · post-mortem of a −$12.6 day
+
+Root cause (quant post-mortem, trades since v1.26): DOWN bets 5W/6L (45%), UP bets 2W/0L —
+ALL 6 losses were DOWN bets shorting dips into a sustained overnight UP-trend. At night the bot
+had NO macro-trend guard, so it kept fighting the trend. The v1.26 flow filter made it worse:
+it vetoed 5 UP bets (the winning side) while DOWN losers passed. Fixes:
+(1) **COUNTER-TREND GUARD** (`CLEAN_TREND_GUARD`, all hours): skip any bet that OPPOSES a strong
+    ~30m macro move (|net| ≥ CLEAN_TREND_GUARD_MIN 0.25%). Fires only vs a strong trend, so it
+    doesn't over-block chop. Would have blocked all 6 DOWN losses.
+(2) **KILL the order-flow filter** (`CLEAN_FLOW_FILTER=off`) — net-harmful, unvalidated; flow60
+    keeps shadow-logging for later analysis.
+(3) **Tighten daily stop** floor $12→$8 — $12 was 60% of the (now ~$20) bankroll; $8 caps a bad
+    day nearer 40% while the book is small.
+Daily stop worked (halted at −$12.61). This attacks the actual failure — fighting the trend — not
+the win rate.
+
 ## v1.26.0 — 2026-07-01 — order-flow filter LIVE (owner-requested test; revert = one toggle)
 **Tag:** `cleanbot-v1.26.0` · **Status:** ✅ live · EXPERIMENT (unvalidated — watch & revert)
 
