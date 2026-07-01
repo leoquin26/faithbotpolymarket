@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.26.0 — 2026-07-01 — order-flow filter LIVE (owner-requested test; revert = one toggle)
+**Tag:** `cleanbot-v1.26.0` · **Status:** ✅ live · EXPERIMENT (unvalidated — watch & revert)
+
+Owner asked to run the new order-flow signal live now ("if it doesn't work, back to shadow
+logs"). Implemented as the SAFEST possible use: a light veto — skip a bet only when 60s
+aggressive volume STRONGLY opposes it (`[FLOW SKIP]`): buying ≥ CLEAN_FLOW_MIN (0.4) into a
+DOWN bet, or selling into an UP bet — i.e. volume clearly fighting the price move. It never
+forces new bets, only vetoes clear conflicts. HONEST RISK: zero validation yet, so the signal's
+polarity is a hypothesis (flow agrees with direction, consistent with the momentum thesis); if
+live WR/P&L worsens, revert instantly with CLEAN_FLOW_FILTER=off (shadow-logging of flow60
+continues regardless). Knobs: CLEAN_FLOW_FILTER (on), CLEAN_FLOW_MIN (0.4). Watch the next ~15-20
+trades: if flow-skips would-have-won a lot or WR drops, turn it off.
+
 ## v1.25.0 — 2026-07-01 — capture ORDER FLOW (buy/sell volume pressure) — a real-time leading signal
 **Tag:** `cleanbot-v1.25.0` · **Status:** ✅ live · new signal, shadow-logged first (zero latency)
 
