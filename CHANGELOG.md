@@ -10,6 +10,16 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.28.1 — 2026-07-01 — remove the entry-timing delay that was choking the widened config
+**Tag:** `cleanbot-v1.28.1` · **Status:** ✅ live · frequency fix
+
+Right after v1.28.0 a strong SOL UP (+16.5bps, in-band) skipped as `exposure_or_timing` — the
+v1.21 entry_min_age=150 delay only lets the bot enter at window-age 150-300s. That delay was
+never in the verified config (which is measured on EARLY entries, t_left>750) and is itself
+unvalidated (verifier: OOS n=5, EV<0). It directly suppresses the frequency v1.28.0 was widened
+for. FIX: `CLEAN_ENTRY_MIN_AGE` 150→60 (= strike-settle warmup) — enter as soon as the strike
+settles, matching the verified edge. Keeps `min_t` (needs ≥10m left) and all guards.
+
 ## v1.28.0 — 2026-07-01 — MORE FREQUENCY (verifier-approved): widen band 55-74c, drift bar 5bps
 **Tag:** `cleanbot-v1.28.0` · **Status:** ✅ live · the compounding accelerator, OOS-verified
 

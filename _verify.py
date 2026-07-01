@@ -79,11 +79,11 @@ def band2(lo, hi):
     return lambda r: fl(r, 'fav_ask') is not None and lo <= fl(r, 'fav_ask') <= hi
 def dN(bps):
     return lambda r: fl(r, 'drift_pct') is not None and abs(fl(r, 'drift_pct') * 100) >= bps
+wide = lambda r: band2(55,74)(r) and dN(5)(r)
+tl = lambda r: fl(r,'t_left')
 for lab, pr in [
-    ("LIVE 58-66c / d>=7",        lambda r: band2(58,66)(r) and dN(7)(r)),
-    ("wider 58-70c / d>=7",       lambda r: band2(58,70)(r) and dN(7)(r)),
-    ("wider 58-72c / d>=6",       lambda r: band2(58,72)(r) and dN(6)(r)),
-    ("wide 55-72c / d>=5",        lambda r: band2(55,72)(r) and dN(5)(r)),
-    ("wide 55-74c / d>=5",        lambda r: band2(55,74)(r) and dN(5)(r)),
+    ("wide 55-74c / d>=5 (VERIFIED, all timing)", wide),
+    ("  + entry delay t_left<=750 (LIVE v1.21)",  lambda r: wide(r) and tl(r) is not None and tl(r) <= 750),
+    ("  + early only t_left>750",                 lambda r: wide(r) and tl(r) is not None and tl(r) > 750),
 ]:
     verify(lab, pr)
