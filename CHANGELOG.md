@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## Dashboard v2.0 — 2026-07-02 — real-time monitoring console (cleanbot_dash.py rewrite)
+**Tag:** `dash-v2.0.0` · **Status:** ✅ live on :8095 · bot code untouched
+
+Complete rewrite so the owner can self-monitor everything. Backend: incremental log tailing
+(parses only appended bytes — cheap 3-4s polling on a multi-MB log), chain-truth equity from
+RECONCILED/SYNC lines, active-stop detection (profit-lock/daily/breaker), heartbeat staleness →
+LIVE/STALE/DOWN status, live open-position status (strike cache + live Binance price → current
+drift + WINNING/LOSING + countdown), shadow-coin verifier gate computed from the research CSV
+(n/80, WR vs break-even, z, EV, PASS/FAIL), guard-activity counts, UP/DOWN + per-coin splits,
+7-day history, incremental /api/logs?since=offset. Frontend: dark console UI, status pill +
+alert banners (bot down / stop active), equity chart with Today/3D/All ranges, flash-on-new-
+trade, colorized/filterable/searchable live log (Trades/Guards/System/Errors + search + pause),
+last-30 outcome dots, last-signal card, live countdowns, tab title shows wallet.
+
 ## v1.29.1 — 2026-07-02 — scale the profit-lock trail to the grown book ($6→$10)
 **Tag:** `cleanbot-v1.29.1` · **Status:** ✅ live · risk-parameter rescale (owner asked to release+run)
 
