@@ -52,3 +52,6 @@ _ml_train/klines_cache/
 _ml_train/*.csv
 _ml_train/*.jsonl
 _ml_train/*.joblib
+
+# arb research tools (local data stays out)
+_trace_scan.py
