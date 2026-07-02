@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.30.0 — 2026-07-02 — no stale entries: cut the age-180s+ tail (live data: below break-even)
+**Tag:** `cleanbot-v1.30.0` · **Status:** ✅ live · from the 70c ETH UP loss post-mortem (`_timing_audit.py`)
+
+Post-mortem of the 13:49 ETH UP @70c loss (entered at window age 280s, top of band, settled the
+other way) tested TWO hypotheses on all 297 joined live fills (ENTER→result with true entry T):
+**H1 CONFIRMED — entry age decays monotonically:** age 0-90s = 66% WR (+2 vs break-even),
+90-180s = 68% (+3), **180-240s = 59% (−6)**, **240-320s = 56% (−10)**. Worst slice late+cheap:
+51% vs 62% BE (z=−1.8). Buying a 3+ minute-old move = buying exhaustion before mean-reversion.
+**H2 REJECTED — "whipsaw chase" (bet vs the window's first drift) shows NO live deficit**
+(66% vs 63% BE, n=32) — no first-direction lock will be built. Price-alone buckets: noise.
+FIX: `CLEAN_MIN_T` 600→720 — entries now only at window age 60-180s (≥12min to settlement).
+Removes ~30% of trades that were measurably LOSING, so accuracy AND total EV rise together.
+Note: supersedes the v1.21 "600-750s-left = 81%" proxy analysis (scan-time t_left, n=48,
+IS-only) — this is true entry-time data over 297 real fills; live beats proxy.
+
 ## Dashboard v2.0 — 2026-07-02 — real-time monitoring console (cleanbot_dash.py rewrite)
 **Tag:** `dash-v2.0.0` · **Status:** ✅ live on :8095 · bot code untouched
 
