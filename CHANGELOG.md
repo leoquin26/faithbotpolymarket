@@ -10,6 +10,16 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.29.1 — 2026-07-02 — scale the profit-lock trail to the grown book ($6→$10)
+**Tag:** `cleanbot-v1.29.1` · **Status:** ✅ live · risk-parameter rescale (owner asked to release+run)
+
+The lock worked as designed this morning (locked +$3.54 real vs day start after a +$12 run gave
+back $8.83), but $6 was sized for the ~$25 book. At ~$45-51, two losses resolving in a cluster
+(-$3.50 -$3.00) ≈ $6.5 — a NORMAL variance burst inside a verified-+EV streak — so the trail kept
+halting the exact frequency the audit unlocked. Trail 6→10 (~20% of the $51 peak): still locks a
+genuine reversal-of-day, stops firing on routine 2-loss clusters. Restart releases today's lock
+(hwm re-anchors to the live bankroll). Daily loss stop stays $8.
+
 ## v1.29.0 — 2026-07-01 — FULL AUDIT: retire the ER chop-bar (verifier-convicted) + fix XRP feed
 **Tag:** `cleanbot-v1.29.0` · **Status:** ✅ live · complete-system audit (`_full_audit.py`, 1542 windows)
 
