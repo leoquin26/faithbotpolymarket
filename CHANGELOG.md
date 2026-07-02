@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.30.1 — 2026-07-02 — owner-caught confound: relax entry cutoff to age ≤240s (keep 180-240s)
+**Tag:** `cleanbot-v1.30.1` · **Status:** ✅ live · correction to v1.30.0
+
+Owner challenged v1.30.0 ("doesn't waiting longer ruin the trades that built our win streaks?").
+Re-ran the timing audit on POST-TREND-GUARD fills only — and the challenge was right in part: the
+full-history "late loses" sample was CONTAMINATED (the v1.21 era FORCED all entries into age
+150-300s and included the counter-trend disaster, whose losses are already fixed by the guard but
+land in the late buckets by construction). Clean-era data: age 0-180s = 75% vs 63% BE (n=28);
+age 180-240s = 75% (n=4, ambiguous — condemned only by polluted data); age 240s+ = 50% (n=2) AND
+bad in every era historically. FIX: min_t 720→660 (entries age 60-240s) — restore the ambiguous
+180-240s zone, keep only the universally-bad 240s+ tail cut. Re-audit when clean-era n≥30 in the
+180-240s bucket; tighten again only if IT (not history) says so.
+
 ## v1.30.0 — 2026-07-02 — no stale entries: cut the age-180s+ tail (live data: below break-even)
 **Tag:** `cleanbot-v1.30.0` · **Status:** ✅ live · from the 70c ETH UP loss post-mortem (`_timing_audit.py`)
 
