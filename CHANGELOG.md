@@ -10,6 +10,16 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.35.2 — 2026-07-03 — snapshot XRP strikes (owner spotted per-scan fallback log spam)
+**Tag:** `cleanbot-v1.35.2` · **Status:** ✅ live · shadow-data quality + log hygiene
+
+Owner spotted repeating `[STRIKE] XRP ... mid-window cache miss → Binance kline open` every ~7s.
+Cause: `_snapshot_strikes` covered CFG.coins + BTC but never XRP (added as a research coin
+v1.24), so every XRP research scan fell back to a Binance-kline strike (small Chainlink basis
+taints XRP's drift_correct labels) and logged twice per scan. Chainlink RTDS carries XRP fine —
+fix: snapshot loop now includes research_coins. Trading was never affected (XRP never trades;
+ETH/SOL snapped correctly; the [STRIKE SKIP] guard hard-blocks non-Chainlink strikes anyway).
+
 ## v1.35.1 — 2026-07-03 — small-book geometry: cap ask at 70c while bankroll < ~$35
 **Tag:** `cleanbot-v1.35.1` · **Status:** ✅ live · from the owner's (justified) 73c fury
 

@@ -51,7 +51,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.35.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.35.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -986,7 +986,9 @@ class CleanBot:
         age = now - ws
         if age > 45:
             return
-        for coin in tuple(CFG.coins) + ("BTC",):
+        # include shadow/research coins (v1.35.2: XRP was missing → per-scan "cache miss →
+        # Binance kline" fallback spam + basis-tainted XRP research strikes)
+        for coin in dict.fromkeys(tuple(CFG.coins) + tuple(CFG.research_coins) + ("BTC",)):
             slug = f"{coin.lower()}-updown-15m-{ws}"
             try:
                 cache = pr._load_strike_cache()
