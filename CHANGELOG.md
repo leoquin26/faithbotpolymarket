@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.35.1 — 2026-07-03 — small-book geometry: cap ask at 70c while bankroll < ~$35
+**Tag:** `cleanbot-v1.35.1` · **Status:** ✅ live · from the owner's (justified) 73c fury
+
+The day's only trade — SOL UP @73c after the deadlock ate 33 setups — lost −$3.65 (18% of the
+book). The owner's instinct is mathematically right AT THIS BANKROLL: Kelly geometry ≠ arithmetic
+EV. With the 5-share floor forcing ~18%/bet at $20: a 73c entry at the band's measured 77% WR
+compounds at **+0.35%/trade (≈zero)** and turns NEGATIVE below 75% WR; a 60c entry compounds
+~+1.8%/trade at 70% WR. The verifier passed 55-74c on per-$ EV — valid — but forced-size
+geometric growth is a second test that the 70c+ slice FAILS while the book is small.
+FIX: max_ask 0.74→0.70 (env + default). RESTORE 0.74 at bankroll ≥ ~$35 (forced fraction ≤10%,
+where the full band's geometry is positive again). Day post-mortem: the real thief was the
+adaptive-bar deadlock (33 REGIME SKIPs, killed in v1.35.0); morning stand-down (22) was correct
+(tape −12pts); DAY-TREND gate blocked 1 setup — queued for weekend verification, not reactively
+removed.
+
 ## v1.35.0 — 2026-07-03 — retire the adaptive drift-bar (owner caught a DEADLOCK blocking trades)
 **Tag:** `cleanbot-v1.35.0` · **Status:** ✅ live · owner: "something is blocking trades, clear moves, no entries"
 
