@@ -55,3 +55,4 @@ _ml_train/*.joblib
 
 # arb research tools (local data stays out)
 _trace_scan.py
+_archive/
