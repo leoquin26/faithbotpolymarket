@@ -10,6 +10,22 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.34.0 — 2026-07-03 — HMM regime detector (SHADOW): testing the "quant desk" regime layer
+**Tag:** `cleanbot-v1.34.0` · **Status:** ✅ live · zero trading impact — research logging only
+
+Owner shared an HMM regime-detection framework (Horizon marketing post; research/ has the MD +
+images). Assessment: the CONCEPT is legitimate quant methodology (regime-switching, Hamilton
+1989) and matches our own Jul-3 diagnosis (signal +12→−12pts = regime break); the post's 91-pt
+"proof" is a strawman (a Donchian short bleeding through a 7-yr BTC uptrend). We already run
+three regime detectors (ER, macro trend guard, signal-health gate — the last walk-forward
+VERIFIED z=+2.50). An HMM could still add value: probabilistic (smooth sizing vs binary gates)
+and potentially faster flips (return/vol distributions can shift before realized drift-accuracy
+does). So: new `hmm_regime.py` — 3-state GaussianHMM (TREND/CHOP/PANIC) on 15m log-returns+vol,
+rolling ~9-day fit per coin, refit 6h, posterior cached 2min (hmmlearn 0.3.3, installed
+--break-system-packages). Logged per research row as `hmm` = 'T0.62/C0.31/P0.07'. DEPLOY RULE:
+it trades ONLY if the verifier shows it beats or adds to ER + signal-health OOS (n≥80, z≥1.64).
+CSV migrated (hmm column). No entry-path changes.
+
 ## v1.33.0 — 2026-07-03 — SIGNAL-HEALTH gate: trade only when the market-wide signal is winnable
 **Tag:** `cleanbot-v1.33.0` · **Status:** ✅ live · full audit of the $40→$20 drawdown (owner demand)
 
