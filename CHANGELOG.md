@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.31.0 — 2026-07-02 — same-direction ETH+SOL pairs auto-unlock at $55 bankroll
+**Tag:** `cleanbot-v1.31.0` · **Status:** ✅ live (dormant until $55) · owner asked to pair-bet for faster compounding
+
+Owner: can we bet ETH and SOL in the same window to compound faster? Data: same-direction legs
+are BOTH +EV (aligned 69% WR vs ~64% BE, n=884) — the block was never about EV, it's risk
+concentration (~0.85 correlation → a pair = one 2x bet; a paired loss = −$6.50). At $35 that's
+18% of book on one bet (~1.7× half-Kelly) and 81% of the $8 daily stop → one bad window ends the
+day. At $55+ a pair = ~12% (the bot's own sizing policy) and survivable. FIX: new
+`CLEAN_CORR_FULL_AT` (55): when bankroll ≥ $55, same-direction pairs trade BOTH legs full-size;
+below it, the existing half/skip logic stands. Auto-unlocks as the book grows — no manual flip.
+OPPOSITE-direction pairs stay blocked forever (verified 55% coinflip, n=168). Note: the bigger
+compounding unlock is BTC (shadow n=65/80 at 75%+ WR, likely gate-pass within days) — a third
+market at full edge, not a correlated double.
+
 ## v1.30.1 — 2026-07-02 — owner-caught confound: relax entry cutoff to age ≤240s (keep 180-240s)
 **Tag:** `cleanbot-v1.30.1` · **Status:** ✅ live · correction to v1.30.0
 

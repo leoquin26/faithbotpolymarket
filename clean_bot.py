@@ -45,7 +45,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.30.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.31.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -72,6 +72,7 @@ class Cfg:
     max_bet_pct: float = float(os.getenv("CLEAN_MAX_BET_PCT", "0.12")) # never >this % of bankroll/bet
     max_open_pct: float = float(os.getenv("CLEAN_MAX_OPEN_PCT", "0.25"))  # cap total open exposure
     corr_pair_frac: float = float(os.getenv("CLEAN_CORR_PAIR_FRAC", "0.5"))  # ETH+SOL same dir same window = 1 correlated bet, not 2: size each leg at this frac (skip 2nd leg if half < exchange min)
+    corr_full_at: float = float(os.getenv("CLEAN_CORR_FULL_AT", "55"))  # v1.31: bankroll $ at which same-dir pairs trade BOTH legs full-size. Legs are +EV (aligned 69% vs 64% BE, n=884); the cap is risk-concentration: at $55+ a pair = ~12% of book (policy-sized) and a paired loss no longer eats the daily stop. Auto-unlocks as the book grows.
     corr_opposite_block: bool = os.getenv("CLEAN_CORR_OPPOSITE_BLOCK", "on").lower() in ("1","true","yes","on")  # skip a coin bet OPPOSITE a held correlated leg (divergent pairs = 55% coinflip in the data)
     position_keep_h: int = int(os.getenv("CLEAN_POSITION_KEEP_H", "48"))  # prune resolved positions older than this (state hygiene)
     stop_pct: float = float(os.getenv("CLEAN_STOP_PCT", "0.15"))       # daily stop = 15% of bankroll
@@ -807,7 +808,10 @@ class CleanBot:
         # correlated-pair control: ETH+SOL same dir, same window = one 2x bet, not two.
         # Size each leg at corr_pair_frac so the pair ~= one normal position. If half falls
         # below the exchange share floor (small bankroll), take ONE leg only (skip the 2nd).
-        if CFG.corr_pair_frac < 1.0 and self._corr_sibling(coin, ws, direction):
+        # v1.31: above corr_full_at, BOTH legs trade full-size — each leg is +EV (aligned
+        # 69% vs 64% BE) and at that book size a pair fits the ~12% sizing policy.
+        if (CFG.corr_pair_frac < 1.0 and self.bankroll < CFG.corr_full_at
+                and self._corr_sibling(coin, ws, direction)):
             half = int(round(self._size_shares(maker) * CFG.corr_pair_frac))
             if half >= CFG.shares:
                 logger.info(f"[CORR HALF] {coin} {direction} — pairs with sibling same dir/window, "
