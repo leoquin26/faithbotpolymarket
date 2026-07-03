@@ -194,6 +194,105 @@ def efficiency_ratio(coin, ttl=60):
     _ER[coin] = (now, er)
     return er
 
+# ── signal-health + HMM (from research CSV; cached 120s) ────────────────────
+_SIG = {"ts": 0, "data": None}
+
+def signal_health():
+    """Mirror of the bot's _signal_health: rolling (WR − break-even) pts over the last
+    24 resolved in-band research rows, + latest HMM regime per coin."""
+    now = time.time()
+    if _SIG["data"] is not None and now - _SIG["ts"] < 120:
+        return _SIG["data"]
+    out = {"edge": None, "trading": None, "threshold": -2.0, "hmm": {}}
+    try:
+        rows = list(csv.DictReader(open(RESEARCH, encoding="utf-8", errors="ignore")))[-500:]
+        sel = []
+        for r in rows:
+            h = r.get("hmm")
+            if h:
+                out["hmm"][r.get("coin")] = h
+            if r.get("drift_correct") not in ("0", "1"):
+                continue
+            try:
+                ask = float(r["fav_ask"]); dr = abs(float(r["drift_pct"])) * 100
+            except Exception:
+                continue
+            if 55 <= ask <= 74 and dr >= 5:
+                sel.append((int(r["drift_correct"]), ask / 100))
+        sel = sel[-24:]
+        if len(sel) >= 15:
+            wr = sum(w for w, _ in sel) / len(sel)
+            be = sum(p for _, p in sel) / len(sel)
+            out["edge"] = round((wr - be) * 100, 1)
+            out["trading"] = out["edge"] >= out["threshold"]
+    except Exception:
+        pass
+    _SIG.update(ts=now, data=out)
+    return out
+
+# ── Strategy #2: daily-threshold scout (parse logs/daily_scout.log; cached 120s) ──
+SCOUT_LOG = BOT / "logs" / "daily_scout.log"
+_SCOUT = {"ts": 0, "data": None}
+RE_SC_RES = re.compile(r'\[RESULT\] (\w+) >\$([\d,]+) -> spot \$[\d,.]+ (ABOVE|below) '
+                       r'\| model said (\d+)% mkt (\d+)%')
+RE_SC_ATM = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d).*\[ATM\] (\w+) hv=([\d.]+)%/h \| '
+                       r'nearest-50/50 \$([\d,]+): model (\d+)% vs mkt (\d+)% \(edge ([+-]?\d+)%\)')
+RE_SC_CAL = re.compile(r'\[CAL\] (\w+) >[\d.]+ out=(\d) model=(\d+) mkt=(\d+)')
+RE_SC_FLAG = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d).*\[SCOUT\] (\w+) >\$([\d,]+) \| spot \$[\d,]+ \| '
+                        r'model (\d+)% vs mkt (\d+)% \| edge ([+-]?\d+)%')
+
+def scout_status():
+    now = time.time()
+    if _SCOUT["data"] is not None and now - _SCOUT["ts"] < 120:
+        return _SCOUT["data"]
+    out = {"live": {}, "flags": [], "results": {"n": 0}, "cal_n": 0, "band": None}
+    try:
+        txt = SCOUT_LOG.read_text(errors="ignore")
+        sims, cal_sims = [], []
+        for ln in txt.splitlines():
+            m = RE_SC_ATM.match(ln)
+            if m:
+                out["live"][m.group(2)] = {"ts": m.group(1)[5:], "hv": float(m.group(3)),
+                                           "strike": m.group(4), "model": int(m.group(5)),
+                                           "mkt": int(m.group(6)), "edge": int(m.group(7))}
+                continue
+            m = RE_SC_FLAG.match(ln)
+            if m:
+                out["flags"].append({"ts": m.group(1)[5:], "coin": m.group(2), "strike": m.group(3),
+                                     "model": int(m.group(4)), "mkt": int(m.group(5)),
+                                     "edge": int(m.group(6))})
+                continue
+            m = RE_SC_RES.search(ln)
+            if m:
+                sims.append((1 if m.group(3) == "ABOVE" else 0, int(m.group(4)) / 100, int(m.group(5)) / 100))
+                continue
+            m = RE_SC_CAL.search(ln)
+            if m:
+                out["cal_n"] += 1
+                cal_sims.append((int(m.group(2)), int(m.group(3)) / 100, int(m.group(4)) / 100))
+        out["flags"] = out["flags"][-6:]
+        # trade-sim on all graded rows (RESULT + CAL): the 5-8% divergence band vs the 8%+ traps
+        def band(rows, lo, hi):
+            evs = []
+            for outc, mp, kp in rows:
+                e = mp - kp
+                if not (lo <= abs(e) < hi):
+                    continue
+                if e > 0: win, cost = outc == 1, kp
+                else:     win, cost = outc == 0, 1 - kp
+                if 0.02 < cost < 0.98:
+                    evs.append(((1 - cost) / cost) if win else -1.0)
+            n = len(evs)
+            return {"n": n, "ev": round(sum(evs) / n, 3) if n else None,
+                    "wr": round(100 * sum(1 for e in evs if e > 0) / n) if n else None}
+        allrows = sims + cal_sims
+        out["results"]["n"] = len(allrows)
+        out["band"] = {"sweet": band(allrows, 0.05, 0.08), "trap": band(allrows, 0.08, 1.0)}
+    except Exception:
+        pass
+    _SCOUT.update(ts=now, data=out)
+    return out
+
 # ── shadow-coin verifier gate (from research CSV; cached 120s) ──────────────
 _SHADOW = {"ts": 0, "data": None}
 
@@ -381,6 +480,8 @@ def data():
         "regime": {c: efficiency_ratio(c) for c in ("BTC", "ETH", "SOL", "XRP")},
         "er_trend": 0.32,
         "shadow": shadow_gate(),
+        "signal": signal_health(),
+        "scout": scout_status(),
         "last_enter": CACHE.enters[-1] if CACHE.enters else None,
         "ts": now,
     })
@@ -506,6 +607,7 @@ footer{color:var(--dim);text-align:center;font-size:11px;margin:16px 0}
   <div class="card"><div class="lbl">Streak</div><div class="val" id="tStreak">—</div><div class="sub" id="tStreakT">—</div></div>
   <div class="card"><div class="lbl">All-time WR</div><div class="val" id="aWr">—</div><div class="sub" id="aN">—</div></div>
   <div class="card"><div class="lbl">Drift Bar</div><div class="val" id="aBar">—</div><div class="sub" id="aBase">adaptive</div></div>
+  <div class="card"><div class="lbl">Signal Health</div><div class="val" id="sigEdge">—</div><div class="sub" id="sigState">market-wide edge vs BE</div></div>
 </div>
 
 <div class="grid cols">
@@ -547,6 +649,25 @@ footer{color:var(--dim);text-align:center;font-size:11px;margin:16px 0}
     <div id="dots" style="display:flex;gap:5px;flex-wrap:wrap"></div>
     <h2 style="margin-top:16px">🕐 Last Signal</h2>
     <div id="lastEnter" class="dim">—</div>
+  </div>
+</div>
+
+<div class="grid cols">
+  <div class="panel"><h2>🛰️ Strategy #2 — Daily Thresholds <span class="chip cN">vol model vs market · dry-run</span></h2>
+    <div id="scoutLive"></div>
+    <div class="g2" style="margin-top:10px">
+      <div class="card" style="padding:8px 10px"><div class="lbl">5–8% band (the edge)</div>
+        <div id="scoutSweet" style="font-size:15px;font-weight:700">—</div></div>
+      <div class="card" style="padding:8px 10px"><div class="lbl">≥8% band (traps — never trade)</div>
+        <div id="scoutTrap" style="font-size:15px;font-weight:700">—</div></div>
+    </div>
+    <div style="margin-top:8px"><div class="bar"><i id="scoutProg" style="width:0%;background:var(--cyan)"></i></div>
+      <div class="dim" style="font-size:11px;margin-top:2px" id="scoutProgLbl">gate progress</div></div>
+  </div>
+  <div class="panel"><h2>🚩 Scout — Latest Divergence Flags</h2>
+    <div style="max-height:260px;overflow-y:auto"><table id="flagsTbl">
+      <thead><tr><th>Time</th><th>Coin</th><th>Strike</th><th>Model</th><th>Mkt</th><th>Edge</th></tr></thead>
+      <tbody></tbody></table></div>
   </div>
 </div>
 
@@ -644,13 +765,46 @@ async function poll(){
         <span>${p.drift_bps==null?'':`<b class="${p.drift_bps>0?'pos':'neg'}">${p.drift_bps>0?'+':''}${p.drift_bps}bps</b> `}${w}
         <b class="countdown"> ${mm}:${ss}</b></span></div>`;}).join('')
       :'<div class="dim">none — scanning for setups</div>';
-    // regime
+    // signal health card
+    const sig=d.signal||{};
+    const se=$('sigEdge');
+    se.textContent=sig.edge==null?'—':(sig.edge>0?'+':'')+sig.edge+'pts';
+    se.className='val '+(sig.edge==null?'dim':sig.edge>=sig.threshold?'pos':'neg');
+    $('sigState').innerHTML=sig.trading==null?'market-wide edge vs BE':
+      sig.trading?'<span class="chip cW">TRADING ARMED</span>':'<span class="chip cL">STANDING DOWN</span> auto-resumes';
+    if(!d.active_stop&&d.status==='LIVE'&&sig.trading===false){
+      const al=$('alert'); al.className='banner warn';
+      al.textContent='🛡️ SIGNAL-HEALTH stand-down: market edge '+(sig.edge>0?'+':'')+sig.edge+'pts (needs ≥ '+sig.threshold+') — bot auto-resumes when the tape is winnable';
+    }
+    // regime (ER + HMM)
+    const hmm=(d.signal||{}).hmm||{};
     $('regime').innerHTML=Object.entries(d.regime||{}).map(([c,v])=>{
       const trend=v!=null&&v>=d.er_trend;
       const pct=v==null?0:Math.min(100,Math.round(v*100));
-      return `<div class="kv"><span>${c} ${v==null?'':trend?chip('TREND','cW'):chip('CHOP','cL')}</span>
+      const h=hmm[c]?`<span class="chip cN" title="HMM posterior T/C/P">${hmm[c].split('/')[0].replace('T','HMM T ')}</span>`:'';
+      return `<div class="kv"><span>${c} ${v==null?'':trend?chip('TREND','cW'):chip('CHOP','cL')} ${h}</span>
         <span style="flex:1;margin:6px 12px"><span class="bar"><i style="width:${pct}%;background:${trend?'var(--green)':'var(--red)'}"></i></span></span>
         <b>${v??'—'}</b></div>`;}).join('');
+    // strategy #2 scout
+    const sc=d.scout||{};
+    $('scoutLive').innerHTML=Object.entries(sc.live||{}).map(([c,v])=>{
+      const big=Math.abs(v.edge)>=8, sweet=Math.abs(v.edge)>=5&&!big;
+      const ch=big?chip('TRAP ZONE','cL'):sweet?chip('IN BAND','cW'):chip('no edge','cN');
+      return `<div class="kv"><span>${c} &gt;$${v.strike} <span class="dim">(${v.ts})</span></span>
+        <span>model <b>${v.model}%</b> vs mkt <b>${v.mkt}%</b> <b class="${v.edge>0?'pos':'neg'}">${v.edge>0?'+':''}${v.edge}%</b> ${ch}</span></div>`;
+    }).join('')||'<div class="dim">no live readings</div>';
+    const b=sc.band||{};
+    $('scoutSweet').innerHTML=b.sweet&&b.sweet.n?`EV ${b.sweet.ev>0?'+':''}$${b.sweet.ev}/$ <span class="dim">(n=${b.sweet.n}, WR ${b.sweet.wr}%)</span>`:'—';
+    $('scoutSweet').className=b.sweet&&b.sweet.ev>0?'pos':'neg';
+    $('scoutTrap').innerHTML=b.trap&&b.trap.n?`EV ${b.trap.ev>0?'+':''}$${b.trap.ev}/$ <span class="dim">(n=${b.trap.n})</span>`:'—';
+    const gn=(b.sweet&&b.sweet.n)||0;
+    $('scoutProg').style.width=Math.min(100,Math.round(gn/80*100))+'%';
+    $('scoutProgLbl').textContent=`verification gate: ${gn}/80 samples in the 5–8% band · +${sc.cal_n||0} calibration rows`;
+    $('flagsTbl').querySelector('tbody').innerHTML=(sc.flags||[]).slice().reverse().map(f=>`<tr>
+      <td class="dim">${f.ts}</td><td>${f.coin}</td><td>$${f.strike}</td>
+      <td>${f.model}%</td><td>${f.mkt}%</td>
+      <td class="${f.edge>0?'pos':'neg'}">${f.edge>0?'+':''}${f.edge}%</td></tr>`).join('')
+      ||'<tr><td colspan="6" class="dim">none yet</td></tr>';
     // trades table + flash on new
     const tb=$('tradesTbl').querySelector('tbody');
     tb.innerHTML=(d.trades||[]).map(t=>`<tr>
