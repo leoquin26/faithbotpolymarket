@@ -84,6 +84,12 @@ def daily_events():
 
 flagged = {}   # (slug, strike) -> dict(model, market, dir, spot, end_ts)
 done = set()
+# v2 (Jul 3): CALIBRATION set — record EVERY uncertain strike at first sighting (not just
+# |edge|>=5% flags) and grade it at settlement ([CAL] lines). Builds the full model-vs-market
+# dataset ~5-10x faster, so the 5-8%-divergence edge (+$0.42/$ on n=32) can reach the n>=80
+# verification gate in days instead of weeks.
+tracked = {}   # (slug, strike) -> dict(model, market, end_ts) — all uncertain strikes
+done_cal = set()
 scored = {"n": 0, "model_brier": 0.0, "market_brier": 0.0, "model_better": 0}
 t0 = time.time()
 
@@ -114,6 +120,19 @@ def settle(now):
                     f"| model said {f['model']*100:.0f}% mkt {f['market']*100:.0f}% | "
                     f"model_brier={scored['model_brier']/scored['n']:.4f} mkt_brier={scored['market_brier']/scored['n']:.4f} "
                     f"({scored['model_better']}/{scored['n']} model better)")
+    # calibration set: grade EVERY tracked strike (compact [CAL] lines for the verifier)
+    for key in list(tracked):
+        f = tracked[key]
+        if now < f["end_ts"] + 30 or key in done_cal:
+            continue
+        spot = binance_price(f["sym"])
+        if not spot:
+            continue
+        above = 1 if spot >= f["strike"] else 0
+        done_cal.add(key)
+        tracked.pop(key, None)
+        logger.info(f"[CAL] {f['coin']} >{f['strike']:.0f} out={above} "
+                    f"model={f['model']*100:.0f} mkt={f['market']*100:.0f}")
 
 
 def main():
@@ -150,6 +169,9 @@ def main():
                 edge = mp - mkt_yes
                 cand.append((strike, mkt_yes, mp, edge))
                 key = (ev.get("slug"), strike)
+                if key not in tracked and key not in done_cal:   # calibration: every uncertain strike, first sighting
+                    tracked[key] = {"coin": coin.upper(), "sym": sym, "strike": strike,
+                                    "model": mp, "market": mkt_yes, "end_ts": end_ts}
                 if key not in flagged and abs(edge) >= MARGIN:
                     flagged[key] = {"coin": coin.upper(), "sym": sym, "strike": strike,
                                     "model": mp, "market": mkt_yes,
