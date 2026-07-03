@@ -51,7 +51,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.34.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.35.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -139,10 +139,10 @@ class Cfg:
     # ── ADAPTIVE ACCURACY (v1.12): measure rolling win rate; when accuracy drops, RAISE
     # the drift bar to take only higher-quality setups; when it's high, trade freely.
     # Learns from every resolved trade — quality knob, NOT a hard block. ──
-    adapt: bool = os.getenv("CLEAN_ADAPT", "on").lower() in ("1", "true", "yes", "on")
+    adapt: bool = os.getenv("CLEAN_ADAPT", "on").lower() in ("1", "true", "yes", "on")  # keeps outcome recording + [ADAPT] logging (dashboard)
     adapt_window: int = int(os.getenv("CLEAN_ADAPT_WINDOW", "15"))      # rolling trades measured
     adapt_target: float = float(os.getenv("CLEAN_ADAPT_TARGET", "0.60"))  # target win rate
-    adapt_k: float = float(os.getenv("CLEAN_ADAPT_K", "35"))            # bps added per point of WR deficit
+    adapt_k: float = float(os.getenv("CLEAN_ADAPT_K", "0"))            # v1.35: 0 — the adaptive BAR is retired (recording stays). It DEADLOCKED Jul 3: bad-tape losses froze rolling WR ~47% → bar 12bps → no trades → WR can't update → blocked real 11bps in-band moves while the (verified, 10x-data, self-recovering) signal-health gate read +10 healthy. The gate supersedes the bar; the OOS-verified config (d≥5) was validated without the penalty.
     adapt_max_drift: float = float(os.getenv("CLEAN_ADAPT_MAX_DRIFT", "20"))  # cap the adaptive bar
     # ── PROACTIVE regime detector (v1.13): efficiency ratio = |net move| / total path
     # over the last hour. High = trending (our edge), low = chop. In chop we demand a

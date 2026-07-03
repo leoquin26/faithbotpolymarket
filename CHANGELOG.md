@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.35.0 — 2026-07-03 — retire the adaptive drift-bar (owner caught a DEADLOCK blocking trades)
+**Tag:** `cleanbot-v1.35.0` · **Status:** ✅ live · owner: "something is blocking trades, clear moves, no entries"
+
+Owner was right. `[REGIME SKIP] SOL drift=-11.0bps < bar 12bps` — the v1.8 ADAPTIVE bar had
+raised the entry requirement 5→12bps because last night's bad-tape losses froze the rolling WR
+at ~47%. DEADLOCK: the bar only relaxes when trades WIN, but trades can't happen because of the
+bar — so it stayed locked on stale losses while the signal-health gate (10x data, updates while
+flat, walk-forward verified z=+2.50) correctly read the recovered tape at +10. Real in-band
+11bps directional moves were being refused. The bar is SUPERSEDED by the gate (same principle —
+"measure accuracy, adjust" — strictly better instrument), and the OOS-verified config (d≥5,
+z=1.68) was validated WITHOUT the penalty. FIX: `CLEAN_ADAPT_K` 35→0 (bar = base 5bps always);
+outcome recording + [ADAPT] dashboard logging stay. This was the LAST legacy per-trade
+throttle — regime response now lives in exactly one place: the signal-health gate.
+
 ## v1.34.0 — 2026-07-03 — HMM regime detector (SHADOW): testing the "quant desk" regime layer
 **Tag:** `cleanbot-v1.34.0` · **Status:** ✅ live · zero trading impact — research logging only
 
