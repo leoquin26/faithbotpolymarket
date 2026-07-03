@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.32.0 — 2026-07-03 — DEEP-CHOP guard: the n=375 refinement of the v1.29 ER call
+**Tag:** `cleanbot-v1.32.0` · **Status:** ✅ live · overnight bleed post-mortem (owner report)
+
+Overnight Jul 2-3: 11W/8L (58%) vs ~63% BE, wallet $37→~$27. Losses alternated UP/DOWN with
+wins — not directional failure (trend guard fine), but CHOP grinding both sides. This is new OOS
+data on the v1.29 ER-retirement (which was decided on n=88). Re-test at n=375 REFINES it:
+trend (er≥0.32) 65.7% vs 64.2% (thin+); **mid-chop 0.15-0.32 = 73.1% vs 63.9%, z=+1.95 (the
+sweet spot — v1.29 was RIGHT to unblock it)**; **DEEP chop er<0.15 = 60.6% vs 64.3% (below
+water — tonight's bleed, er 0.04-0.12 on several losses)**. Also re-tested the expensive tail
+(68-74c): 76.8% vs 70.6% BE, z=+2.16 — clean; the 70/73c losses were regime, not price.
+FIX: new `CLEAN_ER_DEEP` (0.15) — skip entries when er<0.15 (`[DEEP CHOP SKIP]`), a hard skip
+only in the statistically-dead zone; mid-chop stays open. The old blunt 16bps bar stays retired.
+
 ## v1.31.0 — 2026-07-02 — same-direction ETH+SOL pairs auto-unlock at $55 bankroll
 **Tag:** `cleanbot-v1.31.0` · **Status:** ✅ live (dormant until $55) · owner asked to pair-bet for faster compounding
 

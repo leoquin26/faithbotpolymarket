@@ -45,7 +45,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.31.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.32.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -144,6 +144,7 @@ class Cfg:
     er_filter: bool = os.getenv("CLEAN_ER_FILTER", "off").lower() in ("1", "true", "yes", "on")  # v1.29: OFF — verifier convicted it: in-band d>=5 signals in CHOP win 72.7% OOS (n=88, z=1.67, EV+0.129); the chop bar was blocking ~95 +EV windows/day. Disaster modes stay guarded (counter-trend, rev-cooldown, $8 stop).
     er_trend: float = float(os.getenv("CLEAN_ER_TREND", "0.32"))        # ER below this = choppy regime
     er_chop_drift: float = float(os.getenv("CLEAN_ER_CHOP_DRIFT", "16"))  # min drift bar when choppy
+    er_deep: float = float(os.getenv("CLEAN_ER_DEEP", "0.15"))  # v1.32: skip entries in DEEP chop (er < this). n=375 re-test: deep chop 60.6% vs 64.3% BE (below water, the Jul-3 overnight bleed); mid-chop 0.15-0.32 is the sweet spot (73.1%, z=+1.95) and stays OPEN. 0=off
     # ── MOMENTUM CONFIRMATION (v1.13.1): the data says fading moves (drift one way but
     # 5-min momentum the other) are the reversals. Only bet WITH momentum. ──
     mom_filter: bool = os.getenv("CLEAN_MOM_FILTER", "on").lower() in ("1", "true", "yes", "on")
@@ -680,6 +681,16 @@ class CleanBot:
                 self._nc_logged.add((coin, ws))
             return
         dist = (px - strike) / strike
+        # DEEP-CHOP guard (v1.32): er<er_deep = random walk, drift is anti-predictive (60.6%
+        # vs 64.3% BE, n=99). Mid-chop (0.15-0.32) stays OPEN (73.1%, the sweet spot).
+        if CFG.er_deep > 0:
+            _er = self._efficiency_ratio(coin)
+            if _er is not None and _er < CFG.er_deep:
+                if (coin, ws) not in self._nc_logged:
+                    logger.info(f"[DEEP CHOP SKIP] {coin} er={_er:.2f} < {CFG.er_deep} — "
+                                f"random walk, drift anti-predictive; wait for structure")
+                    self._nc_logged.add((coin, ws))
+                return
         eff_drift = self._eff_drift()                  # reactive: tighter when recently losing
         regime = ""
         if CFG.er_filter:
