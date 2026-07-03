@@ -49,6 +49,36 @@ def hourly_vol(sym):
     return None
 
 
+_dvol_cache = {}
+
+
+def deribit_iv(coin):
+    """Deribit DVOL (30d implied-vol index, annualized %) for BTC/ETH — logged as a
+    covariate so a skew/IV-aware model v2 can be tested against flat-HV later
+    (per Bloch: digital prices deviate from flat-vol Phi(d2) via the vol skew).
+    Cached 10min. None for coins without a DVOL index (SOL)."""
+    cur = {"BTCUSDT": "btc_usd", "ETHUSDT": "eth_usd"}.get(coin)
+    if not cur:
+        return None
+    now = time.time()
+    c = _dvol_cache.get(cur)
+    if c and now - c[0] < 600:
+        return c[1]
+    iv = None
+    try:
+        j = _h.get("https://www.deribit.com/api/v2/public/get_volatility_index_data",
+                   params={"currency": cur.split("_")[0].upper(),
+                           "start_timestamp": int((now - 7200) * 1000),
+                           "end_timestamp": int(now * 1000), "resolution": "3600"}).json()
+        data = (j.get("result") or {}).get("data") or []
+        if data:
+            iv = round(float(data[-1][4]), 1)      # last candle close of the DVOL index
+    except Exception:
+        iv = None
+    _dvol_cache[cur] = (now, iv)
+    return iv
+
+
 def phi(x):
     return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
@@ -181,7 +211,9 @@ def main():
                                 f"-> lean {'YES' if edge>0 else 'NO'} | {t_sec/3600:.1f}h left")
             if cand:
                 near = min(cand, key=lambda c: abs(c[1] - 0.5))
-                logger.info(f"[ATM] {coin.upper()} hv={hv*100:.2f}%/h | nearest-50/50 ${near[0]:,.0f}: "
+                iv = deribit_iv(sym)
+                ivs = f" iv30={iv:.0f}%" if iv else ""
+                logger.info(f"[ATM] {coin.upper()} hv={hv*100:.2f}%/h{ivs} | nearest-50/50 ${near[0]:,.0f}: "
                             f"model {near[2]*100:.0f}% vs mkt {near[1]*100:.0f}% (edge {near[3]*100:+.0f}%)")
         settle(now)
         if int(now) % 1800 < 60:
