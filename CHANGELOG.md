@@ -10,6 +10,25 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.33.0 — 2026-07-03 — SIGNAL-HEALTH gate: trade only when the market-wide signal is winnable
+**Tag:** `cleanbot-v1.33.0` · **Status:** ✅ live · full audit of the $40→$20 drawdown (owner demand)
+
+AUDIT VERDICT: nothing in the bot broke — deep-chop guard fired 6×, daily stop halted at −$12.65
+(overshoot past $8 = two in-flight positions, structural), accounting honest. What broke is THE
+MARKET'S SIGNAL: drift accuracy across ALL logged in-band windows (traded or not) collapsed
+Jun27–Jul1 68-76% vs ~64% BE → Jul 2 64% (break-even) → **Jul 3 57% vs 66% BE (−9pts,
+ANTI-predictive)**. Today's 8W/10L (44%) is a −3σ event under the verified edge — not luck, a
+regime break (July-4th holiday tape and/or edge decay; 2 days can't distinguish). One loss came
+at er=1.00 (perfect trend, still reversed) — NO entry filter survives an anti-predictive tape.
+FIX: `_signal_health()` — rolling (WR − break-even) over the last CLEAN_SIG_WINDOW (40) resolved
+in-band research rows (~10h of ALL windows, ~10x trade-sample power, cached 240s); entries stand
+down while edge < CLEAN_SIG_MIN_EDGE (−2pts) with `[SIGNAL-HEALTH]` log. Research logging never
+stops, so recovery is detected while flat and trading auto-resumes at FULL frequency — the gate
+adds no entry selectivity, it only refuses to play an unwinnable game. Also CLEAN_DAILY_STOP 8→5
+while the book is ~$20 (was 40% of book). Deposit decision: HOLD until the signal is back over
+break-even. If the signal doesn't recover post-holiday, this is FaithBot-style edge decay and the
+honest conversation is strategy-level, not tuning.
+
 ## v1.32.0 — 2026-07-03 — DEEP-CHOP guard: the n=375 refinement of the v1.29 ER call
 **Tag:** `cleanbot-v1.32.0` · **Status:** ✅ live · overnight bleed post-mortem (owner report)
 

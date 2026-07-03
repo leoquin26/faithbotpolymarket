@@ -45,7 +45,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.32.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.33.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -145,6 +145,12 @@ class Cfg:
     er_trend: float = float(os.getenv("CLEAN_ER_TREND", "0.32"))        # ER below this = choppy regime
     er_chop_drift: float = float(os.getenv("CLEAN_ER_CHOP_DRIFT", "16"))  # min drift bar when choppy
     er_deep: float = float(os.getenv("CLEAN_ER_DEEP", "0.15"))  # v1.32: skip entries in DEEP chop (er < this). n=375 re-test: deep chop 60.6% vs 64.3% BE (below water, the Jul-3 overnight bleed); mid-chop 0.15-0.32 is the sweet spot (73.1%, z=+1.95) and stays OPEN. 0=off
+    # ── SIGNAL-HEALTH gate (v1.33): trade only when the MARKET-WIDE drift signal is winnable.
+    # Rolling drift-accuracy over ALL logged in-band windows (traded or not — research logging
+    # never stops, so recovery is detected while standing down). Jul-3: signal hit 57% vs 66%
+    # BE (−9pts) market-wide — no entry filter survives an anti-predictive tape. ──
+    sig_window: int = int(os.getenv("CLEAN_SIG_WINDOW", "40"))       # rolling window of resolved in-band research rows (0 = gate off)
+    sig_min_edge: float = float(os.getenv("CLEAN_SIG_MIN_EDGE", "-2"))  # stand down when rolling (WR − break-even) drops below this many pts
     # ── MOMENTUM CONFIRMATION (v1.13.1): the data says fading moves (drift one way but
     # 5-min momentum the other) are the reversals. Only bet WITH momentum. ──
     mom_filter: bool = os.getenv("CLEAN_MOM_FILTER", "on").lower() in ("1", "true", "yes", "on")
@@ -611,6 +617,37 @@ class CleanBot:
             return CFG.drift_bps
         return min(CFG.drift_bps + (CFG.adapt_target - wr) * CFG.adapt_k, CFG.adapt_max_drift)
 
+    def _signal_health(self):
+        """Rolling market-wide drift-signal edge, in points vs break-even, over the last
+        sig_window resolved IN-BAND research rows (ALL windows, traded or not — ~10x the
+        data of trade outcomes). Cached 240s. None = insufficient data (fail-open)."""
+        now = time.time()
+        c = getattr(self, "_sig_cache", None)
+        if c and now - c[0] < 240:
+            return c[1]
+        edge = None
+        try:
+            rows = list(csv.DictReader(open(RESEARCH_CSV, encoding="utf-8", errors="ignore")))[-400:]
+            sel = []
+            for r in rows:
+                if r.get("drift_correct") not in ("0", "1"):
+                    continue
+                try:
+                    ask = float(r["fav_ask"]); dr = abs(float(r["drift_pct"])) * 100
+                except Exception:
+                    continue
+                if CFG.min_ask * 100 <= ask <= CFG.max_ask * 100 and dr >= CFG.drift_bps:
+                    sel.append((int(r["drift_correct"]), ask / 100))
+            sel = sel[-CFG.sig_window:]
+            if len(sel) >= max(15, CFG.sig_window // 2):
+                wr = sum(w for w, _ in sel) / len(sel)
+                be = sum(p for _, p in sel) / len(sel)
+                edge = round((wr - be) * 100, 1)
+        except Exception:
+            edge = None
+        self._sig_cache = (now, edge)
+        return edge
+
     def _prune_positions(self):
         """Drop resolved positions older than position_keep_h. They're settled (not counted
         in open_cost), so they only bloat the state file + dashboard. Keep a recent window
@@ -667,6 +704,19 @@ class CleanBot:
         # first-2-min twitch that fakes out (data: 600-750s left = 81% vs 750-900s = 66%).
         if age < max(CFG.warmup, CFG.entry_min_age) or t_rem < CFG.min_t:
             return
+        # SIGNAL-HEALTH gate (v1.33): stand down while the MARKET-WIDE drift signal is
+        # anti-predictive (rolling in-band accuracy below break-even). Research logging keeps
+        # running while stood down, so recovery is detected and trading auto-resumes at full
+        # frequency — no rarer entry signals, just "only play when the game is winnable".
+        if CFG.sig_window > 0:
+            sh = self._signal_health()
+            if sh is not None and sh < CFG.sig_min_edge:
+                if (coin, ws) not in self._nc_logged:
+                    logger.info(f"[SIGNAL-HEALTH] market drift-signal edge {sh:+.1f}pts vs "
+                                f"break-even (< {CFG.sig_min_edge:+.0f}) — standing down; "
+                                f"auto-resumes when the signal recovers")
+                    self._nc_logged.add((coin, ws))
+                return
         strike = float(info.threshold_price or 0)
         px = info.current_crypto_price or binance_ws.get_price(coin)   # Chainlink spot (settlement feed) first
         px = float(px or 0)
