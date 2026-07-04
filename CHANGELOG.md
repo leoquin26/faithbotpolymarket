@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.36.0 — 2026-07-04 — late-window shadow capture: auditioning "momentum-into-close"
+**Tag:** `cleanbot-v1.36.0` · **Status:** ✅ live (bot still trade-paused) · shadow data only
+
+From the owner's Novals83/5min-btc-polymarket repo review. Its thesis (enter with ~2min left
+after a strong established move; fee curve favors it — taker fee 0.07·p·(1−p) is tiny at extreme
+prices) is the INVERSE of our verified early-entry finding, but our "late" cut was measured on
+NORMAL drifts; late-after-STRONG-move was flat (72% vs 72% BE, n=29) — unproven, not disproven.
+NEW: `_research_scan(coin, phase='late')` snapshots every window a second time in the last
+~2-3min (t_rem 60-210s) with full features; `phase` column added (early/late), CSV migrated.
+The trade-paused weekend collects this for free. Verifier decides at n≥80 whether late+strong
+becomes strategy #3. Also: 50%-of-allocation sizing in that repo = never copy; micro-hedge =
+EV-neutral theater at our size.
+
 ## v1.35.2 — 2026-07-03 — snapshot XRP strikes (owner spotted per-scan fallback log spam)
 **Tag:** `cleanbot-v1.35.2` · **Status:** ✅ live · shadow-data quality + log hygiene
 
