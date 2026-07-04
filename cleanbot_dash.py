@@ -17,7 +17,7 @@ try:
     import httpx
 except Exception:
     httpx = None
-from flask import Flask, jsonify, Response, request
+from flask import Flask, jsonify, Response, request, send_from_directory
 
 BOT = Path(__file__).resolve().parent
 STATE = BOT / "clean_bot_state.json"
@@ -45,6 +45,8 @@ RE_ALIVE = re.compile(
 RE_STOP = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| \[STOP\] (PROFIT-LOCK|daily loss|give-back)')
 RE_BANNER = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| === CleanBot v([\d.]+) start \| (LIVE|DRY)')
 RE_ADAPT = re.compile(r'\[ADAPT\] rolling WR (\d+)% \(last (\d+)\) -> drift bar ([\d.]+)bps \(base (\d+)\)')
+RE_SIG = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| \[SIG\] edge=([+-][\d.]+)pts')
+RE_SIGHEALTH = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| \[SIGNAL-HEALTH\] market drift-signal edge ([+-][\d.]+)pts')
 RE_SKIP = re.compile(r'-> SKIP:(\w+)')
 GUARD_TAGS = ["COUNTER-TREND SKIP", "REGIME SKIP", "DAY-TREND SKIP", "MOM SKIP",
               "REV COOLDOWN", "CORR DIVERGE", "CORR SKIP", "CORR HALF",
@@ -64,6 +66,7 @@ class LogCache:
         self.banners = []         # (ts, version, mode)
         self.alive = None         # last heartbeat dict
         self.adapt = None         # last ADAPT dict
+        self.sighist = []         # (ts, edge) points from [SIG] + [SIGNAL-HEALTH] lines
 
     def _ingest(self, ln):
         if not RE_DATED.match(ln):
@@ -105,6 +108,10 @@ class LogCache:
         if m:
             self.banners.append({"ts": m.group(1), "version": m.group(2), "mode": m.group(3)})
             return
+        m = RE_SIG.match(ln) or RE_SIGHEALTH.match(ln)
+        if m:
+            self.sighist.append({"ts": m.group(1), "edge": float(m.group(2))})
+            return
         m = RE_ADAPT.search(ln)
         if m:
             self.adapt = {"wr": int(m.group(1)), "n": int(m.group(2)),
@@ -139,7 +146,8 @@ class LogCache:
                     pass
             # bound memory
             for attr, keep in (("equity", 5000), ("enters", 800), ("guards", 3000),
-                               ("skips", 4000), ("stops", 300), ("trades", 3000)):
+                               ("skips", 4000), ("stops", 300), ("trades", 3000),
+                               ("sighist", 2000)):
                 v = getattr(self, attr)
                 if len(v) > keep:
                     setattr(self, attr, v[-keep:])
@@ -204,6 +212,12 @@ def signal_health():
     if _SIG["data"] is not None and now - _SIG["ts"] < 120:
         return _SIG["data"]
     out = {"edge": None, "trading": None, "threshold": -2.0, "hmm": {}}
+    try:  # threshold from the bot's live env (999 = owner pause — the tape must show PAUSED, not stand-down)
+        for ln in (BOT / ".env").read_text(errors="ignore").splitlines():
+            if ln.startswith("CLEAN_SIG_MIN_EDGE="):
+                out["threshold"] = float(ln.split("=", 1)[1].strip())
+    except Exception:
+        pass
     try:
         rows = list(csv.DictReader(open(RESEARCH, encoding="utf-8", errors="ignore")))[-500:]
         sel = []
@@ -416,7 +430,7 @@ def data():
             hb_age = int(now - time.mktime(time.strptime(CACHE.alive["ts"], "%Y-%m-%d %H:%M:%S")))
         except Exception:
             pass
-    status = "DOWN" if not running else ("STALE" if (hb_age is None or hb_age > 240) else "LIVE")
+    status = "DOWN" if not running else ("STALE" if (hb_age is None or hb_age > 420) else "LIVE")
 
     # active stop: last STOP within 6 min and after last banner
     active_stop = None
@@ -511,8 +525,109 @@ def logs():
     except Exception:
         return jsonify({"lines": [], "offset": 0, "ts": time.time()})
 
+@app.route("/api/sighist")
+def sighist():
+    CACHE.refresh()
+    return jsonify({"points": CACHE.sighist[-600:], "threshold": -2.0, "ts": time.time()})
+
+
+_RSCH = {"ts": 0, "rows": None}
+
+def _research_rows():
+    now = time.time()
+    if _RSCH["rows"] is not None and now - _RSCH["ts"] < 30:
+        return _RSCH["rows"]
+    try:
+        rows = list(csv.DictReader(open(RESEARCH, encoding="utf-8", errors="ignore")))
+    except Exception:
+        rows = []
+    _RSCH.update(ts=now, rows=rows)
+    return rows
+
+
+@app.route("/api/research")
+def research():
+    rows = _research_rows()
+    coin = request.args.get("coin", "")
+    phase = request.args.get("phase", "")
+    dec = request.args.get("decision", "")
+    try:
+        limit = min(int(request.args.get("limit", 150)), 500)
+    except Exception:
+        limit = 150
+    sel = [r for r in rows
+           if (not coin or r.get("coin") == coin)
+           and (not phase or r.get("phase", "early") == phase)
+           and (not dec or r.get("decision") == dec)]
+    # aggregates over RESOLVED in-band rows of the selection
+    def fl(r, k):
+        try: return float(r[k])
+        except Exception: return None
+    res = [r for r in sel if r.get("drift_correct") in ("0", "1")]
+    inband = [r for r in res if fl(r, "fav_ask") and 55 <= fl(r, "fav_ask") <= 74
+              and fl(r, "drift_pct") is not None and abs(fl(r, "drift_pct")) * 100 >= 5]
+    agg = {"total": len(sel), "resolved": len(res), "inband": len(inband)}
+    if inband:
+        w = sum(int(r["drift_correct"]) for r in inband)
+        be = sum(fl(r, "fav_ask") / 100 for r in inband) / len(inband)
+        agg.update(wr=round(100 * w / len(inband), 1), be=round(be * 100, 1))
+    cov = {"er": sum(1 for r in sel if r.get("er")), "flow60": sum(1 for r in sel if r.get("flow60")),
+           "hmm": sum(1 for r in sel if r.get("hmm")),
+           "late": sum(1 for r in sel if r.get("phase") == "late")}
+    cols = ["ts", "coin", "dir", "drift_pct", "fav_ask", "er", "flow60", "hmm",
+            "decision", "reason", "winner", "drift_correct", "phase"]
+    out = [{k: r.get(k, "") for k in cols} for r in sel[-limit:]][::-1]
+    return jsonify({"rows": out, "agg": agg, "coverage": cov, "ts": time.time()})
+
+
+@app.route("/api/system")
+def system():
+    procs = {}
+    for name, script in (("bot", "clean_bot.py"), ("dashboard", "cleanbot_dash.py"),
+                         ("scout", "daily_scout.py")):
+        try:
+            out = subprocess.run(["pgrep", "-f", f"^python3 -u {script}$"],
+                                 capture_output=True, text=True, timeout=3)
+            pids = [p for p in out.stdout.split() if p.strip()]
+            procs[name] = {"up": bool(pids), "pids": pids}
+        except Exception:
+            procs[name] = {"up": None, "pids": []}
+    disk = {}
+    try:
+        out = subprocess.run(["df", "-h", "/"], capture_output=True, text=True, timeout=3)
+        parts = out.stdout.strip().splitlines()[-1].split()
+        disk = {"used": parts[2], "avail": parts[3], "pct": parts[4]}
+    except Exception:
+        pass
+    wd = []
+    try:
+        wd = (BOT / "logs" / "watchdog.log").read_text(errors="ignore").splitlines()[-5:]
+    except Exception:
+        pass
+    CACHE.refresh()
+    ver = CACHE.banners[-1]["version"] if CACHE.banners else None
+    restarts = [{"ts": b["ts"], "version": b["version"]} for b in CACHE.banners[-8:]]
+    paused = (BOT / ".watchdog_pause").exists()
+    return jsonify({"procs": procs, "disk": disk, "watchdog": wd, "version": ver,
+                    "restarts": restarts, "watchdog_paused": paused, "ts": time.time()})
+
+
+UI = BOT / "dash_ui"
+
 @app.route("/")
 def index():
+    if (UI / "index.html").exists():
+        return send_from_directory(UI, "index.html")
+    return Response(HTML, mimetype="text/html")
+
+
+@app.route("/ui/<path:fname>")
+def ui_asset(fname):
+    return send_from_directory(UI, fname)
+
+
+@app.route("/classic")
+def classic():
     return Response(HTML, mimetype="text/html")
 
 

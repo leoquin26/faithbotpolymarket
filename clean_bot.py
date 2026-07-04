@@ -52,7 +52,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.36.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.36.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -1254,6 +1254,12 @@ class CleanBot:
                 logger.info(f"… alive scan#{n} open={len(self.open_orders)} "
                             f"positions={len(self.positions)} bankroll=${self.bankroll:.2f} "
                             f"day_net={self.wins-self.losses:+.2f}")
+                try:  # v1.36.1: periodic signal-edge point so the dashboard can plot the timeline
+                    _sig = self._signal_health()
+                    if _sig is not None:
+                        logger.info(f"[SIG] edge={_sig:+.1f}pts")
+                except Exception:
+                    pass
                 self._sync_bankroll()       # keep bankroll honest vs the chain (~every 40 scans)
             time.sleep(5)
 
