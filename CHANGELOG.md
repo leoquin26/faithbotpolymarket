@@ -10,6 +10,30 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.37.0 — 2026-07-06 — Monday resume: unpause + retire the DAY-TREND gate (failed verification)
+**Tag:** `cleanbot-v1.37.0` · **Status:** ✅ live · env-only behavior change, no code edits
+
+Monday review outcome. (1) **Unpause**: `CLEAN_SIG_MIN_EDGE` back to `-2` — the walk-forward-
+verified signal-health gate resumes control (trades when rolling edge > −2pts, stands down
+otherwise). Weekend evidence says this is exactly the right tool: daily edge was +1.2 (Jul 4),
+**−10.4 (Jul 5)**, +0.6 (Jul 6 am) — the regime is trading in and out of health, so a static
+pause and a naive full-resume are both wrong; the gate arbitrates window by window.
+(2) **DAY-TREND gate retired** (`CLEAN_DAY_TREND=off`): its queued verification FAILED.
+Counterfactual join of 223 unique [DAY-TREND SKIP] windows to research outcomes: the skipped
+in-band rows would have won **67.6% vs 61.9% BE (+5.7pts, n=71, z=+0.99)** — the gate was
+blocking above-break-even trades and never showed harm-prevention. Redundant with the
+signal-health gate for regime protection. Same fate as the adaptive drift-bar, same reason.
+Kept: max_ask 0.70 (bankroll < $35), daily stop $5, ER deep-chop guard, trend guard.
+Gates checked and NOT passed today (keep collecting, no deployment): BTC coin gate z=+0.84
+(needs ≥1.64, n=102); late-window 55-70c audition **z=+2.29 but n=62 < 80**; Strategy #2
+n=46 settled < 80 (5-8% band still positive ≈ +$0.47/$, ≥8% band still toxic −$0.41/$).
+
+## v1.36.1 — 2026-07-04 — [SIG] heartbeat logging (retro-entry; shipped with Dashboard v3.0)
+**Tag:** `cleanbot-v1.36.1` · **Status:** ✅ live
+
+`[SIG] edge=±X.Xpts` logged every 40 scans so the dashboard and post-hoc audits can chart the
+rolling signal-health value continuously (previously only visible when the gate fired).
+
 ## v1.36.0 — 2026-07-04 — late-window shadow capture: auditioning "momentum-into-close"
 **Tag:** `cleanbot-v1.36.0` · **Status:** ✅ live (bot still trade-paused) · shadow data only
 
