@@ -10,6 +10,23 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.38.1 — 2026-07-07 — late-window fix: drop the drift floor (deployed filter ≠ verified edge)
+**Tag:** `cleanbot-v1.38.1` · **Status:** ✅ live · frequency fix, verified OOS
+
+Owner flagged "almost no trades since 9pm." Root cause: `_late_entry()` copied the EARLY path's
+`drift≥5bps` floor, but the late "momentum-into-close" edge is **drift-INDEPENDENT** and the
+verification (n=80, z=+2.50) was measured with NO drift filter. Split proves it: late 55-70c
+**drift<5bps → OOS z=+1.53, EV +0.159 (n=67, STRONGER)** vs drift≥5 → OOS z=+0.66 (n=28, weaker).
+So the floor discarded ~2/3 of the verified windows — the biggest, best slice. Fix: new
+`CLEAN_LATE_DRIFT_BPS` (default **0** = no floor); the 55-70c ask band already selects "modest
+favorite," and a small late lead holds ~78% regardless of drift magnitude (the edge is the
+favorite being underpriced with time nearly out, not momentum). Impact: tradeable SOL/XRP late
+windows **4.8/day → 15.5/day (3.2×)**. Still SOL/XRP-only, min-size, 55-70c, shares daily-stop/
+breaker; early drift path still paused. Overnight will stay quiet regardless — 97% of overnight
+late windows are one-sided-book or favorite >70c (strong-trend hours); the edge lives in active/
+choppy hours. Separately noted (not changed): late maker fills race the 90s-to-close cancel on
+thin books (XRP no-fill 22:42 Jul6) — candidate T≥135 entry-timing tweak still open.
+
 ## v1.38.0 — 2026-07-06 — Strategy #3 goes LIVE: late-window "momentum-into-close" micro-audition
 **Tag:** `cleanbot-v1.38.0` · **Status:** ✅ live audition (SOL/XRP, min-size) · early path still paused
 
