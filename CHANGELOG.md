@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.40.0 — 2026-07-07 — live accuracy+EV meter + widen the cap (bet constantly, measure it)
+**Tag:** `cleanbot-v1.40.0` · **Status:** ✅ live · owner's "bet constant, measure accuracy, compound" philosophy
+
+Owner: stop capping/gating — bet constantly, measure our real accuracy/EV, and even a small
+constant edge compounds. Two changes: (1) NEW `[TRACK]` log after every resolution — rolling
+WR + **realized EV/$ (net PnL per $ staked)** over the last up-to-100 trades, flagged
+COMPOUNDING vs break-even/bleeding. EV/$ is the honest compounding rate (WR alone lies at favorite
+prices). Persisted across restarts (`recent_ev` in state). This is the instrument that tells us —
+live, not in theory — whether constant-betting is net-positive. (2) `CLEAN_MAX_ASK` 0.70→0.85 so
+it bets the fuller favorite range (data: 70-80c +0.032/$, 80-95c +0.028/$ are positive) instead of
+capping. Signal-health gate stays (verified) but the marginal caps loosen. The meter now arbitrates:
+if [TRACK] EV/$ holds positive over 50-100 trades, the constant-bet approach works and we scale
+size; if it sits at/below zero, we have the honest verdict in real time.
+
 ## v1.39.1 — 2026-07-07 — late-window: add the correlation guard (owner caught "3 all DOWN all lose")
 **Tag:** `cleanbot-v1.39.1` · **Status:** ✅ live · risk-concentration fix
 

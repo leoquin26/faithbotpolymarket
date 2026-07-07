@@ -52,7 +52,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.39.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.40.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -258,6 +258,7 @@ class CleanBot:
         self.breaker_trips = 0                  # repeat breaker firings (escalating regime backoff)
         self.win_streak = 0                     # consecutive wins (resets the escalation)
         self.recent_trades = []                 # rolling 1/0 outcomes (adaptive accuracy)
+        self.recent_ev = []                     # rolling (won, pnl, stake) — live accuracy+EV meter
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
         self._nc_logged = set()                 # throttle [NO CONFIRM] logs (per window)
@@ -287,6 +288,7 @@ class CleanBot:
                        "hwm": round(self.hwm, 2),
                        "day_blocked": self.day_blocked, "day_loss_streak": self.day_loss_streak,
                        "recent_trades": self.recent_trades[-60:],
+                       "recent_ev": self.recent_ev[-100:],
                        "positions": self.positions,
                        "traded": [list(t) for t in self.traded]},
                       open(STATE, "w"))
@@ -307,6 +309,7 @@ class CleanBot:
             self.day_blocked = d.get("day_blocked", False)
             self.day_loss_streak = d.get("day_loss_streak", 0)
             self.recent_trades = d.get("recent_trades", [])
+            self.recent_ev = [tuple(x) for x in d.get("recent_ev", [])]
             self.positions = d.get("positions", {})
             self.traded = {tuple(t) for t in d.get("traded", [])}
             logger.info(f"state reloaded: {len(self.positions)} positions, bankroll "
@@ -1260,6 +1263,16 @@ class CleanBot:
             logger.info(f"[{'WIN' if won else 'LOSS'}] {p['coin']} {p['dir']} @ "
                         f"{entry*100:.0f}c -> {w} | {pnl:+.2f} | bankroll ${self.bankroll:.2f} "
                         f"| day net {net:+.2f}" + (" [SIM]" if p.get("sim") else ""))
+            # LIVE ACCURACY + EV METER: the honest read on whether constant-betting is net-positive.
+            # WR alone lies (favorite pricing); EV/$ (net PnL per $ staked) is the real compounding rate.
+            self.recent_ev.append((1 if won else 0, pnl, entry * p.get("shares", CFG.shares)))
+            self.recent_ev = self.recent_ev[-100:]
+            if len(self.recent_ev) >= 10:
+                _w = sum(x[0] for x in self.recent_ev); _n = len(self.recent_ev)
+                _net = sum(x[1] for x in self.recent_ev); _stk = sum(x[2] for x in self.recent_ev)
+                _ev = _net / _stk if _stk else 0.0
+                logger.info(f"[TRACK] last {_n}: {_w}/{_n}={100*_w/_n:.0f}%WR | net {_net:+.2f} | "
+                            f"EV/$ {_ev:+.3f} | {'COMPOUNDING ✓' if _net > 0 else 'break-even/bleeding'}")
             tg._send(f"{'🧪 ' if p.get('sim') else ''}{'✅ <b>WIN</b>' if won else '❌ <b>LOSS</b>'}"
                      f"{' (sim)' if p.get('sim') else ''} {p['coin']} {p['dir']} @ "
                      f"{entry*100:.0f}c → {w} | {pnl:+.2f} | 💰 ${self.bankroll:.2f} | day net {net:+.2f}",
