@@ -10,6 +10,22 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.38.0 — 2026-07-06 — Strategy #3 goes LIVE: late-window "momentum-into-close" micro-audition
+**Tag:** `cleanbot-v1.38.0` · **Status:** ✅ live audition (SOL/XRP, min-size) · early path still paused
+
+Owner directed starting the late-window strategy live now. It cleared its AUDITION gate today:
+`_late_verify.py` band 55-70c → **n=80, WR 78.8% vs 65.4% BE, z=+2.50, EV/$ +0.133; OOS(30%)
+n=24 z=+1.40 EV/$ +0.136** → verdict AUDITION (small-size live OK). Edge concentrated in
+**SOL (23-5, 82%)** and **XRP (22-4, 85%)**; ETH weak (10-6, 63%) → excluded. NEW `_late_entry()`
+places ONE minimum-size (5-share) maker per window in the last ~3min (t_rem 60-210s), established
+move (drift≥5bps), fav-ask 55-70c, on `CLEAN_LATE_COINS=SOL,XRP`. Routes through the existing
+GTC/fill/settlement plumbing (incl. the phantom-fill re-verify). **Deliberately independent of the
+early signal-health gate** — it's a distinct edge that trades even while early stands down — but
+the loop only calls it when NOT daily-stopped and NOT in breaker cooldown, so it shares those risk
+controls. Env: `CLEAN_LATE_LIVE=on`. Early drift path stays PAUSED (`CLEAN_SIG_MIN_EDGE=999`,
+proven negative-EV OOS). This is a small-size AUDITION, not a full deploy — DEPLOY gate is OOS
+n≥80 (~1wk out); size stays at the 5-share floor until then. Sizing/deposit decisions unchanged.
+
 ## v1.37.0 — 2026-07-06 — Monday resume: unpause + retire the DAY-TREND gate (failed verification)
 **Tag:** `cleanbot-v1.37.0` · **Status:** ✅ live · env-only behavior change, no code edits
 

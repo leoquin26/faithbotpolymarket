@@ -52,7 +52,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.37.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.38.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -158,6 +158,17 @@ class Cfg:
     # BE (−9pts) market-wide — no entry filter survives an anti-predictive tape. ──
     sig_window: int = int(os.getenv("CLEAN_SIG_WINDOW", "40"))       # rolling window of resolved in-band research rows (0 = gate off)
     sig_min_edge: float = float(os.getenv("CLEAN_SIG_MIN_EDGE", "-2"))  # stand down when rolling (WR − break-even) drops below this many pts
+    # ── LATE-WINDOW audition (Strategy #3, v1.38): live micro-test of the "momentum-into-close"
+    # edge — verified AUDITION-grade (n=80, z=+2.50, OOS EV +0.136). INDEPENDENT of the early
+    # signal-health gate (different edge: it trades even while early stands down). SOL/XRP only
+    # (where the edge lives: SOL 82%, XRP 85%; ETH weak 60%). One min-size maker per window in
+    # the last ~3min. Shares the daily-stop + breaker. Default OFF. ──
+    late_live: bool = os.getenv("CLEAN_LATE_LIVE", "off").lower() in ("1", "true", "yes", "on")
+    late_coins: tuple = tuple(c for c in os.getenv("CLEAN_LATE_COINS", "SOL,XRP").split(",") if c)
+    late_t_min: float = float(os.getenv("CLEAN_LATE_T_MIN", "60"))    # last-window band (matches the shadow-capture zone)
+    late_t_max: float = float(os.getenv("CLEAN_LATE_T_MAX", "210"))
+    late_min_ask: float = float(os.getenv("CLEAN_LATE_MIN_ASK", "0.55"))
+    late_max_ask: float = float(os.getenv("CLEAN_LATE_MAX_ASK", "0.70"))
     # ── MOMENTUM CONFIRMATION (v1.13.1): the data says fading moves (drift one way but
     # 5-min momentum the other) are the reversals. Only bet WITH momentum. ──
     mom_filter: bool = os.getenv("CLEAN_MOM_FILTER", "on").lower() in ("1", "true", "yes", "on")
@@ -933,6 +944,78 @@ class CleanBot:
             logger.warning(f"[ORDER FAIL] {coin} {direction}: {e}")
         self._save()
 
+    def _late_entry(self, coin: str):
+        """Strategy #3 (v1.38) — LIVE micro-audition of the late-window 'momentum-into-close'
+        edge. Verified AUDITION-grade on shadow data (band 55-70c: n=80, WR 78.8% vs 65.4% BE,
+        z=+2.50, OOS EV +0.136; concentrated in SOL 82% / XRP 85%). Deliberately INDEPENDENT of
+        the early signal-health gate — it's a different edge and trades even while early stands
+        down. One minimum-size (5-share) maker per window, last ~3min, established move, in the
+        55-70c band. Caller (loop) only invokes it when NOT daily-stopped and NOT in breaker
+        cooldown, so it shares those risk controls. Env-gated: CLEAN_LATE_LIVE (default off)."""
+        if not CFG.late_live or coin not in CFG.late_coins:
+            return
+        info = get_market_info(coin)
+        if not info:
+            return
+        ws = info.window_start
+        key = (coin, ws)
+        if key in self.traded:                       # one entry per window (shared with early)
+            return
+        now = time.time()
+        t_rem = ws + 900 - now
+        if not (CFG.late_t_min <= t_rem <= CFG.late_t_max):
+            return
+        strike = float(info.threshold_price or 0)
+        px = float(info.current_crypto_price or binance_ws.get_price(coin) or 0)
+        if strike <= 0 or px <= 0:
+            return
+        if not str(info.strike_source or "").startswith("chainlink"):
+            return                                   # same wrong-feed protection as early
+        dist = (px - strike) / strike
+        if abs(dist) < CFG.drift_bps / 10000.0:      # require an established move (matches shadow)
+            return
+        is_up = dist > 0
+        token = info.up_token_id if is_up else info.down_token_id
+        direction = "UP" if is_up else "DOWN"
+        book = {}
+        try:
+            book = self.om.get_clob_book(token) or {}
+        except Exception:
+            pass
+        ask = book.get("ask")
+        if not ask or not (CFG.late_min_ask <= float(ask) <= CFG.late_max_ask):
+            return
+        maker = round(max(0.02, float(ask) - CFG.maker_offset), 2)
+        shares = CFG.shares                          # MIN size for the audition (no compounding)
+        if self._open_exposure() + maker * shares > self.bankroll * CFG.max_open_pct:
+            return                                   # respect the simultaneous-exposure cap
+        self.traded.add(key)
+        logger.info(f"[LATE ENTER] {coin} {direction} drift={dist*100:+.3f}% ask={float(ask)*100:.0f}c "
+                    f"-> maker {maker*100:.0f}c x{shares} (${maker*shares:.2f}, bankroll ${self.bankroll:.0f}) "
+                    f"T={t_rem:.0f}s [AUDITION]" + (" [DRY]" if CFG.dry else ""))
+        if CFG.dry:
+            self.positions[f"{coin}:{ws}"] = {"coin": coin, "ws": ws, "dir": direction,
+                                              "entry": maker, "shares": shares, "token": token,
+                                              "status": "filled", "sim": True, "late": True}
+            logger.info(f"[SIM FILL] {coin} {direction} @ {maker*100:.0f}c x{shares} (paper, late)")
+            self._save()
+            return
+        try:
+            res = self.client.create_and_post_order(
+                OrderArgs(price=maker, size=shares, side=BUY, token_id=token),
+                PartialCreateOrderOptions(tick_size="0.01"), OrderType.GTC)
+            oid = (res or {}).get("orderID") or (res or {}).get("orderId")
+            if oid:
+                self.open_orders[oid] = {"coin": coin, "ws": ws, "dir": direction,
+                                         "token": token, "price": maker,
+                                         "shares": shares, "ts": now, "late": True}
+                logger.info(f"[GTC] resting LATE {coin} {direction} @ {maker*100:.0f}c x{shares} oid={oid[:10]}")
+            else:
+                logger.warning(f"[LATE ORDER] no oid in result: {res}")
+        except Exception as e:
+            logger.warning(f"[LATE ORDER FAIL] {coin} {direction}: {e}")
+        self._save()
+
     # ── fills ────────────────────────────────────────────────────────
     def check_orders(self):
         now = time.time()
@@ -1238,6 +1321,11 @@ class CleanBot:
                 else:
                     for c in CFG.coins:
                         self.scan(c)
+                    # Strategy #3 live audition — independent of the early signal-health gate,
+                    # but shares this daily-stop / breaker guard. SOL/XRP only, min-size.
+                    if CFG.late_live:
+                        for c in CFG.late_coins:
+                            self._late_entry(c)
             except Exception as e:
                 logger.warning(f"loop error: {e}")
             # research data capture — fully isolated, never places orders / affects trading.
