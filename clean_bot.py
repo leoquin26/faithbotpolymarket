@@ -52,7 +52,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.38.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.39.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -84,6 +84,7 @@ class Cfg:
     position_keep_h: int = int(os.getenv("CLEAN_POSITION_KEEP_H", "48"))  # prune resolved positions older than this (state hygiene)
     stop_pct: float = float(os.getenv("CLEAN_STOP_PCT", "0.15"))       # daily stop = 15% of bankroll
     daily_stop_floor: float = float(os.getenv("CLEAN_DAILY_STOP", "6.0"))  # $ floor for the stop
+    kill_floor: float = float(os.getenv("CLEAN_KILL_FLOOR", "0"))      # v1.39 HARD kill-switch: bankroll floor below which ALL new entries stop permanently (not just for the day). 0 = off. Set for the deposit test (e.g. 70 on a $100 book) = pre-committed max drawdown.
     # ── whipsaw protection: pause after N losses in a row ──
     loss_breaker: int = int(os.getenv("CLEAN_LOSS_BREAKER", "3"))      # 0 = off
     breaker_cooldown: int = int(os.getenv("CLEAN_BREAKER_COOLDOWN", "1200"))  # base pause sec (20m)
@@ -170,7 +171,8 @@ class Cfg:
     late_min_ask: float = float(os.getenv("CLEAN_LATE_MIN_ASK", "0.55"))
     late_max_ask: float = float(os.getenv("CLEAN_LATE_MAX_ASK", "0.70"))
     late_drift_bps: float = float(os.getenv("CLEAN_LATE_DRIFT_BPS", "0"))  # v1.38.1: the late edge is drift-INDEPENDENT (OOS: drift<5 slice z=+1.53 EV+0.159, STRONGER than drift>=5). The 55-70c ask band already selects "modest favorite"; a drift floor here just discards 2/3 of the verified windows. 0 = no floor.
-    late_mom_agree: bool = os.getenv("CLEAN_LATE_MOM_AGREE", "on").lower() in ("1", "true", "yes", "on")  # v1.38.2: only bet the leader when 60s momentum AGREES. Fading leaders (lead up, momentum down) are the weak half — OOS EV −0.031 vs +0.335 aligned (owner spotted an XRP-UP-into-a-down-move). Skips exactly those.
+    late_mom_agree: bool = os.getenv("CLEAN_LATE_MOM_AGREE", "off").lower() in ("1", "true", "yes", "on")  # v1.38.2 (DEPRECATED, default off): roc60-based; unreliable (roc60 present only ~30% of late windows → fails open). Superseded by late_skip_fading.
+    late_skip_fading: bool = os.getenv("CLEAN_LATE_SKIP_FADING", "on").lower() in ("1", "true", "yes", "on")  # v1.39: skip FADING leaders (favorite ahead but its lead SHRANK from the early→late snapshot, same dir). Uses Chainlink settlement-feed drift trajectory (96% coverage, reliable). Verified: whole band 76.5%/EV+0.167 → skip-fading 81.5%/EV+0.244, recent30% EV+0.202 z+1.27. Keeps growing+reversed leads.
     # ── MOMENTUM CONFIRMATION (v1.13.1): the data says fading moves (drift one way but
     # 5-min momentum the other) are the reversals. Only bet WITH momentum. ──
     mom_filter: bool = os.getenv("CLEAN_MOM_FILTER", "on").lower() in ("1", "true", "yes", "on")
@@ -977,14 +979,22 @@ class CleanBot:
         if abs(dist) < CFG.late_drift_bps / 10000.0:  # late edge is drift-independent; 55-70c band does the selecting
             return
         is_up = dist > 0
-        # MOMENTUM-AGREEMENT (v1.38.2): the late edge = the LEADER holding, but only when 60s
-        # momentum agrees. A FADING leader (price above strike but falling, or below but rising)
-        # is the weak half — OOS EV −0.031 vs +0.335 aligned. Skip fading leaders (fail-open on
-        # missing tick data: _roc returns 0.0 → the `and roc60` guard lets it pass).
-        if CFG.late_mom_agree:
-            roc60 = _roc(binance_ws.get_tick_history(coin, 300), 60)
-            if roc60 and (roc60 > 0) != is_up:
-                return
+        # SKIP FADING LEADERS (v1.39): the late edge = the leader holding, but a FADING leader
+        # (still ahead, same direction as early, but its lead SHRANK from early→late) is the weak
+        # bucket (68% vs 81% for growing/reversed leads). Measured on the Chainlink settlement
+        # feed via the window's own early snapshot (drift_pct stored as dist*100) — reliable,
+        # 96% coverage. Verified: skip-fading lifts the band 76.5%→81.5% WR, EV +0.167→+0.244,
+        # holds recent (EV +0.202). Fail-open if no early snapshot for this window.
+        if CFG.late_skip_fading:
+            er = self._research.get((coin, ws, "early"))
+            if er:
+                try:
+                    e_drift = float(er.get("drift_pct"))       # early lead, in dist*100 units
+                    same_dir = (e_drift > 0) == is_up
+                    if same_dir and abs(dist * 100) < abs(e_drift):
+                        return                                  # fading leader — skip
+                except Exception:
+                    pass
         token = info.up_token_id if is_up else info.down_token_id
         direction = "UP" if is_up else "DOWN"
         book = {}
@@ -1302,7 +1312,18 @@ class CleanBot:
                 self.day_peak = max(self.day_peak, self.wins - self.losses)
                 # hwm is updated from CHAIN TRUTH inside _sync_bankroll (not here) so the
                 # profit-lock peak can't be inflated by ledger drift and fire prematurely.
-                if self._stopped():
+                if CFG.kill_floor > 0 and self.bankroll <= CFG.kill_floor:
+                    # HARD kill-switch (v1.39): pre-committed max drawdown for the deposit test.
+                    # Permanent — no new entries of ANY strategy until the owner resets it.
+                    if n % 40 == 1:
+                        logger.info(f"[KILL-SWITCH] bankroll ${self.bankroll:.2f} <= floor "
+                                    f"${CFG.kill_floor:.2f} — all trading stopped (owner reset required)")
+                    if not self._stop_notified:
+                        tg._send(f"🛑 <b>KILL-SWITCH HIT</b> — bankroll ${self.bankroll:.2f} reached the "
+                                 f"${CFG.kill_floor:.0f} floor. All trading stopped. The test is over; "
+                                 f"reset CLEAN_KILL_FLOOR to resume.")
+                        self._stop_notified = True
+                elif self._stopped():
                     if not self._stop_notified:
                         if (CFG.trail_stop > 0 and (self.hwm - self.day_start_bankroll) >= CFG.trail_stop
                                 and (self.hwm - self.bankroll) >= CFG.trail_stop):

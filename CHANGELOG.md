@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.39.0 — 2026-07-07 — late-window done right (settlement-feed fading filter) + hard kill-switch
+**Tag:** `cleanbot-v1.39.0` · **Status:** ✅ deployed, late_live OFF pending the $100 deposit
+
+The fix for v1.38.2's broken roc60 filter (data present only ~30%). NEW `late_skip_fading`
+measures the leader's trajectory from the window's OWN early→late Chainlink snapshots (drift_pct,
+96% coverage — reliable) instead of sparse Binance ticks. Skips FADING leaders (favorite still
+ahead but its lead SHRANK, same direction — the weak 68% bucket); keeps growing + reversed leads.
+Verified on real data: whole band 76.5% WR / EV +0.167 → **skip-fading 81.5% / EV +0.244, and it
+HOLDS RECENT (last-30%: WR 80.0%, EV +0.202, z=+1.27)** — not an in-sample artifact. ~10 SOL/XRP
+setups/day. Old roc60 `late_mom_agree` deprecated (default off). ALSO: `CLEAN_KILL_FLOOR` — a hard
+pre-committed drawdown floor; below it ALL trading stops permanently until the owner resets (the
+deposit-test kill-switch; e.g. 70 on a $100 book = max −$30). This is the version the $100 deposit
+funds: late-window SOL/XRP, skip-fading, min-size (~3% at $100), early path still paused, kill-
+switch armed. GO sequence: owner deposits → set CLEAN_KILL_FLOOR=70, CLEAN_LATE_LIVE=on, restart.
+
 ## v1.38.2 — 2026-07-07 — late-window: skip FADING leaders (owner caught it; verified OOS)
 **Tag:** `cleanbot-v1.38.2` · **Status:** ✅ live · quality+frequency win
 
