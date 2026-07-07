@@ -52,7 +52,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.39.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.39.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -1007,6 +1007,15 @@ class CleanBot:
             return
         maker = round(max(0.02, float(ask) - CFG.maker_offset), 2)
         shares = CFG.shares                          # MIN size for the audition (no compounding)
+        # CORRELATION GUARD (v1.39.1): BTC/ETH/SOL move ~0.85 together. Betting the SAME
+        # direction across them in ONE window = a single 3x bet, not three — one wrong call
+        # loses all three at once (2026-07-07: BTC+ETH+SOL all DOWN same window, all lost).
+        # Mirror the early path: skip same-direction correlated stacking, and skip betting
+        # OPPOSITE a held sibling (divergence = coinflip). One late leg per window/direction.
+        if self._corr_sibling(coin, ws, direction):
+            return
+        if CFG.corr_opposite_block and self._corr_opposite(coin, ws, direction):
+            return
         if self._open_exposure() + maker * shares > self.bankroll * CFG.max_open_pct:
             return                                   # respect the simultaneous-exposure cap
         self.traded.add(key)

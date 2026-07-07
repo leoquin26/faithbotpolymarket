@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.39.1 — 2026-07-07 — late-window: add the correlation guard (owner caught "3 all DOWN all lose")
+**Tag:** `cleanbot-v1.39.1` · **Status:** ✅ live · risk-concentration fix
+
+Owner spotted the bot betting BTC+ETH+SOL all DOWN in the SAME window, all losing together. Root
+cause: `_late_entry` had NO correlation guard (the early `scan` path has full corr control since
+v1.15/v1.31, but it was never added to the late path built in v1.38). The 3 coins move ~0.85
+together, so 3 same-direction late legs in one window = ONE 3x directional bet — a single wrong
+call loses all three (~$10) at once. Fix: reuse `_corr_sibling`/`_corr_opposite` in `_late_entry`
+— skip a late leg if a correlated coin is already bet the same direction this window, or opposite
+a held sibling (divergence coinflip). Now at most one late leg per window/direction. NOT a
+direction-detection failure (signal is 65-71% right); it was risk concentration. Reduces late
+frequency slightly but removes the correlated-cluster loss.
+
 ## v1.39.0 — 2026-07-07 — late-window done right (settlement-feed fading filter) + hard kill-switch
 **Tag:** `cleanbot-v1.39.0` · **Status:** ✅ deployed, late_live OFF pending the $100 deposit
 
