@@ -211,11 +211,16 @@ def signal_health():
     now = time.time()
     if _SIG["data"] is not None and now - _SIG["ts"] < 120:
         return _SIG["data"]
-    out = {"edge": None, "trading": None, "threshold": -2.0, "hmm": {}}
-    try:  # threshold from the bot's live env (999 = owner pause — the tape must show PAUSED, not stand-down)
+    out = {"edge": None, "trading": None, "threshold": -2.0, "hmm": {},
+           "late_live": False, "late_coins": ""}
+    try:  # threshold + late-audition flags from the bot's live env
         for ln in (BOT / ".env").read_text(errors="ignore").splitlines():
             if ln.startswith("CLEAN_SIG_MIN_EDGE="):
                 out["threshold"] = float(ln.split("=", 1)[1].strip())
+            elif ln.startswith("CLEAN_LATE_LIVE="):
+                out["late_live"] = ln.split("=", 1)[1].strip().lower() in ("1", "true", "yes", "on")
+            elif ln.startswith("CLEAN_LATE_COINS="):
+                out["late_coins"] = ln.split("=", 1)[1].strip()
     except Exception:
         pass
     try:

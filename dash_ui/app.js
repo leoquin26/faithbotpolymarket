@@ -88,7 +88,10 @@ function Banner({ d }) {
   let kind = null, msg = "";
   if (d.status === "DOWN") { kind = "err"; msg = "⛔ Bot process not running — the watchdog restarts it within 5 minutes."; }
   else if (d.status === "STALE") { kind = "warn"; msg = `⚠️ Heartbeat stale (${d.hb_age ?? "?"}s) — bot may be hung.`; }
-  else if (sig.threshold >= 900) { kind = "warn"; msg = "⏸ Trading paused by owner until the Monday review. Research, scout and data collection continue."; }
+  else if (sig.threshold >= 900) {
+    if (sig.late_live) { kind = "warn"; msg = `🧪 Early drift strategy paused (negative-EV out-of-sample). Live now: late-window Strategy #3 audition — min-size on ${sig.late_coins || "SOL,XRP"}, independent of the signal-health gate.`; }
+    else { kind = "warn"; msg = "⏸ Early strategy paused (negative-EV out-of-sample). Research, scout and data collection continue."; }
+  }
   else if (d.active_stop) { kind = "warn"; msg = `🔒 Stop active: ${d.active_stop} — no new entries (auto-clears at midnight).`; }
   else if (sig.trading === false) { kind = "warn"; msg = `🛡️ Signal-health stand-down (${sig.edge} pts) — auto-resumes when the tape is winnable.`; }
   if (!kind) return null;
