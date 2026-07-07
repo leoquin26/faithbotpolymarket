@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.38.2 — 2026-07-07 — late-window: skip FADING leaders (owner caught it; verified OOS)
+**Tag:** `cleanbot-v1.38.2` · **Status:** ✅ live · quality+frequency win
+
+Owner flagged an `XRP UP` entry "where clearly the direction was down." Correct catch: the late
+strategy bets the LEADER (spot vs strike) to hold, and this one was a *fading* leader (spot above
+strike but 60s momentum falling). Split of late 55-70c by momentum-vs-leader: **WITH momentum →
+84.1% WR, OOS EV +0.335 (z=+2.65); AGAINST (fading) → 72.5% all but OOS EV −0.031 (negative)**.
+So fading-leader bets are the negative-OOS half. Fix: `CLEAN_LATE_MOM_AGREE` (default on) — only
+enter when 60s `_roc` agrees with the leader direction; fail-open if tick data missing. Keeps the
+strong half (momentum-aligned, ~7.2 SOL/XRP tradeable/day — still > the old 4.8) and drops exactly
+the trade the owner objected to. Net vs original: MORE trades AND higher quality. Still min-size,
+SOL/XRP, 55-70c, shares daily-stop/breaker; early path paused.
+
 ## v1.38.1 — 2026-07-07 — late-window fix: drop the drift floor (deployed filter ≠ verified edge)
 **Tag:** `cleanbot-v1.38.1` · **Status:** ✅ live · frequency fix, verified OOS
 

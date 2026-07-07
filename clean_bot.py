@@ -52,7 +52,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.38.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.38.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -170,6 +170,7 @@ class Cfg:
     late_min_ask: float = float(os.getenv("CLEAN_LATE_MIN_ASK", "0.55"))
     late_max_ask: float = float(os.getenv("CLEAN_LATE_MAX_ASK", "0.70"))
     late_drift_bps: float = float(os.getenv("CLEAN_LATE_DRIFT_BPS", "0"))  # v1.38.1: the late edge is drift-INDEPENDENT (OOS: drift<5 slice z=+1.53 EV+0.159, STRONGER than drift>=5). The 55-70c ask band already selects "modest favorite"; a drift floor here just discards 2/3 of the verified windows. 0 = no floor.
+    late_mom_agree: bool = os.getenv("CLEAN_LATE_MOM_AGREE", "on").lower() in ("1", "true", "yes", "on")  # v1.38.2: only bet the leader when 60s momentum AGREES. Fading leaders (lead up, momentum down) are the weak half — OOS EV −0.031 vs +0.335 aligned (owner spotted an XRP-UP-into-a-down-move). Skips exactly those.
     # ── MOMENTUM CONFIRMATION (v1.13.1): the data says fading moves (drift one way but
     # 5-min momentum the other) are the reversals. Only bet WITH momentum. ──
     mom_filter: bool = os.getenv("CLEAN_MOM_FILTER", "on").lower() in ("1", "true", "yes", "on")
@@ -976,6 +977,14 @@ class CleanBot:
         if abs(dist) < CFG.late_drift_bps / 10000.0:  # late edge is drift-independent; 55-70c band does the selecting
             return
         is_up = dist > 0
+        # MOMENTUM-AGREEMENT (v1.38.2): the late edge = the LEADER holding, but only when 60s
+        # momentum agrees. A FADING leader (price above strike but falling, or below but rising)
+        # is the weak half — OOS EV −0.031 vs +0.335 aligned. Skip fading leaders (fail-open on
+        # missing tick data: _roc returns 0.0 → the `and roc60` guard lets it pass).
+        if CFG.late_mom_agree:
+            roc60 = _roc(binance_ws.get_tick_history(coin, 300), 60)
+            if roc60 and (roc60 > 0) != is_up:
+                return
         token = info.up_token_id if is_up else info.down_token_id
         direction = "UP" if is_up else "DOWN"
         book = {}
