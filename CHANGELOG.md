@@ -10,6 +10,22 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.41.0 — 2026-07-07 — PRODUCT phase 1: capture Binance book-imbalance (microstructure signal)
+**Tag:** `cleanbot-v1.41.0` · **Status:** ✅ live · shadow data-enrichment, zero trading-logic change
+
+Owner pivoted to building a real product: improve predictions by enriching the DATA (our features
+were starved — flow60 only 37% populated, book depth 0%). Predictions can't beat the market on
+crude price-only features; the edge, if any, is in microstructure that leads the settlement price.
+Phase 1: NEW Binance `@bookTicker` subscription in `binance_ws.py` (added alongside @aggTrade, fully
+isolated in `_on_message` — early-return branch, own try/except, cannot disturb the tick/flow path).
+`get_book_imbalance(coin)` = top-of-book (bid_qty−ask_qty)/(bid_qty+ask_qty) ∈ [−1,+1] — resting
+bid-vs-ask SIZE pressure, a leading directional signal. Logged as new `book_imb` research column.
+bookTicker updates on every book change (high-freq, reliable even when trades are sparse). This is
+DATA CAPTURE only — no change to entry logic. Roadmap: (1) this, build ~1-2wk dataset → (2) model
+book_imb + flow + roc walk-forward vs the MARKET price benchmark → (3) deploy only if it beats the
+market OOS → (4) refactor to clean product. Next enrichment candidates: fix flow60/roc60 coverage,
+add funding/OI/liquidation features.
+
 ## v1.40.0 — 2026-07-07 — live accuracy+EV meter + widen the cap (bet constantly, measure it)
 **Tag:** `cleanbot-v1.40.0` · **Status:** ✅ live · owner's "bet constant, measure accuracy, compound" philosophy
 

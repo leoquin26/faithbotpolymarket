@@ -45,14 +45,15 @@ RESEARCH_COLS = ["ts", "window_start", "coin", "dir", "drift_pct", "roc60_bps", 
                  "er",       # efficiency ratio (regime: trend vs chop) — for regime-conditional sizing analysis
                  "flow60",   # order-flow: 60s buy/sell PRESSURE [-1..+1] (volume direction) — testing as a leading signal
                  "hmm",      # v1.34 SHADOW: 3-state HMM regime posterior 'T0.62/C0.31/P0.07' — verifier decides if it beats ER/signal-health
-                 "phase"]    # v1.36: 'early' (normal capture) or 'late' (last ~2-3min snapshot — momentum-into-close audition)
+                 "phase",    # v1.36: 'early' (normal capture) or 'late' (last ~2-3min snapshot — momentum-into-close audition)
+                 "book_imb"] # v1.41: Binance top-of-book size imbalance [-1..+1] (bid vs ask depth) — leading microstructure signal, product data-enrichment phase 1
 logger.remove()
 logger.add(sys.stdout, level="INFO", format="{time:HH:mm:ss} | {message}")
 logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.40.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.41.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -545,7 +546,8 @@ class CleanBot:
             "er": (lambda e: round(e, 3) if e is not None else "")(self._efficiency_ratio(coin)),
             "flow60": (lambda fl: round(fl, 3) if fl is not None else "")(binance_ws.get_order_flow(coin, 60)),
             "hmm": _hmm_fmt(coin),
-            "phase": phase}
+            "phase": phase,
+            "book_imb": (lambda bi: round(bi, 3) if bi is not None else "")(binance_ws.get_book_imbalance(coin))}
 
     def _research_resolve(self):
         """Resolve logged research windows via gamma; append the complete row

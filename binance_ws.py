@@ -29,6 +29,10 @@ _MAX_TICKS = 1200
 # extra latency. Only from the WS aggTrade stream (REST fallback has no per-trade volume).
 _flow_history: Dict[str, List[Tuple[float, float, bool]]] = {}
 _MAX_FLOW = 6000
+# top-of-book size imbalance from @bookTicker (updates on EVERY book change — high-frequency and
+# reliable even when trades are sparse). coin -> (bid_px, bid_qty, ask_px, ask_qty, ts). Resting
+# bid-vs-ask SIZE imbalance is a short-term directional-pressure signal that leads the price.
+_book: Dict[str, Tuple[float, float, float, float, float]] = {}
 _ws_connected = False
 _ws_thread: Optional[threading.Thread] = None
 _rest_thread: Optional[threading.Thread] = None
@@ -41,16 +45,29 @@ def _on_message(ws, message):
     try:
         data = json.loads(message)
         symbol = data.get("s", "").upper()
-        price = float(data.get("p", 0))
-        ts = data.get("T", 0) / 1000.0 if data.get("T") else time.time()
-        if price <= 0:
-            return
         coin = None
         for c, sym in config.SYMBOLS.items():
             if sym == symbol:
                 coin = c
                 break
         if not coin:
+            return
+        # @bookTicker message: best bid/ask + their SIZES (fields b/B/a/A, no 'p' price). Store
+        # top-of-book imbalance. Fully isolated + returns early so it can't disturb tick/flow.
+        if "B" in data and "A" in data and "b" in data:
+            try:
+                bpx = float(data.get("b", 0)); bq = float(data.get("B", 0))
+                apx = float(data.get("a", 0)); aq = float(data.get("A", 0))
+                if bq > 0 and aq > 0:
+                    with _price_lock:
+                        _book[coin] = (bpx, bq, apx, aq, time.time())
+            except Exception:
+                pass
+            return
+        # @aggTrade message: price + volume/flow (existing path, unchanged)
+        price = float(data.get("p", 0))
+        ts = data.get("T", 0) / 1000.0 if data.get("T") else time.time()
+        if price <= 0:
             return
         _store_tick(coin, price, ts)
         # order flow: m = "is buyer the maker?" → True means the AGGRESSOR was a seller
@@ -72,6 +89,21 @@ def _store_tick(coin: str, price: float, ts: float = None):
         _tick_history[coin].append((ts, price))
         if len(_tick_history[coin]) > _MAX_TICKS:
             _tick_history[coin] = _tick_history[coin][-_MAX_TICKS:]
+
+
+def get_book_imbalance(coin: str, max_age: float = 15.0) -> Optional[float]:
+    """Top-of-book size imbalance from @bookTicker: (bid_qty - ask_qty)/(bid_qty + ask_qty) in
+    [-1,+1]. Positive = more resting BID size (buy-side pressure) = short-term bullish lean.
+    None if no fresh book (older than max_age). A leading microstructure signal — resting book
+    pressure tends to precede the price move that settles the market."""
+    with _price_lock:
+        b = _book.get(coin)
+    if not b:
+        return None
+    bpx, bq, apx, aq, ts = b
+    if time.time() - ts > max_age or (bq + aq) <= 0:
+        return None
+    return (bq - aq) / (bq + aq)
 
 
 def _store_flow(coin: str, qty: float, is_buy: bool, ts: float = None):
@@ -122,8 +154,12 @@ def _run_ws():
     failures = 0
     while not _ws_gave_up:
         try:
-            # aggTrade = every individual trade, tick-level latency
-            combined = "/".join(f"{sym.lower()}@aggTrade" for sym in config.SYMBOLS.values())
+            # aggTrade = every trade (tick + flow); bookTicker = best bid/ask + sizes (book imbalance)
+            streams = []
+            for sym in config.SYMBOLS.values():
+                streams.append(f"{sym.lower()}@aggTrade")
+                streams.append(f"{sym.lower()}@bookTicker")
+            combined = "/".join(streams)
             url = f"{_WS_URL}/{combined}"
             ws = websocket.WebSocketApp(
                 url,
