@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.44.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.45.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -173,6 +173,8 @@ class Cfg:
     late_max_ask: float = float(os.getenv("CLEAN_LATE_MAX_ASK", "0.70"))
     late_drift_bps: float = float(os.getenv("CLEAN_LATE_DRIFT_BPS", "0"))  # v1.38.1: the late edge is drift-INDEPENDENT (OOS: drift<5 slice z=+1.53 EV+0.159, STRONGER than drift>=5). The 55-70c ask band already selects "modest favorite"; a drift floor here just discards 2/3 of the verified windows. 0 = no floor.
     late_mom_agree: bool = os.getenv("CLEAN_LATE_MOM_AGREE", "off").lower() in ("1", "true", "yes", "on")  # v1.38.2 (DEPRECATED, default off): roc60-based; unreliable (roc60 present only ~30% of late windows → fails open). Superseded by late_skip_fading.
+    late_shade: bool = os.getenv("CLEAN_LATE_SHADE", "on").lower() in ("1", "true", "yes", "on")  # v1.45 Avellaneda-Stoikov-style maker shading: rest DEEPER when adverse-selection exposure (sigma*sqrt(t_rem)) is high. Own-fill data: LOW exposure fills edge +5.6pts vs HIGH +0.4 — high-exposure fills are adversely selected. ~1c extra per shade_bps of exposure, capped +3c.
+    late_shade_bps: float = float(os.getenv("CLEAN_LATE_SHADE_BPS", "15"))  # bps of expected remaining move per +1c of shading (own-fill terciles: 13.4/30.2bps)
     late_skip_fading: bool = os.getenv("CLEAN_LATE_SKIP_FADING", "on").lower() in ("1", "true", "yes", "on")  # v1.39: skip FADING leaders (favorite ahead but its lead SHRANK from the early→late snapshot, same dir). Uses Chainlink settlement-feed drift trajectory (96% coverage, reliable). Verified: whole band 76.5%/EV+0.167 → skip-fading 81.5%/EV+0.244, recent30% EV+0.202 z+1.27. Keeps growing+reversed leads.
     # ── VOL-DIVERGENCE engine (v1.42, Strategy #4 — PRICING edge, not direction): bet where the
     # market's price diverges >= vol_div_min from the vol-priced probability of the lead holding,
@@ -1065,7 +1067,18 @@ class CleanBot:
         ask = book.get("ask")
         if not ask or not (CFG.late_min_ask <= float(ask) <= CFG.late_max_ask):
             return
-        maker = round(max(0.02, float(ask) - CFG.maker_offset), 2)
+        # A-S MAKER SHADING (v1.45): rest deeper when adverse-selection exposure is high.
+        # exposure = sigma*sqrt(t_rem) = expected remaining move while our order rests. Own-fill
+        # audit (n=226): LOW-exposure fills +5.6pts edge vs HIGH +0.4 — high-exposure fills are
+        # the adversely-selected ones. +1c per late_shade_bps of exposure, capped +3c. Costs some
+        # fills; the fills we keep are better-priced (Avellaneda-Stoikov's tradeoff).
+        offset = CFG.maker_offset
+        if CFG.late_shade:
+            _s = binance_ws.get_realized_vol(coin, 180)
+            if _s and _s > 0:
+                expo_bps = _s * math.sqrt(max(1.0, t_rem)) * 1e4
+                offset += min(0.03, 0.01 * int(expo_bps / CFG.late_shade_bps))
+        maker = round(max(0.02, float(ask) - offset), 2)
         shares = CFG.shares                          # MIN size for the audition (no compounding)
         # CORRELATION GUARD (v1.39.1): BTC/ETH/SOL move ~0.85 together. Betting the SAME
         # direction across them in ONE window = a single 3x bet, not three — one wrong call

@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.45.0 — 2026-07-09 — Avellaneda-Stoikov maker shading on the late engine (own-fill-calibrated)
+**Tag:** `cleanbot-v1.45.0` · **Status:** ✅ live (owner directed) · execution-layer change, late engine only
+
+Own-fill audit first (n=226 maker fills joined to window sigma): fill edge decays monotonically
+with adverse-selection exposure σ√t_rem — LOW +5.6pts / MID +0.9 / HIGH +0.4 (terciles at
+13.4/30.2bps). Exactly the A-S prediction: the more the price can move while our order rests, the
+worse the fills we receive. Fix (A-S-style): `_late_entry` maker offset now scales with exposure —
+base 1c + 1c per `CLEAN_LATE_SHADE_BPS`(15bps) of σ√t_rem, capped +3c (env `CLEAN_LATE_SHADE=on`).
+Tradeoff: fewer fills, better-priced fills. Early engine untouched (test purity). Note: this
+changes late-engine execution mid-audition — its [TRACK:late] verdict now measures the shaded
+version. RS/YZ σ upgrade + meta-labeling sizer were tested offline the same day and REJECTED
+(see memory/scripts); A-S was the one queue item that validated on our own data.
+
 ## v1.44.0 — 2026-07-09 — the disciplined reset: verified-only engines + per-engine scoreboards
 **Tag:** `cleanbot-v1.44.0` · **Status:** ✅ live · owner delegated control; pre-registered test begins
 
