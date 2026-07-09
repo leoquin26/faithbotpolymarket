@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.43.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.43.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -272,6 +272,7 @@ class CleanBot:
         self.win_streak = 0                     # consecutive wins (resets the escalation)
         self.recent_trades = []                 # rolling 1/0 outcomes (adaptive accuracy)
         self.recent_ev = []                     # rolling (won, pnl, stake) — live accuracy+EV meter
+        self.killed = False                     # kill-floor latch (v1.43.1): stays True once fired, owner reset only
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
         self._nc_logged = set()                 # throttle [NO CONFIRM] logs (per window)
@@ -302,6 +303,7 @@ class CleanBot:
                        "day_blocked": self.day_blocked, "day_loss_streak": self.day_loss_streak,
                        "recent_trades": self.recent_trades[-60:],
                        "recent_ev": self.recent_ev[-100:],
+                       "killed": self.killed,
                        "positions": self.positions,
                        "traded": [list(t) for t in self.traded]},
                       open(STATE, "w"))
@@ -323,6 +325,7 @@ class CleanBot:
             self.day_loss_streak = d.get("day_loss_streak", 0)
             self.recent_trades = d.get("recent_trades", [])
             self.recent_ev = [tuple(x) for x in d.get("recent_ev", [])]
+            self.killed = bool(d.get("killed", False))
             self.positions = d.get("positions", {})
             self.traded = {tuple(t) for t in d.get("traded", [])}
             logger.info(f"state reloaded: {len(self.positions)} positions, bankroll "
@@ -1462,16 +1465,23 @@ class CleanBot:
                 self.day_peak = max(self.day_peak, self.wins - self.losses)
                 # hwm is updated from CHAIN TRUTH inside _sync_bankroll (not here) so the
                 # profit-lock peak can't be inflated by ledger drift and fire prematurely.
-                if CFG.kill_floor > 0 and self.bankroll <= CFG.kill_floor:
-                    # HARD kill-switch (v1.39): pre-committed max drawdown for the deposit test.
-                    # Permanent — no new entries of ANY strategy until the owner resets it.
+                if CFG.kill_floor > 0 and self.bankroll <= CFG.kill_floor and not self.killed:
+                    # HARD kill-switch (v1.39; LATCHED v1.43.1 — the v1.39 check silently re-armed
+                    # when the ledger bounced back above the floor, letting trading resume after a
+                    # fire; observed live 2026-07-08 21:39→21:48). Once fired it now stays fired
+                    # (persisted in state) until the owner resets: set "killed": false in
+                    # clean_bot_state.json (or change CLEAN_KILL_FLOOR) and restart.
+                    self.killed = True
+                    self._save()
+                if self.killed:
                     if n % 40 == 1:
-                        logger.info(f"[KILL-SWITCH] bankroll ${self.bankroll:.2f} <= floor "
-                                    f"${CFG.kill_floor:.2f} — all trading stopped (owner reset required)")
+                        logger.info(f"[KILL-SWITCH] LATCHED (fired at <= ${CFG.kill_floor:.2f}; "
+                                    f"bankroll now ${self.bankroll:.2f}) — all trading stopped "
+                                    f"(owner reset required)")
                     if not self._stop_notified:
                         tg._send(f"🛑 <b>KILL-SWITCH HIT</b> — bankroll ${self.bankroll:.2f} reached the "
                                  f"${CFG.kill_floor:.0f} floor. All trading stopped. The test is over; "
-                                 f"reset CLEAN_KILL_FLOOR to resume.")
+                                 f"owner reset required to resume.")
                         self._stop_notified = True
                 elif self._stopped():
                     if not self._stop_notified:

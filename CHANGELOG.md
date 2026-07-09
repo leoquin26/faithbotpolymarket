@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.43.1 — 2026-07-08 — kill-switch LATCH fix (fired 21:39, silently re-armed on ledger bounce)
+**Tag:** `cleanbot-v1.43.1` · **Status:** ✅ live · integrity fix, disclosed to owner
+
+Live logs caught it: ledger dipped to $79.60 at 21:36 (two VOLDIV losses while a winning position
+was still open) → [KILL-SWITCH] fired 21:39/21:43/21:48 — but the v1.39 check was a bare
+`bankroll <= floor` comparison, so when the pending win settled and the ledger bounced above $80,
+the condition went false and trading silently RESUMED (21:48:29 VOLDIV ENTER, which won). Fix:
+`self.killed` latch — once fired it persists in state and blocks all entries until the owner
+explicitly resets ("killed": false in clean_bot_state.json + restart, or change the floor). NOT
+retro-latched for the 21:39 transient (ledger-vs-chain dip while a win was pending; owner decides
+whether it counts — book recovered to $82.75). VOLDIV live so far: 3W/2L, losses small (−$2.35/
+−$2.60 vs old −$7s), the 97%-model SOL@79c win = the engine working as designed.
+
 ## v1.43.0 — 2026-07-08 — literature upgrades: vol-normalized early bar + momentum term in VOLDIV
 **Tag:** `cleanbot-v1.43.0` · **Status:** ✅ live · both changes verified on our data before deploy
 
