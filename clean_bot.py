@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.43.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.43.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -1129,6 +1129,11 @@ class CleanBot:
         except Exception: pass
         lead_ask = (up_b if lead_up else down_b).get("ask")
         dog_ask = (down_b if lead_up else up_b).get("ask")
+        # BOOK-SANITY (v1.43.2): a wide/stale book fakes huge "edges" (live: overnight asks like
+        # 80c/40c summing 1.20 produced phantom +26% divergences that lost). Real two-sided books
+        # sum to ~1.00-1.04; require both asks present and sum <= 1.06 or the quote isn't real.
+        if not (lead_ask and dog_ask) or (float(lead_ask) + float(dog_ask)) > 1.06:
+            return
         side = None
         if lead_ask and (p_lead - float(lead_ask)) >= CFG.vol_div_min:
             side, ask = ("UP" if lead_up else "DOWN"), float(lead_ask)      # leader underpriced

@@ -10,6 +10,18 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.43.2 — 2026-07-09 — VOLDIV live forensic: kill the kappa term + book-sanity check
+**Tag:** `cleanbot-v1.43.2` · **Status:** ✅ live · correcting two deploy errors found in live forensics
+
+13 live VOLDIV trades: model claimed avg 70%, realized 38% (5W/8L, −$11.45; P(≤5|p=.70)≈1% — NOT
+luck). Three causes identified: (1) **the v1.43 kappa momentum term amplified sparse-tick noise
+into false extremes** (0.97/0.81/0.81 claims all LOST; my own test showed it worsened Brier
+0.225→0.243 and I deployed anyway) → `CLEAN_VOLDIV_KAPPA=0` (pure vol-pricing restored).
+(2) **overnight wide/stale books faked edges** (all 13 trades were 20:46–01:16 thin tape; asks
+summing ≫1.0 make the \"market price\" garbage) → NEW book-sanity: require both asks and
+lead_ask+dog_ask ≤ 1.06. (3) maker adverse selection (backtest fills at signal ask; live fills
+only when the market comes to us) — noted, structural, mitigated by (2). Book at fix: $68.92.
+
 ## v1.43.1 — 2026-07-08 — kill-switch LATCH fix (fired 21:39, silently re-armed on ledger bounce)
 **Tag:** `cleanbot-v1.43.1` · **Status:** ✅ live · integrity fix, disclosed to owner
 
