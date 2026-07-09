@@ -10,6 +10,17 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.46.0 — 2026-07-09 — late engine goes TAKER (owner diagnosed the maker-fill reversal trap)
+**Tag:** `cleanbot-v1.46.0` · **Status:** ✅ live
+
+Owner: "we catch the GTC during the reversal — that's why it got filled." Measured: **live late
+maker fills n=25: 52% WR vs 63c avg = −11pts** — versus the +12-16pt shadow edge, which was
+measured AT THE ASK (taker). The maker order I used to save 1c only fills when someone dumps our
+side = precisely during reversals; the execution choice inverted the verified edge's sample.
+Fix: `CLEAN_LATE_TAKER=on` (default) — cross the spread at signal time, pay ~1c + ~1.6c taker
+fee, receive the fill composition the edge was verified on. v1.45 A-S shading remains only for
+the maker fallback path. This supersedes shading as the late engine's adverse-selection answer.
+
 ## v1.45.1 — 2026-07-09 — fix: engine tag dropped on fill (late/voldiv scored as 'early')
 **Tag:** `cleanbot-v1.45.1` · **Status:** ✅ live · scoreboard-integrity fix
 
