@@ -413,6 +413,29 @@ def day_history(trades, days=7):
     return hist
 
 # ── routes ───────────────────────────────────────────────────────────────────
+def engines_state(st):
+    """Per-engine self-governance panel (v1.47): rolling WR/EV from tagged recent_ev,
+    verdict progress n/40, size multiplier, and status MEASURING/SCALED/RETIRED."""
+    ev = st.get("recent_ev") or []
+    mult = st.get("engine_mult") or {}
+    off = st.get("engine_off") or {}
+    out = []
+    for tag in ("early", "late", "voldiv"):
+        rows = [x for x in ev if len(x) > 3 and x[3] == tag]
+        n = len(rows)
+        w = sum(x[0] for x in rows)
+        stk = sum(x[2] for x in rows)
+        net = round(sum(x[1] for x in rows), 2)
+        evd = round(net / stk, 3) if stk else None
+        m = mult.get(tag, 1.0)
+        status = ("RETIRED" if off.get(tag) else
+                  f"SCALED x{m:.0f}" if m > 1 else "MEASURING")
+        out.append({"engine": tag, "n": n, "target": 40, "wins": w,
+                    "wr": round(100 * w / n, 1) if n else None,
+                    "net": net, "ev": evd, "mult": m, "off": bool(off.get(tag)),
+                    "status": status})
+    return out
+
 @app.route("/api/data")
 def data():
     CACHE.refresh()
@@ -502,6 +525,7 @@ def data():
         "signal": signal_health(),
         "scout": scout_status(),
         "last_enter": CACHE.enters[-1] if CACHE.enters else None,
+        "engines": engines_state(st),
         "ts": now,
     })
 

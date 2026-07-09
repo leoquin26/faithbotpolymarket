@@ -115,6 +115,22 @@ function Overview({ d }) {
         <div class="v" style=${{ fontSize: "16px" }}><span class="pos">${sgn(mt.avg_win)}</span> <span class="dim">/</span> <span class="neg">${sgn(mt.avg_loss)}</span></div>
         <div class="s">per trade</div></div>
     </div>
+    <div class="panel" style=${{ marginBottom: "14px" }}>
+      <h2>Engines — self-governance <span class="right dim mono">verdict at n=40: ≤−3% off · ≥+3% scale</span></h2>
+      <div class="grid g3">
+        ${(d.engines || []).filter(e => e.engine !== "voldiv" || e.n > 0).map(e => html`<div key=${e.engine} style=${{ padding: "10px 12px", background: "var(--panel2)", borderRadius: "10px", border: "1px solid var(--line)" }}>
+          <div class="kv" style=${{ borderBottom: "none", padding: "0 0 6px" }}>
+            <b class="mono" style=${{ textTransform: "uppercase" }}>${e.engine}</b>
+            <span class=${"chip " + (e.off ? "cL" : e.mult > 1 ? "cW" : "cN")}>${e.status}</span>
+          </div>
+          <div class="meter" style=${{ marginBottom: "8px" }}><i style=${{ width: Math.min(100, (e.n / e.target) * 100) + "%", background: e.off ? "var(--loss)" : "var(--blue)" }}></i></div>
+          <div class="kv" style=${{ borderBottom: "none", padding: "2px 0" }}><span class="dim">progress</span><b class="mono">${e.n}/${e.target}</b></div>
+          <div class="kv" style=${{ borderBottom: "none", padding: "2px 0" }}><span class="dim">win rate</span><b class="mono">${e.wr == null ? "—" : e.wr + "%"}</b></div>
+          <div class="kv" style=${{ borderBottom: "none", padding: "2px 0" }}><span class="dim">EV per $</span><b class=${"mono " + (e.ev == null ? "dim" : e.ev > 0 ? "pos" : "neg")}>${e.ev == null ? "—" : (e.ev > 0 ? "+" : "") + e.ev}</b></div>
+          <div class="kv" style=${{ borderBottom: "none", padding: "2px 0" }}><span class="dim">net / size</span><b class=${"mono " + cls(e.net)}>${sgn(e.net)} · x${e.mult}</b></div>
+        </div>`)}
+      </div>
+    </div>
     <div class="grid g23">
       <div class="panel"><h2>Equity — chain truth <span class="right dim mono">${eq.length} pts</span></h2>
         <${Chart_} deps=${[eq.length, eq.length && eq[eq.length-1].v]} height=${290} build=${() => eq.length && ({
