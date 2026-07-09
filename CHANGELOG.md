@@ -10,6 +10,12 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+> **Jul 9 13:56 env addendum:** `CLEAN_LATE_DRIFT_BPS` 0 → **3** (spec-alignment fix, owner caught
+> it via a 0.8bps-lead entry @57c that lost). The research capture floor is 3bps, so the v1.38.1
+> "no drift floor" verification only ever covered ≥3bps leads (72% WR / +6.8pts) — sub-3bps live
+> entries were untested territory (buying ~50/50 coin flips at 57c). Restores the engine to its
+> verified universe; not a new filter.
+
 ## v1.47.0 — 2026-07-09 — SELF-GOVERNANCE: the engine executes its own verdicts
 **Tag:** `cleanbot-v1.47.0` · **Status:** ✅ live · owner: "I care about the engine — make it work"
 
