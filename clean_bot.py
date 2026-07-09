@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.42.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.43.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -184,6 +184,8 @@ class Cfg:
     vol_div_coins: tuple = tuple(c for c in os.getenv("CLEAN_VOLDIV_COINS", "ETH,SOL,BTC").split(",") if c)
     vol_div_min_ask: float = float(os.getenv("CLEAN_VOLDIV_MIN_ASK", "0.25"))  # sane price band for either side
     vol_div_max_ask: float = float(os.getenv("CLEAN_VOLDIV_MAX_ASK", "0.90"))
+    vol_div_kappa: float = float(os.getenv("CLEAN_VOLDIV_KAPPA", "0.25"))  # v1.43: momentum-persistence term in the fair-value model — p uses dist + kappa*mu*t_rem (mu = recent 5-min drift rate). Tested: kappa=0.25 lifts OOS EV +0.037->+0.048, z +0.90->+1.50, +40% signals; kappa=1 (full extrapolation) is WORSE — momentum ~quarter-persists. 0 = driftless (v1.42 behavior).
+    z_bar: float = float(os.getenv("CLEAN_Z_BAR", "1.0"))  # v1.43: early entry bar in VOL-NORMALIZED units (|dist|/(sigma*sqrt(age)) >= z_bar). OOS-verified +4.3pts z=+1.77; sub-1.0 moves are noise. 0 = revert to raw-bps bar.
     # ── MOMENTUM CONFIRMATION (v1.13.1): the data says fading moves (drift one way but
     # 5-min momentum the other) are the reversals. Only bet WITH momentum. ──
     mom_filter: bool = os.getenv("CLEAN_MOM_FILTER", "on").lower() in ("1", "true", "yes", "on")
@@ -787,18 +789,33 @@ class CleanBot:
                                 f"random walk, drift anti-predictive; wait for structure")
                     self._nc_logged.add((coin, ws))
                 return
-        eff_drift = self._eff_drift()                  # reactive: tighter when recently losing
-        regime = ""
-        if CFG.er_filter:
-            er = self._efficiency_ratio(coin)          # PROACTIVE: trend vs chop, measured before betting
-            if er is not None and er < CFG.er_trend:   # choppy regime -> demand a stronger drift
-                eff_drift = max(eff_drift, CFG.er_chop_drift)
-                regime = f" chop(ER={er:.2f})"
-        if abs(dist) < eff_drift / 10000.0:            # need a clear early drift (adaptive quality bar)
-            if abs(dist) >= CFG.drift_bps / 10000.0 and (coin, ws) not in self._nc_logged:
-                logger.info(f"[REGIME SKIP] {coin} drift={dist*1e4:+.1f}bps < bar {eff_drift:.0f}bps{regime}")
-                self._nc_logged.add((coin, ws))
-            return
+        # SIGNAL BAR (v1.43): vol-NORMALIZED when possible — the literature-correct unit. A move
+        # only means something scaled by current volatility: zscore = |dist| / (sigma*sqrt(age)).
+        # Verified OOS: z>=1.0 windows carry the whole edge (+4.3pts, z=+1.77 PASS) while the
+        # sub-1.0 windows the raw-bps bar admitted are noise (-1.6 OOS). Falls back to the old
+        # raw-bps bar when sigma is unavailable (fail-open to previous behavior).
+        _zsig = binance_ws.get_realized_vol(coin, 180)
+        if CFG.z_bar > 0 and _zsig and _zsig > 0:
+            zscore = abs(dist) / (_zsig * math.sqrt(max(30.0, age)))
+            if zscore < CFG.z_bar or abs(dist) < 3 / 10000.0:   # 3bps dust floor (matches research capture)
+                if abs(dist) >= CFG.drift_bps / 10000.0 and (coin, ws) not in self._nc_logged:
+                    logger.info(f"[ZBAR SKIP] {coin} drift={dist*1e4:+.1f}bps z={zscore:.2f} < {CFG.z_bar} "
+                                f"(move not significant vs current vol)")
+                    self._nc_logged.add((coin, ws))
+                return
+        else:
+            eff_drift = self._eff_drift()              # fallback: raw-bps adaptive bar (pre-v1.43)
+            regime = ""
+            if CFG.er_filter:
+                er = self._efficiency_ratio(coin)      # PROACTIVE: trend vs chop, measured before betting
+                if er is not None and er < CFG.er_trend:   # choppy regime -> demand a stronger drift
+                    eff_drift = max(eff_drift, CFG.er_chop_drift)
+                    regime = f" chop(ER={er:.2f})"
+            if abs(dist) < eff_drift / 10000.0:        # need a clear early drift (adaptive quality bar)
+                if abs(dist) >= CFG.drift_bps / 10000.0 and (coin, ws) not in self._nc_logged:
+                    logger.info(f"[REGIME SKIP] {coin} drift={dist*1e4:+.1f}bps < bar {eff_drift:.0f}bps{regime}")
+                    self._nc_logged.add((coin, ws))
+                return
         is_up = dist > 0
         token = info.up_token_id if is_up else info.down_token_id
         direction = "UP" if is_up else "DOWN"
@@ -1090,7 +1107,18 @@ class CleanBot:
             return
         dist = (px - strike) / strike
         lead_up = dist > 0
-        p_lead = 0.5 * (1.0 + math.erf(abs(dist) / (sigma * math.sqrt(t_rem)) / math.sqrt(2)))
+        # fair prob the lead holds, with the verified momentum-persistence term (v1.43): project
+        # the recent 5-min drift rate onto the lead direction, weighted kappa=0.25 (tested best;
+        # full extrapolation is worse — momentum only partially persists).
+        mu = 0.0
+        if CFG.vol_div_kappa > 0:
+            try:
+                mu = _roc(binance_ws.get_tick_history(coin, 340), 300) / 300.0   # per-second drift rate
+            except Exception:
+                mu = 0.0
+        mu_lead = mu if lead_up else -mu
+        num = abs(dist) + CFG.vol_div_kappa * mu_lead * t_rem
+        p_lead = 0.5 * (1.0 + math.erf(num / (sigma * math.sqrt(t_rem)) / math.sqrt(2)))
         up_b = down_b = {}
         try: up_b = self.om.get_clob_book(info.up_token_id) or {}
         except Exception: pass

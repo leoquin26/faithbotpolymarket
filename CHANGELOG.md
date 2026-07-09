@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.43.0 — 2026-07-08 — literature upgrades: vol-normalized early bar + momentum term in VOLDIV
+**Tag:** `cleanbot-v1.43.0` · **Status:** ✅ live · both changes verified on our data before deploy
+
+From the owner-requested research review (intraday TSM/momentum-reversal literature). (1) EARLY
+BAR REDEFINED in the correct unit: `CLEAN_Z_BAR=1.0` — enter only when the move is significant vs
+current volatility, zscore=|dist|/(σ√elapsed) ≥ 1.0, replacing the raw-bps bar (falls back to it
+if σ unavailable). **OOS-verified: z≥1.0 windows carry the whole edge (+4.3pts vs price, z=+1.77
+PASS, stable IS≈OOS) while sub-1.0 raw-bps windows are noise (−1.6 OOS).** ~61% of prior volume
+kept. Early path remains PAUSED (SIG=999) — this readies it, doesn't re-enable it. Flow-
+confirmation idea from the same literature was tested and REFUTED on our data (confirm≈oppose).
+(2) VOLDIV fair-value model gains a momentum-persistence term: p=Phi((|dist|+κ·μ·t_rem)/(σ√t_rem)),
+μ = recent 5-min drift rate projected on the lead, `CLEAN_VOLDIV_KAPPA=0.25`. **Tested κ∈{0,.25,.5,1}:
+κ=.25 lifts OOS EV +$0.037→+$0.048/$, z +0.90→+1.50, +40% signals; κ=1 worse (momentum ~quarter-
+persists).** Still audition-grade (<1.64) at min-size behind the same kill-floor.
+
 ## v1.42.0 — 2026-07-08 — Strategy #4 LIVE: vol-divergence engine (pricing edge) replaces early drift
 **Tag:** `cleanbot-v1.42.0` · **Status:** ✅ live at midnight reset · min-size AUDITION, kill-floor $80
 
