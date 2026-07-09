@@ -10,6 +10,18 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.45.1 — 2026-07-09 — fix: engine tag dropped on fill (late/voldiv scored as 'early')
+**Tag:** `cleanbot-v1.45.1` · **Status:** ✅ live · scoreboard-integrity fix
+
+Owner's ETH DOWN review caught it: the 09:56 LATE loss printed `[TRACK:early]`. Cause:
+`check_orders()` (and the FILLED-RACE path) rebuilt the position dict without the order's
+late/voldiv flags, so every LIVE late/voldiv fill was attributed to the early scoreboard —
+corrupting both engines' 40-trade verdicts. Fix: carry the tags through both fill paths.
+ALSO ANALYZED (no change): should the late engine get the deep-storm brake? NO — late 55-70c
+in storm regimes (gate < −6) historically runs +9.1pts (n=27) vs +4.5 healthy; the late edge is
+storm-resistant (only ~2-3min left = little time for the chop to reverse a late lead). Today's
+late loss = its normal ~25-30% loss rate, not a design flaw.
+
 > **Jul 9 09:27 env addendum:** `CLEAN_SIG_MIN_EDGE` −2 → **−6** (owner-approved). Measured on the
 > live z≥1.0 universe: stand-down windows still carry +2.3pts edge (z-bar supersedes the gate's
 > old job); softening reclaims ~13% more early trades (~+3pt slice) while keeping the deep-decay

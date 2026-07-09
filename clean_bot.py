@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.45.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.45.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -1235,7 +1235,10 @@ class CleanBot:
             if matched > 0:
                 self.positions[f"{o['coin']}:{o['ws']}"] = {
                     "coin": o["coin"], "ws": o["ws"], "dir": o["dir"], "token": o["token"],
-                    "entry": o["price"], "shares": int(matched), "status": "filled"}
+                    "entry": o["price"], "shares": int(matched), "status": "filled",
+                    # v1.45.1: carry the ENGINE TAG through the fill (was dropped → every live
+                    # late/voldiv fill got scored as 'early' on the per-engine boards)
+                    "late": o.get("late", False), "voldiv": o.get("voldiv", False)}
                 logger.info(f"[FILLED] {o['coin']} {o['dir']} @ {o['price']*100:.0f}c "
                             f"x{int(matched)}")
                 tg._send(f"🤖 <b>FILLED</b> {o['coin']} {o['dir']} @ {o['price']*100:.0f}c "
@@ -1260,7 +1263,8 @@ class CleanBot:
                 if matched_after > 0:
                     self.positions[f"{o['coin']}:{o['ws']}"] = {
                         "coin": o["coin"], "ws": o["ws"], "dir": o["dir"], "token": o["token"],
-                        "entry": o["price"], "shares": int(matched_after), "status": "filled"}
+                        "entry": o["price"], "shares": int(matched_after), "status": "filled",
+                        "late": o.get("late", False), "voldiv": o.get("voldiv", False)}
                     logger.warning(f"[FILLED-RACE] {o['coin']} {o['dir']} @ {o['price']*100:.0f}c "
                                    f"x{int(matched_after)} — order filled during cancel; now TRACKED "
                                    f"(this was the silent leak)")
