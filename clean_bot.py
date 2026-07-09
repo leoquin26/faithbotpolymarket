@@ -16,7 +16,7 @@ binance feed, Ireland proxy (force_tor), gamma (Chainlink) resolution.
 Restart-safe (state persisted). DRY by default — set CLEAN_DRY=false to go live.
 """
 from __future__ import annotations
-import os, sys, time, json, csv, threading, datetime
+import os, sys, time, json, csv, math, threading, datetime
 from dataclasses import dataclass, field
 
 os.environ.setdefault("PROXY_PORT", "9055")          # Ireland tunnel for orders
@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.41.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.42.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -174,6 +174,16 @@ class Cfg:
     late_drift_bps: float = float(os.getenv("CLEAN_LATE_DRIFT_BPS", "0"))  # v1.38.1: the late edge is drift-INDEPENDENT (OOS: drift<5 slice z=+1.53 EV+0.159, STRONGER than drift>=5). The 55-70c ask band already selects "modest favorite"; a drift floor here just discards 2/3 of the verified windows. 0 = no floor.
     late_mom_agree: bool = os.getenv("CLEAN_LATE_MOM_AGREE", "off").lower() in ("1", "true", "yes", "on")  # v1.38.2 (DEPRECATED, default off): roc60-based; unreliable (roc60 present only ~30% of late windows → fails open). Superseded by late_skip_fading.
     late_skip_fading: bool = os.getenv("CLEAN_LATE_SKIP_FADING", "on").lower() in ("1", "true", "yes", "on")  # v1.39: skip FADING leaders (favorite ahead but its lead SHRANK from the early→late snapshot, same dir). Uses Chainlink settlement-feed drift trajectory (96% coverage, reliable). Verified: whole band 76.5%/EV+0.167 → skip-fading 81.5%/EV+0.244, recent30% EV+0.202 z+1.27. Keeps growing+reversed leads.
+    # ── VOL-DIVERGENCE engine (v1.42, Strategy #4 — PRICING edge, not direction): bet where the
+    # market's price diverges >= vol_div_min from the vol-priced probability of the lead holding,
+    # p = Phi(drift/(sigma*sqrt(t_left))). Bets BOTH sides (leader underpriced OR underdog over-
+    # priced). Audit (_accuracy_audit.py, 3233 windows): |div|>=5% → OOS EV +$0.044/$, z=+1.07
+    # (AUDITION grade, below 1.64 proof) — deployed min-size at owner's direction, kill-floor $80. ──
+    vol_div_live: bool = os.getenv("CLEAN_VOLDIV", "off").lower() in ("1", "true", "yes", "on")
+    vol_div_min: float = float(os.getenv("CLEAN_VOLDIV_MIN", "0.05"))   # min |model − market| to bet
+    vol_div_coins: tuple = tuple(c for c in os.getenv("CLEAN_VOLDIV_COINS", "ETH,SOL,BTC").split(",") if c)
+    vol_div_min_ask: float = float(os.getenv("CLEAN_VOLDIV_MIN_ASK", "0.25"))  # sane price band for either side
+    vol_div_max_ask: float = float(os.getenv("CLEAN_VOLDIV_MAX_ASK", "0.90"))
     # ── MOMENTUM CONFIRMATION (v1.13.1): the data says fading moves (drift one way but
     # 5-min momentum the other) are the reversals. Only bet WITH momentum. ──
     mom_filter: bool = os.getenv("CLEAN_MOM_FILTER", "on").lower() in ("1", "true", "yes", "on")
@@ -1050,6 +1060,94 @@ class CleanBot:
             logger.warning(f"[LATE ORDER FAIL] {coin} {direction}: {e}")
         self._save()
 
+    def _vol_div_entry(self, coin: str):
+        """Strategy #4 (v1.42) — VOL-DIVERGENCE, a PRICING edge (not direction prediction).
+        Fair prob of the lead holding: p = Phi(drift / (sigma*sqrt(t_left))) (driftless BM).
+        If the market prices the leading side >= vol_div_min BELOW p, buy the leader; if it
+        prices it >= vol_div_min ABOVE p, buy the underdog. Audit: OOS EV +$0.044/$ (z=+1.07,
+        AUDITION grade). Min-size only; same order path/guards as the late engine."""
+        if not CFG.vol_div_live or coin not in CFG.vol_div_coins:
+            return
+        info = get_market_info(coin)
+        if not info:
+            return
+        ws = info.window_start
+        key = (coin, ws)
+        if key in self.traded:                        # one entry per window (shared dedup)
+            return
+        now = time.time()
+        t_rem = ws + 900 - now
+        if not (60 <= t_rem <= 840):
+            return
+        strike = float(info.threshold_price or 0)
+        px = float(info.current_crypto_price or binance_ws.get_price(coin) or 0)
+        if strike <= 0 or px <= 0:
+            return
+        if not str(info.strike_source or "").startswith("chainlink"):
+            return                                    # never trade a basis-tainted strike
+        sigma = binance_ws.get_realized_vol(coin, 180)
+        if not sigma or sigma <= 0:
+            return
+        dist = (px - strike) / strike
+        lead_up = dist > 0
+        p_lead = 0.5 * (1.0 + math.erf(abs(dist) / (sigma * math.sqrt(t_rem)) / math.sqrt(2)))
+        up_b = down_b = {}
+        try: up_b = self.om.get_clob_book(info.up_token_id) or {}
+        except Exception: pass
+        try: down_b = self.om.get_clob_book(info.down_token_id) or {}
+        except Exception: pass
+        lead_ask = (up_b if lead_up else down_b).get("ask")
+        dog_ask = (down_b if lead_up else up_b).get("ask")
+        side = None
+        if lead_ask and (p_lead - float(lead_ask)) >= CFG.vol_div_min:
+            side, ask = ("UP" if lead_up else "DOWN"), float(lead_ask)      # leader underpriced
+            token = info.up_token_id if lead_up else info.down_token_id
+            edge = p_lead - ask
+        elif dog_ask and (float(dog_ask) - (1.0 - p_lead)) <= -CFG.vol_div_min:
+            side, ask = ("DOWN" if lead_up else "UP"), float(dog_ask)       # underdog overpriced side is cheap
+            token = info.down_token_id if lead_up else info.up_token_id
+            edge = (1.0 - p_lead) - ask
+        if not side:
+            return
+        if not (CFG.vol_div_min_ask <= ask <= CFG.vol_div_max_ask):
+            return
+        # same correlation guards as the late engine: never stack a correlated same-direction
+        # leg, never bet opposite a held sibling (one wrong macro call must cost ONE bet).
+        if self._corr_sibling(coin, ws, side):
+            return
+        if CFG.corr_opposite_block and self._corr_opposite(coin, ws, side):
+            return
+        maker = round(max(0.02, ask - CFG.maker_offset), 2)
+        shares = CFG.shares                           # MIN size — audition grade
+        if self._open_exposure() + maker * shares > self.bankroll * CFG.max_open_pct:
+            return
+        self.traded.add(key)
+        logger.info(f"[VOLDIV ENTER] {coin} {side} p_model={p_lead:.2f} ask={ask*100:.0f}c "
+                    f"edge={edge*100:+.0f}% -> maker {maker*100:.0f}c x{shares} "
+                    f"(${maker*shares:.2f}, bankroll ${self.bankroll:.0f}) T={t_rem:.0f}s [AUDITION]"
+                    + (" [DRY]" if CFG.dry else ""))
+        if CFG.dry:
+            self.positions[f"{coin}:{ws}"] = {"coin": coin, "ws": ws, "dir": side,
+                                              "entry": maker, "shares": shares, "token": token,
+                                              "status": "filled", "sim": True, "voldiv": True}
+            self._save()
+            return
+        try:
+            res = self.client.create_and_post_order(
+                OrderArgs(price=maker, size=shares, side=BUY, token_id=token),
+                PartialCreateOrderOptions(tick_size="0.01"), OrderType.GTC)
+            oid = (res or {}).get("orderID") or (res or {}).get("orderId")
+            if oid:
+                self.open_orders[oid] = {"coin": coin, "ws": ws, "dir": side,
+                                         "token": token, "price": maker,
+                                         "shares": shares, "ts": now, "voldiv": True}
+                logger.info(f"[GTC] resting VOLDIV {coin} {side} @ {maker*100:.0f}c x{shares} oid={oid[:10]}")
+            else:
+                logger.warning(f"[VOLDIV ORDER] no oid in result: {res}")
+        except Exception as e:
+            logger.warning(f"[VOLDIV ORDER FAIL] {coin} {side}: {e}")
+        self._save()
+
     # ── fills ────────────────────────────────────────────────────────
     def check_orders(self):
         now = time.time()
@@ -1381,6 +1479,11 @@ class CleanBot:
                     if CFG.late_live:
                         for c in CFG.late_coins:
                             self._late_entry(c)
+                    # Strategy #4 vol-divergence audition — pricing edge, min-size, shares the
+                    # same daily-stop / breaker / kill-floor guards.
+                    if CFG.vol_div_live:
+                        for c in CFG.vol_div_coins:
+                            self._vol_div_entry(c)
             except Exception as e:
                 logger.warning(f"loop error: {e}")
             # research data capture — fully isolated, never places orders / affects trading.

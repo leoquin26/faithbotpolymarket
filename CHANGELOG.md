@@ -10,6 +10,22 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.42.0 — 2026-07-08 — Strategy #4 LIVE: vol-divergence engine (pricing edge) replaces early drift
+**Tag:** `cleanbot-v1.42.0` · **Status:** ✅ live at midnight reset · min-size AUDITION, kill-floor $80
+
+Owner: "implement the strategy now and go live now." From the Jul 8 accuracy audit
+(`_accuracy_audit.py`): betting where the market price diverges ≥5% from the vol-priced
+probability of the lead holding — p = Phi(drift/(σ√t_left)) — is the only signal that stayed
+positive OOS (**EV +$0.044/$, z=+1.07, AUDITION grade below the 1.64 proof bar** — owner accepted
+the risk explicitly; ~109 raw signals/day, avg price ~51c, bets BOTH leader and underdog so
+win/loss payoffs are near-symmetric, unlike favorites). NEW `_vol_div_entry()`: chainlink-strike
+only, t_rem 60-840s, ask band 25-90c, min-size (5sh), corr-sibling/opposite guards, shared
+daily-stop/breaker/kill-floor, same GTC maker path. `CLEAN_VOLDIV=on`, threshold
+`CLEAN_VOLDIV_MIN=0.05`, coins ETH/SOL/BTC. **Early drift path PAUSED again** (SIG=999): it was
+the $7-compounding bleeder (Jul 8: 2W/4L −$7.5 vs late audition +$1.2 at min-size) — the
+vol-divergence engine replaces it as primary. Late engine stays. Book $82.80 vs kill-floor $80:
+the test survives ~1-2 losses max before the pre-committed stop fires — stated to the owner.
+
 ## v1.41.0 — 2026-07-07 — PRODUCT phase 1: capture Binance book-imbalance (microstructure signal)
 **Tag:** `cleanbot-v1.41.0` · **Status:** ✅ live · shadow data-enrichment, zero trading-logic change
 
