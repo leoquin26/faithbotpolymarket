@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.46.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.47.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -276,6 +276,10 @@ class CleanBot:
         self.recent_trades = []                 # rolling 1/0 outcomes (adaptive accuracy)
         self.recent_ev = []                     # rolling (won, pnl, stake, engine) — live accuracy+EV meter
         self.day_results = []                   # today's (won, pnl, stake, engine) — for the midnight [SCORE] board
+        # SELF-GOVERNANCE (v1.47): the engine executes its own pre-registered verdicts at n>=40
+        # per engine — EV/$ >= +0.03 scale up (x2, then x3 cap), -0.03..+0.03 hold, <= -0.03 OFF.
+        self.engine_mult = {"early": 1.0, "late": 1.0, "voldiv": 1.0}   # size multiplier per engine
+        self.engine_off = {"early": False, "late": False, "voldiv": False}  # retired by verdict
         self.killed = False                     # kill-floor latch (v1.43.1): stays True once fired, owner reset only
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
@@ -308,6 +312,7 @@ class CleanBot:
                        "recent_trades": self.recent_trades[-60:],
                        "recent_ev": self.recent_ev[-150:],
                        "day_results": self.day_results[-200:],
+                       "engine_mult": self.engine_mult, "engine_off": self.engine_off,
                        "killed": self.killed,
                        "positions": self.positions,
                        "traded": [list(t) for t in self.traded]},
@@ -334,6 +339,8 @@ class CleanBot:
                               for x in d.get("recent_ev", [])]
             self.day_results = [tuple(x) if len(x) > 3 else (x[0], x[1], x[2], "mixed")
                                 for x in d.get("day_results", [])]
+            self.engine_mult.update(d.get("engine_mult", {}))
+            self.engine_off.update(d.get("engine_off", {}))
             self.killed = bool(d.get("killed", False))
             self.positions = d.get("positions", {})
             self.traded = {tuple(t) for t in d.get("traded", [])}
@@ -769,6 +776,8 @@ class CleanBot:
             logger.debug(f"bankroll sync err {e}")
 
     def scan(self, coin: str):
+        if self.engine_off.get("early"):       # retired by its own 40-trade verdict (v1.47)
+            return
         info = get_market_info(coin)
         if not info:
             return
@@ -950,7 +959,7 @@ class CleanBot:
         if not ask or not (CFG.min_ask <= float(ask) <= CFG.max_ask):
             return
         maker = round(max(0.02, float(ask) - CFG.maker_offset), 2)
-        shares = self._size_shares(maker)
+        shares = max(CFG.shares, int(round(self._size_shares(maker) * self.engine_mult.get("early", 1.0))))
         # divergent correlated bet: ETH/SOL move ~0.85 together, so betting one OPPOSITE a leg
         # already held this window is a bet on decorrelation — 55% in the data (vs 69% aligned),
         # a loser at favorite prices. Skip it (this is the ETH-UP-while-SOL-DOWN case).
@@ -1083,7 +1092,9 @@ class CleanBot:
                     expo_bps = _s * math.sqrt(max(1.0, t_rem)) * 1e4
                     offset += min(0.03, 0.01 * int(expo_bps / CFG.late_shade_bps))
             maker = round(max(0.02, float(ask) - offset), 2)
-        shares = CFG.shares                          # MIN size for the audition (no compounding)
+        if self.engine_off.get("late"):              # retired by its own 40-trade verdict (v1.47)
+            return
+        shares = max(CFG.shares, int(round(CFG.shares * self.engine_mult.get("late", 1.0))))
         # CORRELATION GUARD (v1.39.1): BTC/ETH/SOL move ~0.85 together. Betting the SAME
         # direction across them in ONE window = a single 3x bet, not three — one wrong call
         # loses all three at once (2026-07-07: BTC+ETH+SOL all DOWN same window, all lost).
@@ -1196,7 +1207,9 @@ class CleanBot:
         if CFG.corr_opposite_block and self._corr_opposite(coin, ws, side):
             return
         maker = round(max(0.02, ask - CFG.maker_offset), 2)
-        shares = CFG.shares                           # MIN size — audition grade
+        if self.engine_off.get("voldiv"):             # retired by its own verdict (v1.47)
+            return
+        shares = max(CFG.shares, int(round(CFG.shares * self.engine_mult.get("voldiv", 1.0))))
         if self._open_exposure() + maker * shares > self.bankroll * CFG.max_open_pct:
             return
         self.traded.add(key)
@@ -1462,6 +1475,26 @@ class CleanBot:
                 verdict = ("SCALE-UP✓" if _ev >= 0.03 else "OFF✗" if _ev <= -0.03 else "min-size")
                 logger.info(f"[TRACK:{_tag}] last {_n}: {_w}/{_n}={100*_w/_n:.0f}%WR | net {_net:+.2f} | "
                             f"EV/$ {_ev:+.3f} | at n>=40 -> {verdict}")
+                # SELF-GOVERNANCE (v1.47): at n>=40 the engine EXECUTES its own verdict — the
+                # pre-registered rules stop being advisory. OFF is permanent until owner reset
+                # ("engine_off" in state); scaling steps 1x->2x->3x only while EV holds >= +0.03.
+                if _n >= 40 and not self.engine_off.get(_tag):
+                    if _ev <= -0.03:
+                        self.engine_off[_tag] = True
+                        logger.info(f"[VERDICT:{_tag}] n={_n} EV/$ {_ev:+.3f} <= -0.03 — ENGINE RETIRED "
+                                    f"(pre-registered rule; owner reset required)")
+                        tg._send(f"⚖️ <b>VERDICT: {_tag} RETIRED</b> — n={_n}, EV/$ {_ev:+.3f}. "
+                                 f"The pre-registered rule fired; engine off until owner reset.")
+                    elif _ev >= 0.03 and self.engine_mult.get(_tag, 1.0) < 3.0:
+                        self.engine_mult[_tag] = self.engine_mult.get(_tag, 1.0) + 1.0
+                        logger.info(f"[VERDICT:{_tag}] n={_n} EV/$ {_ev:+.3f} >= +0.03 — SCALING to "
+                                    f"x{self.engine_mult[_tag]:.0f} (pre-registered rule)")
+                        tg._send(f"⚖️ <b>VERDICT: {_tag} SCALES</b> to x{self.engine_mult[_tag]:.0f} — "
+                                 f"n={_n}, EV/$ {_ev:+.3f} earned it.")
+                        # restart this engine's measurement window so the next step is judged
+                        # on the new size, not stale min-size trades
+                        self.recent_ev = [x for x in self.recent_ev if len(x) > 3 and x[3] != _tag]
+                    self._save()
             tg._send(f"{'🧪 ' if p.get('sim') else ''}{'✅ <b>WIN</b>' if won else '❌ <b>LOSS</b>'}"
                      f"{' (sim)' if p.get('sim') else ''} {p['coin']} {p['dir']} @ "
                      f"{entry*100:.0f}c → {w} | {pnl:+.2f} | 💰 ${self.bankroll:.2f} | day net {net:+.2f}",

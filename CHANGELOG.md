@@ -10,6 +10,17 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.47.0 — 2026-07-09 — SELF-GOVERNANCE: the engine executes its own verdicts
+**Tag:** `cleanbot-v1.47.0` · **Status:** ✅ live · owner: "I care about the engine — make it work"
+
+The pre-registered 40-trade verdicts stop being advisory notes on the [TRACK] lines and become
+ACTIONS the bot takes itself: per engine at n≥40 — EV/$ ≤ −0.03 → `[VERDICT:tag] ENGINE RETIRED`
+(engine_off latches in state, owner reset required, Telegram alert); EV/$ ≥ +0.03 → scales its
+own size x1→x2→x3 (measurement window restarts each step so the next verdict judges the new
+size). engine_mult/engine_off persisted; enforced at all three entry paths. This is the
+"dynamic bot that knows how to trade without being told" — measurement → judgment → action,
+closed loop, no operator in the middle.
+
 ## v1.46.0 — 2026-07-09 — late engine goes TAKER (owner diagnosed the maker-fill reversal trap)
 **Tag:** `cleanbot-v1.46.0` · **Status:** ✅ live
 
