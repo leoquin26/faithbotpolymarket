@@ -10,6 +10,19 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.44.0 — 2026-07-09 — the disciplined reset: verified-only engines + per-engine scoreboards
+**Tag:** `cleanbot-v1.44.0` · **Status:** ✅ live · owner delegated control; pre-registered test begins
+
+Config: **VOLDIV OFF** (failed live audition: claimed ~70%, realized ~40% across 15 trades — the
+market is the better calculator; stays shadow-loggable). **EARLY back ON in verified form only**:
+z-bar (OOS z=+1.77 PASS), SIG gate −2, max_ask 0.70, `CLEAN_COMPOUND=off` → flat 5-share min-size.
+**LATE stays ON** (best live performer). Code: per-engine `[TRACK:early|late|voldiv]` rolling
+meters (WR + EV/$ per engine, tagged through recent_ev/day_results; old tuples backfilled
+'mixed'), midnight `[SCORE]` scoreboard per engine, and the PRE-REGISTERED verdicts printed on
+every meter line: at n≥40 per engine → EV/$ ≥ +0.03 SCALE-UP | −0.03..+0.03 keep min-size |
+≤ −0.03 OFF permanently. No mid-test strategy changes, no same-day signal deploys (the kappa/
+VOLDIV rushes cost real money — rule binds the operator too). Book at start of test: ~$66.
+
 ## v1.43.2 — 2026-07-09 — VOLDIV live forensic: kill the kappa term + book-sanity check
 **Tag:** `cleanbot-v1.43.2` · **Status:** ✅ live · correcting two deploy errors found in live forensics
 

@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.43.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.44.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -271,7 +271,8 @@ class CleanBot:
         self.breaker_trips = 0                  # repeat breaker firings (escalating regime backoff)
         self.win_streak = 0                     # consecutive wins (resets the escalation)
         self.recent_trades = []                 # rolling 1/0 outcomes (adaptive accuracy)
-        self.recent_ev = []                     # rolling (won, pnl, stake) — live accuracy+EV meter
+        self.recent_ev = []                     # rolling (won, pnl, stake, engine) — live accuracy+EV meter
+        self.day_results = []                   # today's (won, pnl, stake, engine) — for the midnight [SCORE] board
         self.killed = False                     # kill-floor latch (v1.43.1): stays True once fired, owner reset only
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
@@ -302,7 +303,8 @@ class CleanBot:
                        "hwm": round(self.hwm, 2),
                        "day_blocked": self.day_blocked, "day_loss_streak": self.day_loss_streak,
                        "recent_trades": self.recent_trades[-60:],
-                       "recent_ev": self.recent_ev[-100:],
+                       "recent_ev": self.recent_ev[-150:],
+                       "day_results": self.day_results[-200:],
                        "killed": self.killed,
                        "positions": self.positions,
                        "traded": [list(t) for t in self.traded]},
@@ -324,7 +326,11 @@ class CleanBot:
             self.day_blocked = d.get("day_blocked", False)
             self.day_loss_streak = d.get("day_loss_streak", 0)
             self.recent_trades = d.get("recent_trades", [])
-            self.recent_ev = [tuple(x) for x in d.get("recent_ev", [])]
+            # backfill engine tag on pre-v1.44 3-tuples so old rows don't crash per-engine math
+            self.recent_ev = [tuple(x) if len(x) > 3 else (x[0], x[1], x[2], "mixed")
+                              for x in d.get("recent_ev", [])]
+            self.day_results = [tuple(x) if len(x) > 3 else (x[0], x[1], x[2], "mixed")
+                                for x in d.get("day_results", [])]
             self.killed = bool(d.get("killed", False))
             self.positions = d.get("positions", {})
             self.traded = {tuple(t) for t in d.get("traded", [])}
@@ -334,9 +340,28 @@ class CleanBot:
             logger.warning(f"state load failed: {e}")
 
     # ── risk ─────────────────────────────────────────────────────────
+    def _score_line(self, results, label):
+        """One honest scoreboard row: n, WR, avg entry (=break-even), EV/$ staked."""
+        if not results:
+            return f"  {label:8s} n=0"
+        n = len(results); w = sum(r[0] for r in results)
+        net = sum(r[1] for r in results); stk = sum(r[2] for r in results)
+        ev = net / stk if stk else 0.0
+        return (f"  {label:8s} n={n:3d} WR={100*w/n:.0f}% net={net:+.2f} EV/$={ev:+.3f}"
+                f" {'✓' if net > 0 else ''}")
+
     def _roll_day(self):
         t = self._today()
         if t != self.day:
+            # DAILY SCOREBOARD (v1.44): per-engine verdict for the ending day, then reset.
+            if self.day_results:
+                logger.info(f"[SCORE] {self.day} per-engine:")
+                for tag in ("early", "late", "voldiv"):
+                    sub = [r for r in self.day_results if r[3] == tag]
+                    if sub:
+                        logger.info(self._score_line(sub, tag))
+                logger.info(self._score_line(self.day_results, "TOTAL"))
+            self.day_results = []
             logger.info(f"=== new day {t}: resetting daily pnl (was net "
                         f"{self.wins - self.losses:+.2f}) ===")
             self.day = t; self.wins = 0.0; self.losses = 0.0; self.day_peak = 0.0
@@ -1399,16 +1424,23 @@ class CleanBot:
             logger.info(f"[{'WIN' if won else 'LOSS'}] {p['coin']} {p['dir']} @ "
                         f"{entry*100:.0f}c -> {w} | {pnl:+.2f} | bankroll ${self.bankroll:.2f} "
                         f"| day net {net:+.2f}" + (" [SIM]" if p.get("sim") else ""))
-            # LIVE ACCURACY + EV METER: the honest read on whether constant-betting is net-positive.
-            # WR alone lies (favorite pricing); EV/$ (net PnL per $ staked) is the real compounding rate.
-            self.recent_ev.append((1 if won else 0, pnl, entry * p.get("shares", CFG.shares)))
-            self.recent_ev = self.recent_ev[-100:]
-            if len(self.recent_ev) >= 10:
-                _w = sum(x[0] for x in self.recent_ev); _n = len(self.recent_ev)
-                _net = sum(x[1] for x in self.recent_ev); _stk = sum(x[2] for x in self.recent_ev)
+            # LIVE ACCURACY + EV METER (v1.44: PER-ENGINE): WR alone lies at favorite prices;
+            # EV/$ staked is the real compounding rate. Each engine gets its own scoreboard so a
+            # good engine can't be hidden by a bad one — and each faces its own pre-registered
+            # verdict at 40 trades: EV>=+0.03 scale up | -0.03..+0.03 keep min-size | <=-0.03 OFF.
+            _tag = "late" if p.get("late") else ("voldiv" if p.get("voldiv") else "early")
+            _rec = (1 if won else 0, pnl, entry * p.get("shares", CFG.shares), _tag)
+            self.recent_ev.append(_rec)
+            self.recent_ev = self.recent_ev[-150:]
+            self.day_results.append(_rec)
+            eng = [x for x in self.recent_ev if len(x) > 3 and x[3] == _tag]
+            if len(eng) >= 5:
+                _w = sum(x[0] for x in eng); _n = len(eng)
+                _net = sum(x[1] for x in eng); _stk = sum(x[2] for x in eng)
                 _ev = _net / _stk if _stk else 0.0
-                logger.info(f"[TRACK] last {_n}: {_w}/{_n}={100*_w/_n:.0f}%WR | net {_net:+.2f} | "
-                            f"EV/$ {_ev:+.3f} | {'COMPOUNDING ✓' if _net > 0 else 'break-even/bleeding'}")
+                verdict = ("SCALE-UP✓" if _ev >= 0.03 else "OFF✗" if _ev <= -0.03 else "min-size")
+                logger.info(f"[TRACK:{_tag}] last {_n}: {_w}/{_n}={100*_w/_n:.0f}%WR | net {_net:+.2f} | "
+                            f"EV/$ {_ev:+.3f} | at n>=40 -> {verdict}")
             tg._send(f"{'🧪 ' if p.get('sim') else ''}{'✅ <b>WIN</b>' if won else '❌ <b>LOSS</b>'}"
                      f"{' (sim)' if p.get('sim') else ''} {p['coin']} {p['dir']} @ "
                      f"{entry*100:.0f}c → {w} | {pnl:+.2f} | 💰 ${self.bankroll:.2f} | day net {net:+.2f}",
