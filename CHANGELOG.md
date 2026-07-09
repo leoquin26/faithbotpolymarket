@@ -10,6 +10,11 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+> **Jul 9 09:27 env addendum:** `CLEAN_SIG_MIN_EDGE` −2 → **−6** (owner-approved). Measured on the
+> live z≥1.0 universe: stand-down windows still carry +2.3pts edge (z-bar supersedes the gate's
+> old job); softening reclaims ~13% more early trades (~+3pt slice) while keeping the deep-decay
+> (<−6, +1.5pts ≈ noise) crash brake. Per the owner's standing no-overblocking rule.
+
 ## v1.45.0 — 2026-07-09 — Avellaneda-Stoikov maker shading on the late engine (own-fill-calibrated)
 **Tag:** `cleanbot-v1.45.0` · **Status:** ✅ live (owner directed) · execution-layer change, late engine only
 
