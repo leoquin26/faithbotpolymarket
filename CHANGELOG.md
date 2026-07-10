@@ -16,6 +16,19 @@ feature/knob, PATCH = fix/tuning.
 > entries were untested territory (buying ~50/50 coin flips at 57c). Restores the engine to its
 > verified universe; not a new filter.
 
+## v1.48.0 — 2026-07-10 — session study: late engine sleeps the Lima night (00-07)
+**Tag:** `cleanbot-v1.48.0` · **Status:** ✅ live
+
+Owner asked for the best hours after watching 3 straight days of overnight bleed + daytime
+recovery ($45→$59 solo this morning). Session-block study (Lima time, BOTH-HALVES stability
+check, both live universes): **EARLY-Z: all four blocks positive incl. NIGHT +2.9 (stable) —
+early keeps 24h, cutting it would be overblocking. LATE: NIGHT 00-07 = +0.9pts (zero, and
+taker fees make it net-negative) vs MORNING +6.6 / AFTERNOON +14.3 / EVENING +12.8.** So the
+overnight killer was the late engine specifically. Fix: `CLEAN_LATE_NIGHT_OFF=on` — the late
+engine skips 00:00-07:00 Lima (~26% of its volume at ~zero EV; removing zero-EV volume ≠
+overblocking, same logic as the z<1 noise cut). Best sessions confirmed: EVENING 18-24 and
+MORNING 07-12. Hour filters remain REJECTED for the early engine (old OOS failure stands).
+
 > **Jul 9 14:01 env addendum (owner-directed):** `CLEAN_DAILY_STOP` 10 → **999** (daily stop
 > disabled) + day counter reset — owner: "reset the stop loss, let the bot trade, I don't care
 > about stop loss." Remaining brakes: 3-loss breaker cooldown + the engines' own n≥40 verdicts.
