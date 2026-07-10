@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.48.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.49.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -542,6 +542,13 @@ class CleanBot:
         now = time.time(); t_rem = ws + 900 - now; age = now - ws
         if phase == "late":
             if not (60 <= t_rem <= 210):
+                return
+        elif phase == "mid":
+            # v1.49 (owner: "focus more on late entry — measure more"): the mid-window zone
+            # (3.5-9min left) has NEVER been captured — zero rows. If fresh leads there carry
+            # the late-style edge, it's a second late-type engine = the real frequency multiplier.
+            # Shadow measurement only; verifier decides at n>=80 per the standard gate.
+            if not (210 < t_rem <= 540):
                 return
         elif age < CFG.warmup or t_rem < CFG.min_t:
             return
@@ -1630,6 +1637,7 @@ class CleanBot:
             try:
                 for c in tuple(CFG.coins) + tuple(c for c in CFG.research_coins if c not in CFG.coins):
                     self._research_scan(c)
+                    self._research_scan(c, "mid")    # v1.49: the never-measured 3.5-9min zone
                     self._research_scan(c, "late")
                 self._research_resolve()
             except Exception as e:

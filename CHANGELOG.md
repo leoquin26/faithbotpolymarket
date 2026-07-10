@@ -16,6 +16,17 @@ feature/knob, PATCH = fix/tuning.
 > entries were untested territory (buying ~50/50 coin flips at 57c). Restores the engine to its
 > verified universe; not a new filter.
 
+## v1.49.0 — 2026-07-10 — mid-window shadow capture (the never-measured 3.5-9min zone)
+**Tag:** `cleanbot-v1.49.0` · **Status:** ✅ live · shadow measurement only, zero trading change
+
+Owner: "focus more on late entry — measure and bet more." Late live frequency is already at the
+max of its VERIFIED territory (band/floor/corr/coins all data-bounded), so the honest expansion
+is measurement: NEW `phase='mid'` research snapshots at t_rem 210-540s — a zone with ZERO
+existing rows. If fresh mid-window leads carry the late-style edge, that's a second late-type
+engine (~doubles candidate flow). Verifier gate at n≥80 as always. ALSO this morning: **EARLY
+ENGINE RETIRED** at n=34/40, EV −0.177 (mathematically unable to reach −0.03 even winning out —
+verdict executed early, mate-is-forced). Live trading = LATE engine only (07-24 Lima, taker).
+
 ## v1.48.0 — 2026-07-10 — session study: late engine sleeps the Lima night (00-07)
 **Tag:** `cleanbot-v1.48.0` · **Status:** ✅ live
 
