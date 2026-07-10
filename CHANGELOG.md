@@ -16,6 +16,10 @@ feature/knob, PATCH = fix/tuning.
 > entries were untested territory (buying ~50/50 coin flips at 57c). Restores the engine to its
 > verified universe; not a new filter.
 
+> **Jul 9 14:01 env addendum (owner-directed):** `CLEAN_DAILY_STOP` 10 → **999** (daily stop
+> disabled) + day counter reset — owner: "reset the stop loss, let the bot trade, I don't care
+> about stop loss." Remaining brakes: 3-loss breaker cooldown + the engines' own n≥40 verdicts.
+
 ## v1.47.0 — 2026-07-09 — SELF-GOVERNANCE: the engine executes its own verdicts
 **Tag:** `cleanbot-v1.47.0` · **Status:** ✅ live · owner: "I care about the engine — make it work"
 
