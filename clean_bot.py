@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.53.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.54.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -170,7 +170,7 @@ class Cfg:
     late_t_min: float = float(os.getenv("CLEAN_LATE_T_MIN", "60"))    # last-window band (matches the shadow-capture zone)
     late_t_max: float = float(os.getenv("CLEAN_LATE_T_MAX", "210"))
     late_min_ask: float = float(os.getenv("CLEAN_LATE_MIN_ASK", "0.55"))
-    late_max_ask: float = float(os.getenv("CLEAN_LATE_MAX_ASK", "0.70"))
+    late_max_ask: float = float(os.getenv("CLEAN_LATE_MAX_ASK", "0.66"))  # v1.54: geometry — 70c wins too little vs losses
     late_drift_bps: float = float(os.getenv("CLEAN_LATE_DRIFT_BPS", "0"))  # v1.38.1: the late edge is drift-INDEPENDENT (OOS: drift<5 slice z=+1.53 EV+0.159, STRONGER than drift>=5). The 55-70c ask band already selects "modest favorite"; a drift floor here just discards 2/3 of the verified windows. 0 = no floor.
     late_mom_agree: bool = os.getenv("CLEAN_LATE_MOM_AGREE", "off").lower() in ("1", "true", "yes", "on")  # v1.38.2 (DEPRECATED, default off): roc60-based; unreliable (roc60 present only ~30% of late windows → fails open). Superseded by late_skip_fading.
     late_taker: bool = os.getenv("CLEAN_LATE_TAKER", "on").lower() in ("1", "true", "yes", "on")  # v1.46 (owner diagnosed it): TAKE the ask at signal time instead of resting a maker order. Live maker fills ran 52% vs 63c (−11pts) — resting orders fill DURING the reversal (adverse selection); the verified +12-16pt shadow edge was measured AT THE ASK. Costs ~1c spread + ~1.6c taker fee; buys the edge as verified.
@@ -193,6 +193,11 @@ class Cfg:
     # "NO early snapshot" late 55-70 = edge −7.5 / EV −0.075 (toxic). Growing lead = +21 pts.
     late_require_early: bool = os.getenv("CLEAN_LATE_REQUIRE_EARLY", "on").lower() in ("1", "true", "yes", "on")
     late_grow_mult: float = float(os.getenv("CLEAN_LATE_GROW_MULT", "1.25"))  # size boost when early→late lead GREW (not a skip)
+    # v1.54: skip early→late FLIP when lead is still tiny (e.g. ETH UP +3.0bps flip → loss).
+    # Flips with a real lead remain allowed (research flip bucket still +EV when established).
+    late_flip_min_bps: float = float(os.getenv("CLEAN_LATE_FLIP_MIN_BPS", "5"))
+    # Hard $ cap per late fill (0=off). Stops a single favorite loss from wiping multiple wins.
+    late_max_usd: float = float(os.getenv("CLEAN_LATE_MAX_USD", "3.50"))
     # Compound only when rolling late EV/$ clears this bar (and n≥min). Else flat exchange-min.
     # Protects $42 book from sizing into a red live meter. Set CLEAN_COMPOUND_MIN_EV=-9 to disable.
     compound_min_ev: float = float(os.getenv("CLEAN_COMPOUND_MIN_EV", "0"))
@@ -538,18 +543,28 @@ class CleanBot:
             return "none"
 
     def _late_size_shares(self, coin: str, price: float, lead_state: str = "none") -> int:
-        """v1.51/v1.53 late sizing: EV-gated compound × coin mult × grow boost × engine_mult."""
-        if self._late_compound_ok():
-            base = self._size_shares(price)
+        """v1.54 late sizing.
+        - While live late EV not proven: EXACT exchange-min shares (no SOL cmult inflate).
+          Bugfix: v1.53 still did 5×1.5=7sh on SOL in MIN mode → losses wipe 2 wins.
+        - When EV green: compound × coin mult × grow boost, capped by max_bet_pct and late_max_usd.
+        """
+        price = max(0.02, float(price))
+        if not self._late_compound_ok():
+            shares = CFG.shares                 # true flat min — no cmult / grow / engine scale
         else:
-            base = CFG.shares                  # flat min while live EV not proven
-        cmult = float(CFG.late_coin_mult.get(coin.upper(), 1.0))
-        if lead_state == "grow" and CFG.late_grow_mult > 1.0:
-            cmult *= CFG.late_grow_mult
-        emult = float(self.engine_mult.get("late", 1.0))
-        raw = max(CFG.shares, int(round(base * cmult * emult)))
-        max_sh = max(CFG.shares, int((self.bankroll * CFG.max_bet_pct) / max(0.02, price)))
-        return max(CFG.shares, min(raw, max_sh))
+            base = self._size_shares(price)
+            cmult = float(CFG.late_coin_mult.get(coin.upper(), 1.0))
+            if lead_state == "grow" and CFG.late_grow_mult > 1.0:
+                cmult *= CFG.late_grow_mult
+            emult = float(self.engine_mult.get("late", 1.0))
+            shares = max(CFG.shares, int(round(base * cmult * emult)))
+            max_sh = max(CFG.shares, int((self.bankroll * CFG.max_bet_pct) / price))
+            shares = min(shares, max_sh)
+        # $ notional cap (geometry): at 66c, $3.50 → 5sh floor still binds
+        if CFG.late_max_usd > 0:
+            cap_sh = max(CFG.shares, int(CFG.late_max_usd / price))
+            shares = min(shares, cap_sh)
+        return max(CFG.shares, shares)
 
     def _market_confirms(self, coin, direction):
         """Soft cross-coin confirmation: is the broader market drifting the same
@@ -1191,6 +1206,16 @@ class CleanBot:
                             f"early={e_drift:+.3f}% now={dist*100:+.3f}%")
                 self._nc_logged.add((coin, ws, "fade"))
             return
+        # v1.54: thin FLIP joins (dir changed early→late but lead still tiny) — wire-flip bait.
+        # Live: ETH UP +3.0bps lead=flip @62c → LOSS. Established flips still allowed.
+        if lead_state == "flip" and CFG.late_flip_min_bps > 0:
+            if abs(dist) * 1e4 < CFG.late_flip_min_bps:
+                if (coin, ws, "thinflip") not in self._nc_logged:
+                    logger.info(f"[LATE SKIP] {coin} {direction} thin flip "
+                                f"drift={dist*1e4:+.1f}bps < {CFG.late_flip_min_bps:.0f}bps "
+                                f"(need established lead after dir change)")
+                    self._nc_logged.add((coin, ws, "thinflip"))
+                return
         # REVERSE-UNDERWAY (v1.52): last N-sec ROC on settlement feed already fights the lead.
         roc_bps = None
         if CFG.late_roc_oppose and CFG.late_roc_oppose_bps > 0:

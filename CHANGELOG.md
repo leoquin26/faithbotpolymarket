@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.54.0 — 2026-07-11 — stop losses wiping wins (geometry + thin-flip + true min size)
+**Tag:** `cleanbot-v1.54.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** live
+
+Today live (post v1.50–1.53): ~2W/2L but net **−$5** because favorite geometry:
+- SOL UP @70¢ ×7 win **+$2.00**
+- ETH DOWN @66¢ ×6 loss **−$4.05**
+- ETH UP @62¢ ×5 loss **−$3.18** (lead=**flip**, only +3.0 bps)
+
+Fixes:
+1. **True MIN size** when late EV not green: exact `CLEAN_SHARES` (was still × SOL cmult 1.5 → 7sh).
+2. **`CLEAN_LATE_MAX_ASK=0.66`** (was 0.70) — better win/loss $ ratio; still in verified band.
+3. **`CLEAN_LATE_MAX_USD=3.50`** hard notional cap per late fill.
+4. **`CLEAN_LATE_FLIP_MIN_BPS=5`** — skip early→late flips with |drift| < 5 bps (thin wire bait).
+
 ## v1.53.0 — 2026-07-11 — join-quality + EV-gated compound (direction research)
 **Tag:** `cleanbot-v1.53.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** live
 
