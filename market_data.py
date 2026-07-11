@@ -31,6 +31,7 @@ class MarketInfo:
     timeframe: str = "15m"
     slug: str = ""
     strike_source: str = ""
+    spot_source: str = ""  # v1.55: chainlink_rtds | chainlink_onchain | binance
 
 
 # ---------------------------------------------------------------------------
@@ -310,17 +311,22 @@ def get_market_info(coin: str, timeframe: str = "15m") -> Optional[MarketInfo]:
             strike_source = "binance_kline"
 
         spot = current_price
+        spot_source = "binance" if current_price else ""
         try:
             import chainlink_ws as _cl
             cl_px = _cl.get_price(coin)
-            if not cl_px or cl_px <= 0:
+            if cl_px and cl_px > 0:
+                spot = cl_px
+                spot_source = "chainlink_rtds"
+            else:
                 try:
                     import chainlink_onchain as _cl_oc2
                     cl_px = _cl_oc2.get_price(coin)
+                    if cl_px and cl_px > 0:
+                        spot = cl_px
+                        spot_source = "chainlink_onchain"
                 except Exception:
                     pass
-            if cl_px and cl_px > 0:
-                spot = cl_px
         except Exception:
             pass
 
@@ -351,6 +357,7 @@ def get_market_info(coin: str, timeframe: str = "15m") -> Optional[MarketInfo]:
             timeframe=timeframe,
             slug=slug,
             strike_source=strike_source,
+            spot_source=spot_source,
         )
     except Exception as e:
         logger.debug(f"get_market_info error for {coin}: {e}")

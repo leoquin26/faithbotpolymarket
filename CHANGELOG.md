@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.55.0 — 2026-07-11 — higher-quality settlement data (Chainlink-first everything)
+**Tag:** `cleanbot-v1.55.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** live
+
+Data-source clean-up so direction/metrics match Polymarket settlement (Chainlink):
+
+1. **Late direction: Chainlink spot only** — no Binance fallback (`CLEAN_LATE_REQUIRE_CL_SPOT=on`).
+2. **Reverse-underway: CL ticks only** by default (`CLEAN_LATE_ROC_CL_ONLY=on`); logs sparse-tick fail-open.
+3. **Research purity tags:** `strike_source`, `spot_source`, `roc_source`, `sigma_source`, `feed_ok`
+   (CSV schema rotated to `*.pre_v155` once). Prefer CL for research roc/sigma.
+4. **`chainlink_ws.get_realized_vol`** + larger tick buffer (5400) for denser CL history.
+5. **`market_data.spot_source`** field on MarketInfo.
+6. **Early snaps on disk** (`data/late_early_snaps.json`) so require_early survives restarts.
+7. Late enter logs **BEwr / wins-needed-per-loss** geometry.
+
 ## v1.54.0 — 2026-07-11 — stop losses wiping wins (geometry + thin-flip + true min size)
 **Tag:** `cleanbot-v1.54.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** live
 

@@ -25,7 +25,8 @@ _updated: Dict[str, float] = {}
 # polls of the deviation-gated on-chain aggregator (~5bp quantized, heartbeat
 # lag). ~40min at 1 tick/s.
 _ticks: Dict[str, list] = {}
-_TICK_MAX = int(os.getenv("CHAINLINK_WS_TICK_MAX", "2400"))
+# v1.55: denser buffer (~90min @1Hz) so late roc60/sigma don't starve after restarts
+_TICK_MAX = int(os.getenv("CHAINLINK_WS_TICK_MAX", "5400"))
 _lock = threading.Lock()
 _connected = False
 _thread: Optional[threading.Thread] = None
@@ -194,6 +195,32 @@ def get_ticks(coin: str, seconds: float = 300.0) -> list:
     with _lock:
         buf = list(_ticks.get(coin.upper(), []))
     return [(ts, p) for ts, p in buf if ts >= cutoff]
+
+
+def get_realized_vol(coin: str, lookback_sec: int = 180) -> float:
+    """Per-second log-return vol from RTDS ticks (same units as binance_ws.get_realized_vol).
+    v1.55: settlement-feed sigma for research / late — no Binance basis."""
+    import math
+    ticks = get_ticks(coin, lookback_sec + 30)
+    if len(ticks) < 10:
+        return 0.0
+    total_var = total_dt = 0.0
+    for i in range(1, len(ticks)):
+        t0, p0 = ticks[i - 1]
+        t1, p1 = ticks[i]
+        dt = t1 - t0
+        if dt <= 0 or p0 <= 0:
+            continue
+        lr = math.log(p1 / p0)
+        total_var += lr * lr
+        total_dt += dt
+    if total_dt <= 0:
+        return 0.0
+    return math.sqrt(total_var / total_dt)
+
+
+def tick_count(coin: str, seconds: float = 120.0) -> int:
+    return len(get_ticks(coin, seconds))
 
 
 def is_connected() -> bool:

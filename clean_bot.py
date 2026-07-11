@@ -46,14 +46,17 @@ RESEARCH_COLS = ["ts", "window_start", "coin", "dir", "drift_pct", "roc60_bps", 
                  "flow60",   # order-flow: 60s buy/sell PRESSURE [-1..+1] (volume direction) — testing as a leading signal
                  "hmm",      # v1.34 SHADOW: 3-state HMM regime posterior 'T0.62/C0.31/P0.07' — verifier decides if it beats ER/signal-health
                  "phase",    # v1.36: 'early' (normal capture) or 'late' (last ~2-3min snapshot — momentum-into-close audition)
-                 "book_imb"] # v1.41: Binance top-of-book size imbalance [-1..+1] (bid vs ask depth) — leading microstructure signal, product data-enrichment phase 1
+                 "book_imb", # v1.41: Binance top-of-book size imbalance [-1..+1] (bid vs ask depth) — leading microstructure signal, product data-enrichment phase 1
+                 # v1.55 data-quality tags (filter OOS to chainlink/* only)
+                 "strike_source", "spot_source", "roc_source", "sigma_source", "feed_ok"]
 logger.remove()
 logger.add(sys.stdout, level="INFO", format="{time:HH:mm:ss} | {message}")
 logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.54.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.55.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
 @dataclass
@@ -198,6 +201,9 @@ class Cfg:
     late_flip_min_bps: float = float(os.getenv("CLEAN_LATE_FLIP_MIN_BPS", "5"))
     # Hard $ cap per late fill (0=off). Stops a single favorite loss from wiping multiple wins.
     late_max_usd: float = float(os.getenv("CLEAN_LATE_MAX_USD", "3.50"))
+    # v1.55: never use Binance for late direction/roc (settlement is Chainlink). Skip if CL missing.
+    late_require_cl_spot: bool = os.getenv("CLEAN_LATE_REQUIRE_CL_SPOT", "on").lower() in ("1", "true", "yes", "on")
+    late_roc_cl_only: bool = os.getenv("CLEAN_LATE_ROC_CL_ONLY", "on").lower() in ("1", "true", "yes", "on")
     # Compound only when rolling late EV/$ clears this bar (and n≥min). Else flat exchange-min.
     # Protects $42 book from sizing into a red live meter. Set CLEAN_COMPOUND_MIN_EV=-9 to disable.
     compound_min_ev: float = float(os.getenv("CLEAN_COMPOUND_MIN_EV", "0"))
@@ -523,8 +529,41 @@ class CleanBot:
         return ev > CFG.compound_min_ev
 
     def _early_snapshot(self, coin: str, ws: int):
-        """In-memory early research row for (coin, ws), if research_scan already saw it."""
-        return self._research.get((coin, ws, "early"))
+        """Early research row for (coin, ws): memory first, then disk (survives restarts)."""
+        er = self._research.get((coin, ws, "early"))
+        if er:
+            return er
+        try:
+            if os.path.isfile(EARLY_SNAP_PATH):
+                data = json.loads(open(EARLY_SNAP_PATH, encoding="utf-8").read() or "{}")
+                hit = data.get(f"{coin}:{ws}")
+                if hit and "drift_pct" in hit:
+                    return hit
+        except Exception:
+            pass
+        return None
+
+    def _persist_early_snapshot(self, coin: str, ws: int, row: dict):
+        """v1.55: write early drift to disk so require_early works across restarts."""
+        try:
+            os.makedirs(os.path.dirname(EARLY_SNAP_PATH), exist_ok=True)
+            data = {}
+            if os.path.isfile(EARLY_SNAP_PATH):
+                data = json.loads(open(EARLY_SNAP_PATH, encoding="utf-8").read() or "{}")
+            data[f"{coin}:{ws}"] = {
+                "drift_pct": row.get("drift_pct"),
+                "dir": row.get("dir"),
+                "ts": row.get("ts"),
+                "strike_source": row.get("strike_source", ""),
+                "spot_source": row.get("spot_source", ""),
+            }
+            # prune > 6h old keys by ws epoch
+            cutoff = int(time.time()) - 6 * 3600
+            data = {k: v for k, v in data.items()
+                    if (int(k.split(":")[-1]) if ":" in k else 0) >= cutoff}
+            open(EARLY_SNAP_PATH, "w", encoding="utf-8").write(json.dumps(data))
+        except Exception as e:
+            logger.debug(f"early snap persist err {e}")
 
     def _late_lead_state(self, coin: str, ws: int, dist: float, is_up: bool) -> str:
         """early→late trajectory: grow | fade | flip | none (no early)."""
@@ -670,7 +709,18 @@ class CleanBot:
         elif age < CFG.warmup or t_rem < CFG.min_t:
             return
         strike = float(info.threshold_price or 0)
-        px = float(info.current_crypto_price or binance_ws.get_price(coin) or 0)
+        strike_src = str(getattr(info, "strike_source", "") or "")
+        # v1.55: prefer settlement-feed spot; tag source for research purity
+        px = float(info.current_crypto_price or 0)
+        spot_src = str(getattr(info, "spot_source", "") or "")
+        if px <= 0 or not spot_src.startswith("chainlink"):
+            cl = chainlink_ws.get_price(coin)
+            if cl and cl > 0:
+                px = float(cl); spot_src = "chainlink_rtds"
+        if px <= 0:
+            bn = binance_ws.get_price(coin)
+            if bn and bn > 0:
+                px = float(bn); spot_src = "binance"
         if strike <= 0 or px <= 0:
             return
         dist = (px - strike) / strike
@@ -678,9 +728,22 @@ class CleanBot:
             return
         self._research_seen.add(rk)
         direction = "UP" if dist > 0 else "DOWN"
-        ticks = binance_ws.get_tick_history(coin, 300)
-        roc60 = _roc(ticks, 60); roc300 = _roc(ticks, 300)
-        sigma = binance_ws.get_realized_vol(coin, 180)
+        # Settlement-feed momentum/vol first (higher quality for CL markets)
+        cl_ticks = chainlink_ws.get_ticks(coin, 340)
+        roc_source = sigma_source = ""
+        if cl_ticks and len(cl_ticks) >= 5:
+            roc60 = _roc(cl_ticks, 60); roc300 = _roc(cl_ticks, 300)
+            roc_source = "chainlink_rtds"
+        else:
+            bn_ticks = binance_ws.get_tick_history(coin, 300)
+            roc60 = _roc(bn_ticks, 60); roc300 = _roc(bn_ticks, 300)
+            roc_source = "binance" if bn_ticks else ""
+        sig = chainlink_ws.get_realized_vol(coin, 180)
+        if sig and sig > 0:
+            sigma = sig; sigma_source = "chainlink_rtds"
+        else:
+            sigma = binance_ws.get_realized_vol(coin, 180); sigma_source = "binance" if sigma else ""
+        feed_ok = int(strike_src.startswith("chainlink") and spot_src.startswith("chainlink"))
         up_b = down_b = {}
         try: up_b = self.om.get_clob_book(info.up_token_id) or {}
         except Exception: pass
@@ -705,8 +768,9 @@ class CleanBot:
         if phase == "early":
             logger.info(f"[WATCH] {coin} {direction} drift={dist*1e4:+.1f}bps "
                         f"ask={int(round(fav_ask*100)) if fav_ask else '?'}c t={int(t_rem)}s "
+                        f"feed={'OK' if feed_ok else 'MIXED'} "
                         f"-> {decision}" + (f":{reason}" if reason else ""))
-        self._research[rk] = {
+        row = {
             "ts": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds"),
             "window_start": ws, "coin": coin, "dir": direction,
             "drift_pct": round(dist * 100, 4),
@@ -724,7 +788,16 @@ class CleanBot:
             "flow60": (lambda fl: round(fl, 3) if fl is not None else "")(binance_ws.get_order_flow(coin, 60)),
             "hmm": _hmm_fmt(coin),
             "phase": phase,
-            "book_imb": (lambda bi: round(bi, 3) if bi is not None else "")(binance_ws.get_book_imbalance(coin))}
+            "book_imb": (lambda bi: round(bi, 3) if bi is not None else "")(binance_ws.get_book_imbalance(coin)),
+            "strike_source": strike_src,
+            "spot_source": spot_src,
+            "roc_source": roc_source,
+            "sigma_source": sigma_source,
+            "feed_ok": feed_ok,
+        }
+        self._research[rk] = row
+        if phase == "early":
+            self._persist_early_snapshot(coin, ws, row)
 
     def _research_resolve(self):
         """Resolve logged research windows via gamma; append the complete row
@@ -743,8 +816,16 @@ class CleanBot:
             # predate the entry → a traded window may have been logged as SKIP).
             if (rk[0], rk[1]) in self.traded:
                 row["decision"] = "ENTER"; row["reason"] = ""
-            new = (not os.path.exists(RESEARCH_CSV)) or os.path.getsize(RESEARCH_CSV) == 0
             try:
+                # v1.55: if schema missing feed tags, rotate old file so DictWriter stays aligned
+                if os.path.exists(RESEARCH_CSV) and os.path.getsize(RESEARCH_CSV) > 0:
+                    with open(RESEARCH_CSV, encoding="utf-8", errors="ignore") as _hf:
+                        _hdr = _hf.readline()
+                    if "feed_ok" not in _hdr:
+                        _bak = RESEARCH_CSV + ".pre_v155"
+                        os.replace(RESEARCH_CSV, _bak)
+                        logger.info(f"[RESEARCH] schema upgrade — archived {_bak}")
+                new = (not os.path.exists(RESEARCH_CSV)) or os.path.getsize(RESEARCH_CSV) == 0
                 with open(RESEARCH_CSV, "a", newline="") as f:
                     wr = csv.DictWriter(f, fieldnames=RESEARCH_COLS, extrasaction="ignore")
                     if new:
@@ -1175,11 +1256,32 @@ class CleanBot:
         if not (CFG.late_t_min <= t_rem <= CFG.late_t_max):
             return
         strike = float(info.threshold_price or 0)
-        px = float(info.current_crypto_price or binance_ws.get_price(coin) or 0)
+        strike_src = str(info.strike_source or "")
+        if not strike_src.startswith("chainlink"):
+            return                                   # never trade Binance-strike windows
+        # v1.55: settlement-feed spot ONLY for late direction (no Binance basis)
+        px = float(info.current_crypto_price or 0)
+        spot_src = str(getattr(info, "spot_source", "") or "")
+        if not spot_src.startswith("chainlink") or px <= 0:
+            cl = chainlink_ws.get_price(coin)
+            if cl and cl > 0:
+                px = float(cl); spot_src = "chainlink_rtds"
+            else:
+                try:
+                    import chainlink_onchain as _cl_oc
+                    cl = _cl_oc.get_price(coin)
+                    if cl and cl > 0:
+                        px = float(cl); spot_src = "chainlink_onchain"
+                except Exception:
+                    pass
+        if CFG.late_require_cl_spot and (px <= 0 or not spot_src.startswith("chainlink")):
+            if (coin, ws, "nospot") not in self._nc_logged:
+                logger.info(f"[LATE SKIP] {coin} no Chainlink spot (src={spot_src or 'none'}) "
+                            f"— refusing Binance fallback for direction")
+                self._nc_logged.add((coin, ws, "nospot"))
+            return
         if strike <= 0 or px <= 0:
             return
-        if not str(info.strike_source or "").startswith("chainlink"):
-            return                                   # same wrong-feed protection as early
         dist = (px - strike) / strike
         if abs(dist) < CFG.late_drift_bps / 10000.0:  # late edge is drift-independent; 55-70c band does the selecting
             return
@@ -1216,23 +1318,29 @@ class CleanBot:
                                 f"(need established lead after dir change)")
                     self._nc_logged.add((coin, ws, "thinflip"))
                 return
-        # REVERSE-UNDERWAY (v1.52): last N-sec ROC on settlement feed already fights the lead.
+        # REVERSE-UNDERWAY (v1.52/v1.55): Chainlink ROC only (no Binance pollution).
         roc_bps = None
         if CFG.late_roc_oppose and CFG.late_roc_oppose_bps > 0:
             try:
                 ticks = chainlink_ws.get_ticks(coin, CFG.late_roc_lookback + 40)
-                if not ticks or len(ticks) < 2:
+                if (not ticks or len(ticks) < 3) and not CFG.late_roc_cl_only:
                     ticks = binance_ws.get_tick_history(coin, CFG.late_roc_lookback + 40)
-                roc_bps = _roc(ticks, CFG.late_roc_lookback) * 1e4
-                thr = CFG.late_roc_oppose_bps
-                fighting = (is_up and roc_bps <= -thr) or ((not is_up) and roc_bps >= thr)
-                if fighting:
-                    if (coin, ws, "rev") not in self._nc_logged:
-                        logger.info(f"[LATE SKIP] {coin} {direction} reverse-underway "
-                                    f"roc{CFG.late_roc_lookback}s={roc_bps:+.1f}bps "
-                                    f"(opposes lead ≥{thr:.0f}bps) — not buying into the flip")
-                        self._nc_logged.add((coin, ws, "rev"))
-                    return
+                if ticks and len(ticks) >= 3:
+                    roc_bps = _roc(ticks, CFG.late_roc_lookback) * 1e4
+                    thr = CFG.late_roc_oppose_bps
+                    fighting = (is_up and roc_bps <= -thr) or ((not is_up) and roc_bps >= thr)
+                    if fighting:
+                        if (coin, ws, "rev") not in self._nc_logged:
+                            logger.info(f"[LATE SKIP] {coin} {direction} reverse-underway "
+                                        f"roc{CFG.late_roc_lookback}s={roc_bps:+.1f}bps "
+                                        f"(opposes lead ≥{thr:.0f}bps) — not buying into the flip")
+                            self._nc_logged.add((coin, ws, "rev"))
+                        return
+                elif CFG.late_roc_cl_only:
+                    if (coin, ws, "noroc") not in self._nc_logged:
+                        logger.info(f"[LATE] {coin} {direction} CL roc ticks sparse "
+                                    f"(n={len(ticks) if ticks else 0}) — fail-open, no reverse check")
+                        self._nc_logged.add((coin, ws, "noroc"))
             except Exception:
                 roc_bps = None
         token = info.up_token_id if is_up else info.down_token_id
@@ -1252,7 +1360,7 @@ class CleanBot:
         else:
             offset = CFG.maker_offset
             if CFG.late_shade:
-                _s = binance_ws.get_realized_vol(coin, 180)
+                _s = chainlink_ws.get_realized_vol(coin, 180) or binance_ws.get_realized_vol(coin, 180)
                 if _s and _s > 0:
                     expo_bps = _s * math.sqrt(max(1.0, t_rem)) * 1e4
                     offset += min(0.03, 0.01 * int(expo_bps / CFG.late_shade_bps))
@@ -1276,11 +1384,16 @@ class CleanBot:
         _evs = f"{_ev:+.3f}" if _ev is not None else "n/a"
         _cmp = "CMPD" if self._late_compound_ok() else "MIN"
         _roc = f"{roc_bps:+.1f}" if roc_bps is not None else "n/a"
+        # Geometry truth for operator: break-even WR = price; wins needed to cover 1 loss
+        _be = px_ord
+        _cover = (px_ord / max(1e-6, 1 - px_ord))
         logger.info(f"[LATE ENTER] {coin} {direction} drift={dist*100:+.3f}% ask={float(ask)*100:.0f}c "
                     f"-> {_how} {px_ord*100:.0f}c x{shares} (${px_ord*shares:.2f}"
                     f"{f'+fee${_fee:.2f}' if _fee else ''}, bankroll ${self.bankroll:.0f}, "
                     f"cmult={_cm:.2f}, lead={lead_state}, size={_cmp}, lateEV={_evs}, "
-                    f"roc60={_roc}) T={t_rem:.0f}s [AUDITION]" + (" [DRY]" if CFG.dry else ""))
+                    f"roc60={_roc}, feed={spot_src}/{strike_src}, "
+                    f"BEwr={_be*100:.0f}% need={_cover:.2f}W/L) T={t_rem:.0f}s [AUDITION]"
+                    + (" [DRY]" if CFG.dry else ""))
         if CFG.dry:
             # paper: assume immediate fill at the signal price (taker or maker path)
             self.traded.add(key)
