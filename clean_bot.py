@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.50.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.51.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -180,6 +180,11 @@ class Cfg:
     late_shade: bool = os.getenv("CLEAN_LATE_SHADE", "on").lower() in ("1", "true", "yes", "on")  # v1.45 A-S maker shading (only applies when late_taker=off): rest deeper when sigma*sqrt(t_rem) exposure is high.
     late_shade_bps: float = float(os.getenv("CLEAN_LATE_SHADE_BPS", "15"))  # bps of expected remaining move per +1c of shading (own-fill terciles: 13.4/30.2bps)
     late_skip_fading: bool = os.getenv("CLEAN_LATE_SKIP_FADING", "on").lower() in ("1", "true", "yes", "on")  # v1.39: skip FADING leaders (favorite ahead but its lead SHRANK from the early→late snapshot, same dir). Uses Chainlink settlement-feed drift trajectory (96% coverage, reliable). Verified: whole band 76.5%/EV+0.167 → skip-fading 81.5%/EV+0.244, recent30% EV+0.202 z+1.27. Keeps growing+reversed leads.
+    # ── v1.51 recovery sizing (frequency-preserving): compound late stakes + per-coin tilt.
+    # Research (late 55-70c): SOL EV/$ +0.135, ETH +0.085, BTC +0.007. Tilt SIZE toward SOL;
+    # do NOT add skip-filters. CLEAN_LATE_COIN_MULT="SOL=1.5,ETH=1.0,BTC=0.5"
+    late_coin_mult: dict = field(default_factory=dict)
+    target_bankroll: float = float(os.getenv("CLEAN_TARGET_BANKROLL", "100"))  # milestone log only (e.g. $46→$100)
     # ── VOL-DIVERGENCE engine (v1.42, Strategy #4 — PRICING edge, not direction): bet where the
     # market's price diverges >= vol_div_min from the vol-priced probability of the lead holding,
     # p = Phi(drift/(sigma*sqrt(t_left))). Bets BOTH sides (leader underpriced OR underdog over-
@@ -203,6 +208,21 @@ class Cfg:
     mom_min_bps: float = float(os.getenv("CLEAN_MOM_MIN_BPS", "2"))    # skip if momentum opposes drift by > this
     # ── cross-coin agreement boost (data: |drift|>=10 + both coins agree = 80%->84%) ──
     mom_need_coin: bool = os.getenv("CLEAN_MOM_NEED_COIN", "off").lower() in ("1", "true", "yes", "on")
+
+    def __post_init__(self):
+        # Parse CLEAN_LATE_COIN_MULT once (SOL=1.5,ETH=1.0,BTC=0.5). Empty → all 1.0.
+        raw = os.getenv("CLEAN_LATE_COIN_MULT", "SOL=1.5,ETH=1.0,BTC=0.5")
+        out = {}
+        for part in (raw or "").split(","):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            try:
+                out[k.strip().upper()] = max(0.0, float(v.strip()))
+            except Exception:
+                continue
+        self.late_coin_mult = out
 
 
 CFG = Cfg()
@@ -455,6 +475,19 @@ class CleanBot:
         kf = CFG.kelly_bump if self.bankroll >= CFG.kelly_bump_at else CFG.kelly_frac
         stake = min(self.bankroll * kf, self.bankroll * CFG.max_bet_pct)
         return max(CFG.shares, int(round(stake / max(0.02, price))))
+
+    def _late_size_shares(self, coin: str, price: float) -> int:
+        """v1.51 recovery sizing for the late engine only.
+        base = compound Kelly (or flat min), then × coin mult × engine_mult, still
+        floored at exchange min and capped by max_bet_pct. Re-ranks $ toward SOL
+        without skipping ETH/BTC signals (BTC mult <1 only shrinks size when above floor)."""
+        base = self._size_shares(price)
+        cmult = float(CFG.late_coin_mult.get(coin.upper(), 1.0))
+        emult = float(self.engine_mult.get("late", 1.0))
+        raw = max(CFG.shares, int(round(base * cmult * emult)))
+        # hard $ cap (re-apply after coin tilt so SOL can't exceed max_bet_pct)
+        max_sh = max(CFG.shares, int((self.bankroll * CFG.max_bet_pct) / max(0.02, price)))
+        return max(CFG.shares, min(raw, max_sh))
 
     def _market_confirms(self, coin, direction):
         """Soft cross-coin confirmation: is the broader market drifting the same
@@ -1120,7 +1153,7 @@ class CleanBot:
             is_taker = False
         if self.engine_off.get("late"):              # retired by its own 40-trade verdict (v1.47)
             return
-        shares = max(CFG.shares, int(round(CFG.shares * self.engine_mult.get("late", 1.0))))
+        shares = self._late_size_shares(coin, px_ord)
         # CORRELATION GUARD (v1.39.1): BTC/ETH/SOL move ~0.85 together. Betting the SAME
         # direction across them in ONE window = a single 3x bet, not three — one wrong call
         # loses all three at once (2026-07-07: BTC+ETH+SOL all DOWN same window, all lost).
@@ -1134,10 +1167,11 @@ class CleanBot:
             return                                   # respect the simultaneous-exposure cap
         _how = "TAKER/FOK" if is_taker else "maker/GTC"
         _fee = _taker_buy_fee(px_ord, shares) if is_taker else 0.0
+        _cm = CFG.late_coin_mult.get(coin.upper(), 1.0)
         logger.info(f"[LATE ENTER] {coin} {direction} drift={dist*100:+.3f}% ask={float(ask)*100:.0f}c "
                     f"-> {_how} {px_ord*100:.0f}c x{shares} (${px_ord*shares:.2f}"
-                    f"{f'+fee${_fee:.2f}' if _fee else ''}, bankroll ${self.bankroll:.0f}) "
-                    f"T={t_rem:.0f}s [AUDITION]" + (" [DRY]" if CFG.dry else ""))
+                    f"{f'+fee${_fee:.2f}' if _fee else ''}, bankroll ${self.bankroll:.0f}, "
+                    f"cmult={_cm:.2f}) T={t_rem:.0f}s [AUDITION]" + (" [DRY]" if CFG.dry else ""))
         if CFG.dry:
             # paper: assume immediate fill at the signal price (taker or maker path)
             self.traded.add(key)
@@ -1507,7 +1541,16 @@ class CleanBot:
             else:
                 self.losses += -pnl
             p["status"] = "resolved"; p["pnl"] = round(pnl, 2); p["buy_fee"] = round(buy_fee, 4)
+            prev_br = self.bankroll
             self.bankroll += pnl                       # ← compound
+            # Recovery milestone (v1.51): one-shot notice when we cross the target (default $100).
+            if (CFG.target_bankroll > 0 and prev_br < CFG.target_bankroll
+                    <= self.bankroll):
+                logger.info(f"[TARGET HIT] bankroll ${self.bankroll:.2f} >= "
+                            f"target ${CFG.target_bankroll:.0f}")
+                tg._send(f"🎯 <b>TARGET HIT</b> 💰 ${self.bankroll:.2f} "
+                         f"(goal ${CFG.target_bankroll:.0f})",
+                         dedup_key=f"target-{int(CFG.target_bankroll)}")
             # ADAPTIVE regime backoff: chop persisting -> escalate the pause; a win-streak
             # resets it (regime recovered). Re-probes after each cooldown — never permanent.
             if won:
@@ -1609,15 +1652,20 @@ class CleanBot:
                else f"fixed {CFG.shares}sh")
         _cf = (f"confirm {'/'.join(CFG.confirm_coins)}<-{'/'.join(CFG.confirm_market)}"
                if CFG.confirm_coins else "no-confirm")
+        _lcm = ",".join(f"{k}={v:g}" for k, v in sorted(CFG.late_coin_mult.items())) or "flat"
+        _late = (f"late={'ON' if CFG.late_live else 'off'}[{','.join(CFG.late_coins)}] "
+                 f"{'FOK' if CFG.late_taker else 'GTC'} cmult={_lcm}")
         logger.info(f"=== CleanBot v{VERSION} start | {'DRY' if CFG.dry else 'LIVE'} | "
                     f"{'/'.join(CFG.coins)} | drift>={CFG.drift_bps}bps T>={CFG.min_t}s "
                     f"ask {CFG.min_ask}-{CFG.max_ask} | {_cf} | breaker {CFG.loss_breaker}L/"
-                    f"{CFG.breaker_cooldown // 60}m | {_sz} | research={'on' if CFG.research else 'off'} "
+                    f"{CFG.breaker_cooldown // 60}m | {_sz} | {_late} | "
+                    f"research={'on' if CFG.research else 'off'} "
                     f"| model={('gate@'+str(CFG.model_min_prob)) if (self.model and CFG.model_gate) else ('shadow' if self.model else 'off')} "
-                    f"| bankroll ${self.bankroll:.2f} stop ${self._stop_amount():.2f} ===")
+                    f"| bankroll ${self.bankroll:.2f} target ${CFG.target_bankroll:.0f} "
+                    f"stop ${self._stop_amount():.2f} ===")
         tg._send(f"🤖 <b>CleanBot v{VERSION}</b> started {'LIVE' if not CFG.dry else 'DRY'} | "
-                 f"{'/'.join(CFG.coins)} · early-drift ≥{CFG.drift_bps}bps · maker · "
-                 f"💰 ${self.bankroll:.2f} · {_sz} · stop ${self._stop_amount():.2f}")
+                 f"late FOK · {_sz} · cmult {_lcm} · "
+                 f"💰 ${self.bankroll:.2f}→${CFG.target_bankroll:.0f}")
         binance_ws.start()
         try:
             chainlink_ws.start()                 # settlement-feed strike+spot (Polymarket = Chainlink)

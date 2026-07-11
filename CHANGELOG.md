@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.51.0 — 2026-07-11 — recovery sizing: compound + SOL tilt ($46→$100 goal)
+**Tag:** `cleanbot-v1.51.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** live
+
+Frequency-preserving path to rebuild bankroll (no new skip-filters):
+1. **Late uses compound Kelly** via `_late_size_shares` (was hard-coded flat 5sh even when
+   `CLEAN_COMPOUND=on`). Stakes scale with bankroll; floor remains exchange min 5sh.
+2. **Per-coin size tilt** `CLEAN_LATE_COIN_MULT` (default `SOL=1.5,ETH=1.0,BTC=0.5`) — research
+   late 55-70c: SOL EV/$ +0.135, ETH +0.085, BTC ~0. Still trades all coins; re-ranks dollars
+   toward SOL. Cap re-applied at `CLEAN_MAX_BET_PCT` after tilt.
+3. **Target milestone** `CLEAN_TARGET_BANKROLL=100` — logs/Telegram when crossed.
+
+Live env intent: `CLEAN_COMPOUND=on`, `CLEAN_KELLY_FRAC=0.08`, `CLEAN_MAX_BET_PCT=0.12`,
+`CLEAN_LATE_COIN_MULT=SOL=1.5,ETH=1.0,BTC=0.5`. Keeps v1.50 FOK taker + fee-honest EV.
+
 ## v1.50.0 — 2026-07-11 — true late TAKER (FOK) + fee-honest EV + partial-fill tracking
 **Tag:** `cleanbot-v1.50.0` · **Branch:** `yirok-cleanbot-grok` (Grok / yirok CleanBot line) · **Status:** live audition
 
