@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.51.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.52.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -180,6 +180,15 @@ class Cfg:
     late_shade: bool = os.getenv("CLEAN_LATE_SHADE", "on").lower() in ("1", "true", "yes", "on")  # v1.45 A-S maker shading (only applies when late_taker=off): rest deeper when sigma*sqrt(t_rem) exposure is high.
     late_shade_bps: float = float(os.getenv("CLEAN_LATE_SHADE_BPS", "15"))  # bps of expected remaining move per +1c of shading (own-fill terciles: 13.4/30.2bps)
     late_skip_fading: bool = os.getenv("CLEAN_LATE_SKIP_FADING", "on").lower() in ("1", "true", "yes", "on")  # v1.39: skip FADING leaders (favorite ahead but its lead SHRANK from the early→late snapshot, same dir). Uses Chainlink settlement-feed drift trajectory (96% coverage, reliable). Verified: whole band 76.5%/EV+0.167 → skip-fading 81.5%/EV+0.244, recent30% EV+0.202 z+1.27. Keeps growing+reversed leads.
+    # ── v1.52 REVERSE-UNDERWAY (entry-time only): skip when last N-sec settlement-feed ROC
+    # already FIGHTS the lead (pump into a DOWN bet / dump into an UP bet). Jul 11 ETH DOWN
+    # @66c −5.5bps held the lead at entry then wire-reversed last seconds — direction at signal
+    # was correct; this catches the REVERSAL STARTING before we buy. Research late 55-70:
+    # roc60-oppose n=25 WR 64% edge −0.2 (toxic) vs keep n=165 WR 77% edge +11.6; OOS keep
+    # still +11.3. Frequency cost ~10% of late rows with roc data. Fail-open if no ticks.
+    late_roc_oppose: bool = os.getenv("CLEAN_LATE_ROC_OPPOSE", "on").lower() in ("1", "true", "yes", "on")
+    late_roc_lookback: int = int(os.getenv("CLEAN_LATE_ROC_LOOKBACK", "60"))   # seconds
+    late_roc_oppose_bps: float = float(os.getenv("CLEAN_LATE_ROC_OPPOSE_BPS", "2"))  # min opposing move
     # ── v1.51 recovery sizing (frequency-preserving): compound late stakes + per-coin tilt.
     # Research (late 55-70c): SOL EV/$ +0.135, ETH +0.085, BTC +0.007. Tilt SIZE toward SOL;
     # do NOT add skip-filters. CLEAN_LATE_COIN_MULT="SOL=1.5,ETH=1.0,BTC=0.5"
@@ -231,28 +240,33 @@ GAMMA = "https://gamma-api.polymarket.com"
 _h = httpx.Client(timeout=12, trust_env=False)   # gamma+binance reachable direct
 
 
-# ── truthful resolution (Chainlink via gamma; needs closed=true) ──────────
+# ── truthful resolution (Chainlink via gamma) ────────────────────────────
 def gamma_winner(coin: str, ws: int):
-    try:
-        r = _h.get(f"{GAMMA}/markets", params={"slug": f"{coin.lower()}-updown-15m-{ws}",
-                                               "closed": "true"})
-        arr = r.json()
-        if not arr:
-            return None
-        m = arr[0]
-        outs, pr = m.get("outcomes"), m.get("outcomePrices")
-        if isinstance(outs, str):
-            outs = json.loads(outs)
-        if isinstance(pr, str):
-            pr = json.loads(pr)
-        if not outs or not pr:
-            return None
-        pr = [float(x) for x in pr]
-        if max(pr) < 0.99:                      # not decisively settled yet
-            return None
-        return "UP" if str(outs[pr.index(max(pr))]).lower().startswith("up") else "DOWN"
-    except Exception:
-        return None
+    """Prefer closed=true; fall back to open market if prices already decisive (≥0.99).
+    v1.52: after the Jul 11 ETH wire-reverse, gamma stayed open with Up=0.995 for minutes
+    while closed=true returned [] — ledger lag made the bot look 'not resolved'."""
+    slug = f"{coin.lower()}-updown-15m-{ws}"
+    for closed in ("true", "false"):
+        try:
+            r = _h.get(f"{GAMMA}/markets", params={"slug": slug, "closed": closed})
+            arr = r.json()
+            if not arr:
+                continue
+            m = arr[0]
+            outs, pr = m.get("outcomes"), m.get("outcomePrices")
+            if isinstance(outs, str):
+                outs = json.loads(outs)
+            if isinstance(pr, str):
+                pr = json.loads(pr)
+            if not outs or not pr:
+                continue
+            pr = [float(x) for x in pr]
+            if max(pr) < 0.99:                  # not decisively settled yet
+                continue
+            return "UP" if str(outs[pr.index(max(pr))]).lower().startswith("up") else "DOWN"
+        except Exception:
+            continue
+    return None
 
 
 def _roc(ticks, sec):
@@ -1107,6 +1121,7 @@ class CleanBot:
         if abs(dist) < CFG.late_drift_bps / 10000.0:  # late edge is drift-independent; 55-70c band does the selecting
             return
         is_up = dist > 0
+        direction = "UP" if is_up else "DOWN"
         # SKIP FADING LEADERS (v1.39): the late edge = the leader holding, but a FADING leader
         # (still ahead, same direction as early, but its lead SHRANK from early→late) is the weak
         # bucket (68% vs 81% for growing/reversed leads). Measured on the Chainlink settlement
@@ -1120,11 +1135,34 @@ class CleanBot:
                     e_drift = float(er.get("drift_pct"))       # early lead, in dist*100 units
                     same_dir = (e_drift > 0) == is_up
                     if same_dir and abs(dist * 100) < abs(e_drift):
+                        if (coin, ws, "fade") not in self._nc_logged:
+                            logger.info(f"[LATE SKIP] {coin} {direction} fading leader "
+                                        f"early={e_drift:+.3f}% now={dist*100:+.3f}%")
+                            self._nc_logged.add((coin, ws, "fade"))
                         return                                  # fading leader — skip
                 except Exception:
                     pass
+        # REVERSE-UNDERWAY (v1.52): last N-sec ROC on settlement feed already fights the lead.
+        # Catches "lead still on the right side of strike but price is flipping" before FOK buy.
+        # Fail-open if ticks missing (don't starve frequency on feed gaps).
+        if CFG.late_roc_oppose and CFG.late_roc_oppose_bps > 0:
+            try:
+                ticks = chainlink_ws.get_ticks(coin, CFG.late_roc_lookback + 40)
+                if not ticks or len(ticks) < 2:
+                    ticks = binance_ws.get_tick_history(coin, CFG.late_roc_lookback + 40)
+                roc_bps = _roc(ticks, CFG.late_roc_lookback) * 1e4
+                thr = CFG.late_roc_oppose_bps
+                fighting = (is_up and roc_bps <= -thr) or ((not is_up) and roc_bps >= thr)
+                if fighting:
+                    if (coin, ws, "rev") not in self._nc_logged:
+                        logger.info(f"[LATE SKIP] {coin} {direction} reverse-underway "
+                                    f"roc{CFG.late_roc_lookback}s={roc_bps:+.1f}bps "
+                                    f"(opposes lead ≥{thr:.0f}bps) — not buying into the flip")
+                        self._nc_logged.add((coin, ws, "rev"))
+                    return
+            except Exception:
+                pass
         token = info.up_token_id if is_up else info.down_token_id
-        direction = "UP" if is_up else "DOWN"
         book = {}
         try:
             book = self.om.get_clob_book(token) or {}

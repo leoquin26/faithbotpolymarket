@@ -10,6 +10,23 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.52.0 — 2026-07-11 — skip reverse-underway + faster gamma resolve
+**Tag:** `cleanbot-v1.52.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** live
+
+Triggered by first post-v1.51 live late: **ETH DOWN @66c x6** (11:12 Lima, drift −5.5bps,
+T=178s, FOK filled) → wire **UP** last seconds. Forensics:
+- Direction at signal was **correct** (price below strike). Not a sign bug.
+- Early→late lead did **not** shrink (−5.2 → −5.5bps) so skip-fading correctly allowed it.
+- Soft near-money leads still +EV in shadow; the hole is **momentum already fighting the lead**.
+- Research: late 55–70 with roc60 **opposing** n=25 WR 64% edge **−0.2** (toxic) vs keep n=165
+  WR 77% edge +11.6; OOS keep still +11.3. Frequency cost small.
+
+Fixes:
+1. **`CLEAN_LATE_ROC_OPPOSE=on`** (default): skip late entry when last 60s settlement-feed ROC
+   opposes the lead by ≥2bps (`[LATE SKIP] … reverse-underway`). Fail-open if no ticks.
+2. **`gamma_winner`**: if `closed=true` is empty but open market already shows ≥0.99, resolve
+   (this loss sat filled with Up=0.995 while closed=true returned []).
+
 ## v1.51.0 — 2026-07-11 — recovery sizing: compound + SOL tilt ($46→$100 goal)
 **Tag:** `cleanbot-v1.51.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** live
 
