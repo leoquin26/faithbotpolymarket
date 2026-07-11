@@ -10,11 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
-> **Jul 9 13:56 env addendum:** `CLEAN_LATE_DRIFT_BPS` 0 → **3** (spec-alignment fix, owner caught
-> it via a 0.8bps-lead entry @57c that lost). The research capture floor is 3bps, so the v1.38.1
-> "no drift floor" verification only ever covered ≥3bps leads (72% WR / +6.8pts) — sub-3bps live
-> entries were untested territory (buying ~50/50 coin flips at 57c). Restores the engine to its
-> verified universe; not a new filter.
+## v1.50.0 — 2026-07-11 — true late TAKER (FOK) + fee-honest EV + partial-fill tracking
+**Tag:** `cleanbot-v1.50.0` · **Branch:** `yirok-cleanbot-grok` (Grok / yirok CleanBot line) · **Status:** live audition
+
+Audit fixes (no new signal / no new filter):
+1. **Late taker is now real FOK.** v1.46 priced at the ask but still posted **GTC** — if the ask
+   walked, the order could rest as a bid and re-introduce maker adverse selection. v1.50 posts
+   `OrderType.FOK` at the signal ask: fill now or `[LATE MISS]` and retry next scan while still
+   in the late band. Maker/GTC path remains behind `CLEAN_LATE_TAKER=off`.
+2. **Taker buy fee in settlement + EV/$.** Crypto fee `0.07*p*(1-p)` per share is stored on the
+   fill and subtracted from resolve PnL; stake for EV/$ includes the fee. Makers stay fee=0.
+3. **Partial GTC fills stay tracked.** `check_orders` no longer drops an oid on first partial
+   match (that left residual size untracked). Updates the position as matched grows; cancel-race
+   re-verify unchanged.
+
+Logs to watch: `[LATE ENTER] … TAKER/FOK`, `[FILLED TAKER]`, `[LATE MISS]`, `[FILLED-PARTIAL]`.
 
 ## v1.49.0 — 2026-07-10 — mid-window shadow capture (the never-measured 3.5-9min zone)
 **Tag:** `cleanbot-v1.49.0` · **Status:** ✅ live · shadow measurement only, zero trading change

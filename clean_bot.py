@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.49.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.50.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -252,6 +252,13 @@ def _roc(ticks, sec):
         return (now_p - base) / base if base else 0.0
     except Exception:
         return 0.0
+
+
+def _taker_buy_fee(price: float, shares: float) -> float:
+    """Polymarket crypto taker fee per fill: 0.07 * p * (1-p) per share (embedded in usdcSize).
+    Makers pay 0. Used so settlement EV/$ reflects capital actually at risk on taker entries."""
+    p = float(price)
+    return max(0.0, 0.07 * p * (1.0 - p) * float(shares))
 
 
 class CleanBot:
@@ -1093,13 +1100,14 @@ class CleanBot:
         ask = book.get("ask")
         if not ask or not (CFG.late_min_ask <= float(ask) <= CFG.late_max_ask):
             return
-        # EXECUTION (v1.46, owner-diagnosed): TAKER by default — buy AT the ask the moment the
-        # signal fires. A resting maker order only fills when someone dumps our side = DURING the
-        # reversal (live maker fills: 52% vs 63c = −11pts, vs +12-16pt shadow edge measured at
-        # the ask). We buy the edge as verified; ~1c spread + taker fee is the honest price of
-        # not being adversely selected. Maker path (with v1.45 A-S shading) kept behind the flag.
+        # EXECUTION (v1.46 + v1.50): TAKER by default — buy AT the ask the moment the signal
+        # fires. v1.46 priced at the ask but still posted GTC (could REST as a bid if the ask
+        # walked → adverse selection again). v1.50 uses FOK: fill now or miss (retry next scan
+        # while still in the late band). Maker path (A-S shading) kept behind late_taker=off.
         if CFG.late_taker:
-            maker = round(float(ask), 2)
+            px_ord = round(float(ask), 2)
+            otype = OrderType.FOK
+            is_taker = True
         else:
             offset = CFG.maker_offset
             if CFG.late_shade:
@@ -1107,7 +1115,9 @@ class CleanBot:
                 if _s and _s > 0:
                     expo_bps = _s * math.sqrt(max(1.0, t_rem)) * 1e4
                     offset += min(0.03, 0.01 * int(expo_bps / CFG.late_shade_bps))
-            maker = round(max(0.02, float(ask) - offset), 2)
+            px_ord = round(max(0.02, float(ask) - offset), 2)
+            otype = OrderType.GTC
+            is_taker = False
         if self.engine_off.get("late"):              # retired by its own 40-trade verdict (v1.47)
             return
         shares = max(CFG.shares, int(round(CFG.shares * self.engine_mult.get("late", 1.0))))
@@ -1120,31 +1130,67 @@ class CleanBot:
             return
         if CFG.corr_opposite_block and self._corr_opposite(coin, ws, direction):
             return
-        if self._open_exposure() + maker * shares > self.bankroll * CFG.max_open_pct:
+        if self._open_exposure() + px_ord * shares > self.bankroll * CFG.max_open_pct:
             return                                   # respect the simultaneous-exposure cap
-        self.traded.add(key)
+        _how = "TAKER/FOK" if is_taker else "maker/GTC"
+        _fee = _taker_buy_fee(px_ord, shares) if is_taker else 0.0
         logger.info(f"[LATE ENTER] {coin} {direction} drift={dist*100:+.3f}% ask={float(ask)*100:.0f}c "
-                    f"-> maker {maker*100:.0f}c x{shares} (${maker*shares:.2f}, bankroll ${self.bankroll:.0f}) "
+                    f"-> {_how} {px_ord*100:.0f}c x{shares} (${px_ord*shares:.2f}"
+                    f"{f'+fee${_fee:.2f}' if _fee else ''}, bankroll ${self.bankroll:.0f}) "
                     f"T={t_rem:.0f}s [AUDITION]" + (" [DRY]" if CFG.dry else ""))
         if CFG.dry:
+            # paper: assume immediate fill at the signal price (taker or maker path)
+            self.traded.add(key)
             self.positions[f"{coin}:{ws}"] = {"coin": coin, "ws": ws, "dir": direction,
-                                              "entry": maker, "shares": shares, "token": token,
-                                              "status": "filled", "sim": True, "late": True}
-            logger.info(f"[SIM FILL] {coin} {direction} @ {maker*100:.0f}c x{shares} (paper, late)")
+                                              "entry": px_ord, "shares": shares, "token": token,
+                                              "status": "filled", "sim": True, "late": True,
+                                              "taker": is_taker,
+                                              "buy_fee": round(_fee, 4)}
+            logger.info(f"[SIM FILL] {coin} {direction} @ {px_ord*100:.0f}c x{shares} (paper, late, {_how})")
             self._save()
             return
         try:
             res = self.client.create_and_post_order(
-                OrderArgs(price=maker, size=shares, side=BUY, token_id=token),
-                PartialCreateOrderOptions(tick_size="0.01"), OrderType.GTC)
+                OrderArgs(price=px_ord, size=shares, side=BUY, token_id=token),
+                PartialCreateOrderOptions(tick_size="0.01"), otype)
             oid = (res or {}).get("orderID") or (res or {}).get("orderId")
-            if oid:
-                self.open_orders[oid] = {"coin": coin, "ws": ws, "dir": direction,
-                                         "token": token, "price": maker,
-                                         "shares": shares, "ts": now, "late": True}
-                logger.info(f"[GTC] resting LATE {coin} {direction} @ {maker*100:.0f}c x{shares} oid={oid[:10]}")
+            matched = float((res or {}).get("size_matched") or (res or {}).get("sizeMatched") or 0)
+            if is_taker:
+                # FOK: fill immediately or miss. Do NOT rest; do NOT mark traded on miss so the
+                # next scan can retry while still inside the late t_rem band.
+                if matched <= 0 and oid:
+                    try:
+                        od = self.client.get_order(oid) or {}
+                        matched = float(od.get("size_matched") or od.get("sizeMatched") or 0)
+                    except Exception:
+                        pass
+                if matched > 0:
+                    sh = int(matched)
+                    fee = _taker_buy_fee(px_ord, sh)
+                    self.traded.add(key)
+                    self.positions[f"{coin}:{ws}"] = {
+                        "coin": coin, "ws": ws, "dir": direction, "token": token,
+                        "entry": px_ord, "shares": sh, "status": "filled",
+                        "late": True, "taker": True, "buy_fee": round(fee, 4)}
+                    logger.info(f"[FILLED TAKER] LATE {coin} {direction} @ {px_ord*100:.0f}c "
+                                f"x{sh} fee=${fee:.3f}")
+                    tg._send(f"🤖 <b>FILLED TAKER</b> LATE {coin} {direction} @ {px_ord*100:.0f}c "
+                             f"x{sh}", dedup_key=f"fill-late-{coin}-{ws}")
+                else:
+                    logger.info(f"[LATE MISS] {coin} {direction} @ {px_ord*100:.0f}c x{shares} "
+                                f"FOK no fill — will retry if still in band")
             else:
-                logger.warning(f"[LATE ORDER] no oid in result: {res}")
+                # maker GTC path: rest and let check_orders track fills (incl. partials)
+                self.traded.add(key)
+                if oid:
+                    self.open_orders[oid] = {"coin": coin, "ws": ws, "dir": direction,
+                                             "token": token, "price": px_ord,
+                                             "shares": shares, "ts": now, "late": True,
+                                             "taker": False}
+                    logger.info(f"[GTC] resting LATE {coin} {direction} @ {px_ord*100:.0f}c "
+                                f"x{shares} oid={str(oid)[:10]}")
+                else:
+                    logger.warning(f"[LATE ORDER] no oid in result: {res}")
         except Exception as e:
             logger.warning(f"[LATE ORDER FAIL] {coin} {direction}: {e}")
         self._save()
@@ -1256,6 +1302,26 @@ class CleanBot:
         self._save()
 
     # ── fills ────────────────────────────────────────────────────────
+    def _record_fill(self, o, matched, *, race=False, partial=False):
+        """Track a (possibly partial) fill, preserving engine tags + taker fee metadata."""
+        sh = int(matched)
+        if sh <= 0:
+            return
+        is_taker = bool(o.get("taker", False))
+        fee = _taker_buy_fee(o["price"], sh) if is_taker else 0.0
+        self.positions[f"{o['coin']}:{o['ws']}"] = {
+            "coin": o["coin"], "ws": o["ws"], "dir": o["dir"], "token": o["token"],
+            "entry": o["price"], "shares": sh, "status": "filled",
+            # v1.45.1: carry the ENGINE TAG through the fill (was dropped → every live
+            # late/voldiv fill got scored as 'early' on the per-engine boards)
+            "late": o.get("late", False), "voldiv": o.get("voldiv", False),
+            "taker": is_taker, "buy_fee": round(fee, 4)}
+        tag = "FILLED-RACE" if race else ("FILLED-PARTIAL" if partial else "FILLED")
+        logger.info(f"[{tag}] {o['coin']} {o['dir']} @ {o['price']*100:.0f}c x{sh}"
+                    + (f" fee=${fee:.3f}" if fee else ""))
+        tg._send(f"{'⚠️ ' if race else ''}🤖 <b>{tag}</b> {o['coin']} {o['dir']} @ "
+                 f"{o['price']*100:.0f}c x{sh}", dedup_key=f"fill-{o['coin']}-{o['ws']}-{sh}")
+
     def check_orders(self):
         now = time.time()
         for oid, o in list(self.open_orders.items()):
@@ -1265,19 +1331,27 @@ class CleanBot:
                 continue
             matched = float(od.get("size_matched") or od.get("sizeMatched") or 0)
             status = str(od.get("status", "")).upper()
-            if matched > 0:
-                self.positions[f"{o['coin']}:{o['ws']}"] = {
-                    "coin": o["coin"], "ws": o["ws"], "dir": o["dir"], "token": o["token"],
-                    "entry": o["price"], "shares": int(matched), "status": "filled",
-                    # v1.45.1: carry the ENGINE TAG through the fill (was dropped → every live
-                    # late/voldiv fill got scored as 'early' on the per-engine boards)
-                    "late": o.get("late", False), "voldiv": o.get("voldiv", False)}
-                logger.info(f"[FILLED] {o['coin']} {o['dir']} @ {o['price']*100:.0f}c "
-                            f"x{int(matched)}")
-                tg._send(f"🤖 <b>FILLED</b> {o['coin']} {o['dir']} @ {o['price']*100:.0f}c "
-                         f"x{int(matched)}", dedup_key=f"fill-{oid}")
+            intended = float(o.get("shares") or 0)
+            fully_done = status in ("MATCHED", "FILLED", "CLOSED") or (
+                intended > 0 and matched + 1e-9 >= intended)
+            # v1.50: keep watching PARTIAL fills — popping early left residual size untracked
+            # (phantom-fill class). Update the position as matched grows; only drop the oid
+            # when fully filled/cancelled/expired.
+            if matched > 0 and fully_done:
+                self._record_fill(o, matched, race=False, partial=False)
                 self.open_orders.pop(oid, None); self._save()
-            elif status in ("CANCELED", "EXPIRED") or now - o["ts"] > CFG.gtc_max_age \
+                continue
+            if matched > 0 and not fully_done:
+                prev = float(o.get("_last_matched") or 0)
+                if matched > prev + 1e-9:
+                    o["_last_matched"] = matched
+                    self._record_fill(o, matched, race=False, partial=True)
+                    self._save()
+                # still open — only cancel residual when aged out / near close
+                if not (status in ("CANCELED", "EXPIRED") or now - o["ts"] > CFG.gtc_max_age
+                        or o["ws"] + 900 - now < 90):
+                    continue
+            if status in ("CANCELED", "EXPIRED") or now - o["ts"] > CFG.gtc_max_age \
                     or o["ws"] + 900 - now < 90:
                 try:
                     self.client.cancel(oid)
@@ -1294,16 +1368,7 @@ class CleanBot:
                 except Exception:
                     matched_after = 0.0
                 if matched_after > 0:
-                    self.positions[f"{o['coin']}:{o['ws']}"] = {
-                        "coin": o["coin"], "ws": o["ws"], "dir": o["dir"], "token": o["token"],
-                        "entry": o["price"], "shares": int(matched_after), "status": "filled",
-                        "late": o.get("late", False), "voldiv": o.get("voldiv", False)}
-                    logger.warning(f"[FILLED-RACE] {o['coin']} {o['dir']} @ {o['price']*100:.0f}c "
-                                   f"x{int(matched_after)} — order filled during cancel; now TRACKED "
-                                   f"(this was the silent leak)")
-                    tg._send(f"⚠️ <b>FILLED (cancel race)</b> {o['coin']} {o['dir']} @ "
-                             f"{o['price']*100:.0f}c x{int(matched_after)} — now tracked",
-                             dedup_key=f"race-{oid}")
+                    self._record_fill(o, matched_after, race=True, partial=False)
                 else:
                     logger.info(f"[CANCEL] unfilled {o['coin']} {o['dir']} @ {o['price']*100:.0f}c")
                 self.open_orders.pop(oid, None); self._save()
@@ -1431,12 +1496,17 @@ class CleanBot:
                 continue
             won = (p["dir"] == w)
             entry = p["entry"]; sh = p["shares"]
-            pnl = (1 - entry) * sh if won else -entry * sh
-            if won:
-                self.wins += (1 - entry) * sh
+            # v1.50: debit taker buy fee so ledger/EV match capital at risk (makers fee=0).
+            buy_fee = float(p.get("buy_fee") or 0.0)
+            if buy_fee <= 0 and p.get("taker"):
+                buy_fee = _taker_buy_fee(entry, sh)
+            gross = (1 - entry) * sh if won else -entry * sh
+            pnl = gross - buy_fee
+            if pnl >= 0:
+                self.wins += pnl
             else:
-                self.losses += entry * sh
-            p["status"] = "resolved"; p["pnl"] = round(pnl, 2)
+                self.losses += -pnl
+            p["status"] = "resolved"; p["pnl"] = round(pnl, 2); p["buy_fee"] = round(buy_fee, 4)
             self.bankroll += pnl                       # ← compound
             # ADAPTIVE regime backoff: chop persisting -> escalate the pause; a win-streak
             # resets it (regime recovered). Re-probes after each cooldown — never permanent.
@@ -1479,7 +1549,9 @@ class CleanBot:
             # good engine can't be hidden by a bad one — and each faces its own pre-registered
             # verdict at 40 trades: EV>=+0.03 scale up | -0.03..+0.03 keep min-size | <=-0.03 OFF.
             _tag = "late" if p.get("late") else ("voldiv" if p.get("voldiv") else "early")
-            _rec = (1 if won else 0, pnl, entry * p.get("shares", CFG.shares), _tag)
+            # stake = entry notional + buy fee (true dollars at risk for EV/$)
+            _stake = entry * p.get("shares", CFG.shares) + float(p.get("buy_fee") or 0.0)
+            _rec = (1 if won else 0, pnl, _stake, _tag)
             self.recent_ev.append(_rec)
             self.recent_ev = self.recent_ev[-150:]
             self.day_results.append(_rec)
