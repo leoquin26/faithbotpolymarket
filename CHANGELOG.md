@@ -10,6 +10,23 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.53.0 — 2026-07-11 — join-quality + EV-gated compound (direction research)
+**Tag:** `cleanbot-v1.53.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** live
+
+Deep research (7094 research rows): direction is NOT random (late 55–70 OOS EV +0.10) but
+join *quality* varies hard. Shipped frequency-preserving fixes:
+
+1. **`CLEAN_LATE_REQUIRE_EARLY=on`** — skip late if no early research snapshot (that bucket
+   was edge **−7.5 / EV −0.075**). Fail-closed after restarts that miss early capture.
+2. **`CLEAN_LATE_COINS=SOL,ETH`** — drop BTC late (EV ≈ 0 in-band). SOL/ETH carry the edge.
+3. **`CLEAN_COMPOUND_MIN_EV=0` @ n≥15** — size-up (Kelly) only when rolling late EV/$ > 0;
+   otherwise **flat 5sh min**. Stops compounding into a red live meter.
+4. **`CLEAN_LATE_GROW_MULT=1.25`** — soft size boost when early→late lead **grew** (+21 pts
+   shadow); not a hard skip of flips (still +14).
+5. Richer `[LATE ENTER]` diagnostics: `lead=grow|fade|flip`, `size=CMPD|MIN`, `lateEV=`, `roc60=`.
+
+Keeps v1.50 FOK + v1.52 reverse-underway + fade skip.
+
 ## v1.52.0 — 2026-07-11 — skip reverse-underway + faster gamma resolve
 **Tag:** `cleanbot-v1.52.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** live
 

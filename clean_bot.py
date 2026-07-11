@@ -53,7 +53,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.52.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.53.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 
 
 @dataclass
@@ -166,7 +166,7 @@ class Cfg:
     # (where the edge lives: SOL 82%, XRP 85%; ETH weak 60%). One min-size maker per window in
     # the last ~3min. Shares the daily-stop + breaker. Default OFF. ──
     late_live: bool = os.getenv("CLEAN_LATE_LIVE", "off").lower() in ("1", "true", "yes", "on")
-    late_coins: tuple = tuple(c for c in os.getenv("CLEAN_LATE_COINS", "SOL,XRP").split(",") if c)
+    late_coins: tuple = tuple(c for c in os.getenv("CLEAN_LATE_COINS", "SOL,ETH").split(",") if c)  # v1.53: drop BTC (late 55-70 EV≈0); SOL/ETH carry the edge
     late_t_min: float = float(os.getenv("CLEAN_LATE_T_MIN", "60"))    # last-window band (matches the shadow-capture zone)
     late_t_max: float = float(os.getenv("CLEAN_LATE_T_MAX", "210"))
     late_min_ask: float = float(os.getenv("CLEAN_LATE_MIN_ASK", "0.55"))
@@ -189,9 +189,16 @@ class Cfg:
     late_roc_oppose: bool = os.getenv("CLEAN_LATE_ROC_OPPOSE", "on").lower() in ("1", "true", "yes", "on")
     late_roc_lookback: int = int(os.getenv("CLEAN_LATE_ROC_LOOKBACK", "60"))   # seconds
     late_roc_oppose_bps: float = float(os.getenv("CLEAN_LATE_ROC_OPPOSE_BPS", "2"))  # min opposing move
+    # ── v1.53 join-quality (deep research Jul 11): require early anchor + EV-gated compound.
+    # "NO early snapshot" late 55-70 = edge −7.5 / EV −0.075 (toxic). Growing lead = +21 pts.
+    late_require_early: bool = os.getenv("CLEAN_LATE_REQUIRE_EARLY", "on").lower() in ("1", "true", "yes", "on")
+    late_grow_mult: float = float(os.getenv("CLEAN_LATE_GROW_MULT", "1.25"))  # size boost when early→late lead GREW (not a skip)
+    # Compound only when rolling late EV/$ clears this bar (and n≥min). Else flat exchange-min.
+    # Protects $42 book from sizing into a red live meter. Set CLEAN_COMPOUND_MIN_EV=-9 to disable.
+    compound_min_ev: float = float(os.getenv("CLEAN_COMPOUND_MIN_EV", "0"))
+    compound_min_ev_n: int = int(os.getenv("CLEAN_COMPOUND_MIN_EV_N", "15"))
     # ── v1.51 recovery sizing (frequency-preserving): compound late stakes + per-coin tilt.
-    # Research (late 55-70c): SOL EV/$ +0.135, ETH +0.085, BTC +0.007. Tilt SIZE toward SOL;
-    # do NOT add skip-filters. CLEAN_LATE_COIN_MULT="SOL=1.5,ETH=1.0,BTC=0.5"
+    # Research (late 55-70c): SOL EV/$ +0.135, ETH +0.085, BTC +0.007. Tilt SIZE toward SOL.
     late_coin_mult: dict = field(default_factory=dict)
     target_bankroll: float = float(os.getenv("CLEAN_TARGET_BANKROLL", "100"))  # milestone log only (e.g. $46→$100)
     # ── VOL-DIVERGENCE engine (v1.42, Strategy #4 — PRICING edge, not direction): bet where the
@@ -219,8 +226,8 @@ class Cfg:
     mom_need_coin: bool = os.getenv("CLEAN_MOM_NEED_COIN", "off").lower() in ("1", "true", "yes", "on")
 
     def __post_init__(self):
-        # Parse CLEAN_LATE_COIN_MULT once (SOL=1.5,ETH=1.0,BTC=0.5). Empty → all 1.0.
-        raw = os.getenv("CLEAN_LATE_COIN_MULT", "SOL=1.5,ETH=1.0,BTC=0.5")
+        # Parse CLEAN_LATE_COIN_MULT once (default SOL-heavy; no BTC after v1.53 coin list).
+        raw = os.getenv("CLEAN_LATE_COIN_MULT", "SOL=1.5,ETH=1.0")
         out = {}
         for part in (raw or "").split(","):
             part = part.strip()
@@ -490,16 +497,57 @@ class CleanBot:
         stake = min(self.bankroll * kf, self.bankroll * CFG.max_bet_pct)
         return max(CFG.shares, int(round(stake / max(0.02, price))))
 
-    def _late_size_shares(self, coin: str, price: float) -> int:
-        """v1.51 recovery sizing for the late engine only.
-        base = compound Kelly (or flat min), then × coin mult × engine_mult, still
-        floored at exchange min and capped by max_bet_pct. Re-ranks $ toward SOL
-        without skipping ETH/BTC signals (BTC mult <1 only shrinks size when above floor)."""
-        base = self._size_shares(price)
+    def _late_engine_ev(self):
+        """Rolling late EV/$ from recent_ev, or None if fewer than compound_min_ev_n samples."""
+        eng = [x for x in self.recent_ev if len(x) > 3 and x[3] == "late"]
+        if len(eng) < max(1, CFG.compound_min_ev_n):
+            return None
+        net = sum(x[1] for x in eng)
+        stk = sum(x[2] for x in eng)
+        return (net / stk) if stk else 0.0
+
+    def _late_compound_ok(self) -> bool:
+        """v1.53: only size-up when live late EV/$ is green enough. Flat min otherwise."""
+        if not CFG.compound:
+            return False
+        if CFG.compound_min_ev <= -9:          # kill-switch: always compound if compound on
+            return True
+        ev = self._late_engine_ev()
+        if ev is None:
+            return False                       # not enough trades — stay min-size
+        return ev > CFG.compound_min_ev
+
+    def _early_snapshot(self, coin: str, ws: int):
+        """In-memory early research row for (coin, ws), if research_scan already saw it."""
+        return self._research.get((coin, ws, "early"))
+
+    def _late_lead_state(self, coin: str, ws: int, dist: float, is_up: bool) -> str:
+        """early→late trajectory: grow | fade | flip | none (no early)."""
+        er = self._early_snapshot(coin, ws)
+        if not er:
+            return "none"
+        try:
+            e_drift = float(er.get("drift_pct"))
+            same = (e_drift > 0) == is_up
+            if not same:
+                return "flip"
+            if abs(dist * 100) + 1e-12 >= abs(e_drift):
+                return "grow"
+            return "fade"
+        except Exception:
+            return "none"
+
+    def _late_size_shares(self, coin: str, price: float, lead_state: str = "none") -> int:
+        """v1.51/v1.53 late sizing: EV-gated compound × coin mult × grow boost × engine_mult."""
+        if self._late_compound_ok():
+            base = self._size_shares(price)
+        else:
+            base = CFG.shares                  # flat min while live EV not proven
         cmult = float(CFG.late_coin_mult.get(coin.upper(), 1.0))
+        if lead_state == "grow" and CFG.late_grow_mult > 1.0:
+            cmult *= CFG.late_grow_mult
         emult = float(self.engine_mult.get("late", 1.0))
         raw = max(CFG.shares, int(round(base * cmult * emult)))
-        # hard $ cap (re-apply after coin tilt so SOL can't exceed max_bet_pct)
         max_sh = max(CFG.shares, int((self.bankroll * CFG.max_bet_pct) / max(0.02, price)))
         return max(CFG.shares, min(raw, max_sh))
 
@@ -1122,29 +1170,29 @@ class CleanBot:
             return
         is_up = dist > 0
         direction = "UP" if is_up else "DOWN"
-        # SKIP FADING LEADERS (v1.39): the late edge = the leader holding, but a FADING leader
-        # (still ahead, same direction as early, but its lead SHRANK from early→late) is the weak
-        # bucket (68% vs 81% for growing/reversed leads). Measured on the Chainlink settlement
-        # feed via the window's own early snapshot (drift_pct stored as dist*100) — reliable,
-        # 96% coverage. Verified: skip-fading lifts the band 76.5%→81.5% WR, EV +0.167→+0.244,
-        # holds recent (EV +0.202). Fail-open if no early snapshot for this window.
-        if CFG.late_skip_fading:
-            er = self._research.get((coin, ws, "early"))
-            if er:
+        lead_state = self._late_lead_state(coin, ws, dist, is_up)
+        # v1.53: REQUIRE early research snapshot (toxic bucket without it: edge −7.5 EV −0.075).
+        # Fail-closed: if the bot restarted mid-window and missed early capture, skip this late.
+        if CFG.late_require_early and lead_state == "none":
+            if (coin, ws, "noearly") not in self._nc_logged:
+                logger.info(f"[LATE SKIP] {coin} {direction} no early snapshot — "
+                            f"join quality unmeasured (research: no-early EV/−0.075)")
+                self._nc_logged.add((coin, ws, "noearly"))
+            return
+        # SKIP FADING LEADERS (v1.39): same-dir shrink early→late.
+        if CFG.late_skip_fading and lead_state == "fade":
+            if (coin, ws, "fade") not in self._nc_logged:
+                er = self._early_snapshot(coin, ws) or {}
                 try:
-                    e_drift = float(er.get("drift_pct"))       # early lead, in dist*100 units
-                    same_dir = (e_drift > 0) == is_up
-                    if same_dir and abs(dist * 100) < abs(e_drift):
-                        if (coin, ws, "fade") not in self._nc_logged:
-                            logger.info(f"[LATE SKIP] {coin} {direction} fading leader "
-                                        f"early={e_drift:+.3f}% now={dist*100:+.3f}%")
-                            self._nc_logged.add((coin, ws, "fade"))
-                        return                                  # fading leader — skip
+                    e_drift = float(er.get("drift_pct", 0))
                 except Exception:
-                    pass
+                    e_drift = 0.0
+                logger.info(f"[LATE SKIP] {coin} {direction} fading leader "
+                            f"early={e_drift:+.3f}% now={dist*100:+.3f}%")
+                self._nc_logged.add((coin, ws, "fade"))
+            return
         # REVERSE-UNDERWAY (v1.52): last N-sec ROC on settlement feed already fights the lead.
-        # Catches "lead still on the right side of strike but price is flipping" before FOK buy.
-        # Fail-open if ticks missing (don't starve frequency on feed gaps).
+        roc_bps = None
         if CFG.late_roc_oppose and CFG.late_roc_oppose_bps > 0:
             try:
                 ticks = chainlink_ws.get_ticks(coin, CFG.late_roc_lookback + 40)
@@ -1161,7 +1209,7 @@ class CleanBot:
                         self._nc_logged.add((coin, ws, "rev"))
                     return
             except Exception:
-                pass
+                roc_bps = None
         token = info.up_token_id if is_up else info.down_token_id
         book = {}
         try:
@@ -1171,10 +1219,7 @@ class CleanBot:
         ask = book.get("ask")
         if not ask or not (CFG.late_min_ask <= float(ask) <= CFG.late_max_ask):
             return
-        # EXECUTION (v1.46 + v1.50): TAKER by default — buy AT the ask the moment the signal
-        # fires. v1.46 priced at the ask but still posted GTC (could REST as a bid if the ask
-        # walked → adverse selection again). v1.50 uses FOK: fill now or miss (retry next scan
-        # while still in the late band). Maker path (A-S shading) kept behind late_taker=off.
+        # EXECUTION (v1.46 + v1.50): TAKER by default — FOK at ask.
         if CFG.late_taker:
             px_ord = round(float(ask), 2)
             otype = OrderType.FOK
@@ -1191,25 +1236,26 @@ class CleanBot:
             is_taker = False
         if self.engine_off.get("late"):              # retired by its own 40-trade verdict (v1.47)
             return
-        shares = self._late_size_shares(coin, px_ord)
-        # CORRELATION GUARD (v1.39.1): BTC/ETH/SOL move ~0.85 together. Betting the SAME
-        # direction across them in ONE window = a single 3x bet, not three — one wrong call
-        # loses all three at once (2026-07-07: BTC+ETH+SOL all DOWN same window, all lost).
-        # Mirror the early path: skip same-direction correlated stacking, and skip betting
-        # OPPOSITE a held sibling (divergence = coinflip). One late leg per window/direction.
+        shares = self._late_size_shares(coin, px_ord, lead_state=lead_state)
+        # CORRELATION GUARD (v1.39.1)
         if self._corr_sibling(coin, ws, direction):
             return
         if CFG.corr_opposite_block and self._corr_opposite(coin, ws, direction):
             return
         if self._open_exposure() + px_ord * shares > self.bankroll * CFG.max_open_pct:
-            return                                   # respect the simultaneous-exposure cap
+            return
         _how = "TAKER/FOK" if is_taker else "maker/GTC"
         _fee = _taker_buy_fee(px_ord, shares) if is_taker else 0.0
         _cm = CFG.late_coin_mult.get(coin.upper(), 1.0)
+        _ev = self._late_engine_ev()
+        _evs = f"{_ev:+.3f}" if _ev is not None else "n/a"
+        _cmp = "CMPD" if self._late_compound_ok() else "MIN"
+        _roc = f"{roc_bps:+.1f}" if roc_bps is not None else "n/a"
         logger.info(f"[LATE ENTER] {coin} {direction} drift={dist*100:+.3f}% ask={float(ask)*100:.0f}c "
                     f"-> {_how} {px_ord*100:.0f}c x{shares} (${px_ord*shares:.2f}"
                     f"{f'+fee${_fee:.2f}' if _fee else ''}, bankroll ${self.bankroll:.0f}, "
-                    f"cmult={_cm:.2f}) T={t_rem:.0f}s [AUDITION]" + (" [DRY]" if CFG.dry else ""))
+                    f"cmult={_cm:.2f}, lead={lead_state}, size={_cmp}, lateEV={_evs}, "
+                    f"roc60={_roc}) T={t_rem:.0f}s [AUDITION]" + (" [DRY]" if CFG.dry else ""))
         if CFG.dry:
             # paper: assume immediate fill at the signal price (taker or maker path)
             self.traded.add(key)
@@ -1692,7 +1738,9 @@ class CleanBot:
                if CFG.confirm_coins else "no-confirm")
         _lcm = ",".join(f"{k}={v:g}" for k, v in sorted(CFG.late_coin_mult.items())) or "flat"
         _late = (f"late={'ON' if CFG.late_live else 'off'}[{','.join(CFG.late_coins)}] "
-                 f"{'FOK' if CFG.late_taker else 'GTC'} cmult={_lcm}")
+                 f"{'FOK' if CFG.late_taker else 'GTC'} cmult={_lcm} "
+                 f"earlyReq={'on' if CFG.late_require_early else 'off'} "
+                 f"grow×{CFG.late_grow_mult:g} cmpEV>{CFG.compound_min_ev:g}@n{CFG.compound_min_ev_n}")
         logger.info(f"=== CleanBot v{VERSION} start | {'DRY' if CFG.dry else 'LIVE'} | "
                     f"{'/'.join(CFG.coins)} | drift>={CFG.drift_bps}bps T>={CFG.min_t}s "
                     f"ask {CFG.min_ask}-{CFG.max_ask} | {_cf} | breaker {CFG.loss_breaker}L/"
@@ -1702,7 +1750,7 @@ class CleanBot:
                     f"| bankroll ${self.bankroll:.2f} target ${CFG.target_bankroll:.0f} "
                     f"stop ${self._stop_amount():.2f} ===")
         tg._send(f"🤖 <b>CleanBot v{VERSION}</b> started {'LIVE' if not CFG.dry else 'DRY'} | "
-                 f"late FOK · {_sz} · cmult {_lcm} · "
+                 f"late FOK · join-quality · {_sz} · "
                  f"💰 ${self.bankroll:.2f}→${CFG.target_bankroll:.0f}")
         binance_ws.start()
         try:
