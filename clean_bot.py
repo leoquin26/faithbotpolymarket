@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.55.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.56.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -173,7 +173,9 @@ class Cfg:
     late_t_min: float = float(os.getenv("CLEAN_LATE_T_MIN", "60"))    # last-window band (matches the shadow-capture zone)
     late_t_max: float = float(os.getenv("CLEAN_LATE_T_MAX", "210"))
     late_min_ask: float = float(os.getenv("CLEAN_LATE_MIN_ASK", "0.55"))
-    late_max_ask: float = float(os.getenv("CLEAN_LATE_MAX_ASK", "0.66"))  # v1.54: geometry — 70c wins too little vs losses
+    # v1.56: 0.68 (was 0.66). Overblock audit: ask 66-70 under same filters still +EV; 0.68 = middle step.
+    # ROLLBACK: CLEAN_LATE_MAX_ASK=0.66
+    late_max_ask: float = float(os.getenv("CLEAN_LATE_MAX_ASK", "0.68"))
     late_drift_bps: float = float(os.getenv("CLEAN_LATE_DRIFT_BPS", "0"))  # v1.38.1: the late edge is drift-INDEPENDENT (OOS: drift<5 slice z=+1.53 EV+0.159, STRONGER than drift>=5). The 55-70c ask band already selects "modest favorite"; a drift floor here just discards 2/3 of the verified windows. 0 = no floor.
     late_mom_agree: bool = os.getenv("CLEAN_LATE_MOM_AGREE", "off").lower() in ("1", "true", "yes", "on")  # v1.38.2 (DEPRECATED, default off): roc60-based; unreliable (roc60 present only ~30% of late windows → fails open). Superseded by late_skip_fading.
     late_taker: bool = os.getenv("CLEAN_LATE_TAKER", "on").lower() in ("1", "true", "yes", "on")  # v1.46 (owner diagnosed it): TAKE the ask at signal time instead of resting a maker order. Live maker fills ran 52% vs 63c (−11pts) — resting orders fill DURING the reversal (adverse selection); the verified +12-16pt shadow edge was measured AT THE ASK. Costs ~1c spread + ~1.6c taker fee; buys the edge as verified.
@@ -196,11 +198,15 @@ class Cfg:
     # "NO early snapshot" late 55-70 = edge −7.5 / EV −0.075 (toxic). Growing lead = +21 pts.
     late_require_early: bool = os.getenv("CLEAN_LATE_REQUIRE_EARLY", "on").lower() in ("1", "true", "yes", "on")
     late_grow_mult: float = float(os.getenv("CLEAN_LATE_GROW_MULT", "1.25"))  # size boost when early→late lead GREW (not a skip)
-    # v1.54: skip early→late FLIP when lead is still tiny (e.g. ETH UP +3.0bps flip → loss).
-    # Flips with a real lead remain allowed (research flip bucket still +EV when established).
-    late_flip_min_bps: float = float(os.getenv("CLEAN_LATE_FLIP_MIN_BPS", "5"))
+    # v1.54/v1.56: skip thin early→late FLIP. Default 3bps (was 5) — audit: 5bps cut +EV rows.
+    # ROLLBACK: CLEAN_LATE_FLIP_MIN_BPS=5
+    late_flip_min_bps: float = float(os.getenv("CLEAN_LATE_FLIP_MIN_BPS", "3"))
     # Hard $ cap per late fill (0=off). Stops a single favorite loss from wiping multiple wins.
     late_max_usd: float = float(os.getenv("CLEAN_LATE_MAX_USD", "3.50"))
+    # v1.56: one FOK retry at refreshed ask after unfilled/400 (Jul 12-13 ~21% enters failed FOK).
+    # ROLLBACK: CLEAN_LATE_FOK_RETRY=off
+    late_fok_retry: bool = os.getenv("CLEAN_LATE_FOK_RETRY", "on").lower() in ("1", "true", "yes", "on")
+    late_fok_retry_sleep: float = float(os.getenv("CLEAN_LATE_FOK_RETRY_SLEEP", "0.35"))  # seconds before refresh
     # v1.55: never use Binance for late direction/roc (settlement is Chainlink). Skip if CL missing.
     late_require_cl_spot: bool = os.getenv("CLEAN_LATE_REQUIRE_CL_SPOT", "on").lower() in ("1", "true", "yes", "on")
     late_roc_cl_only: bool = os.getenv("CLEAN_LATE_ROC_CL_ONLY", "on").lower() in ("1", "true", "yes", "on")
@@ -1405,38 +1411,82 @@ class CleanBot:
             logger.info(f"[SIM FILL] {coin} {direction} @ {px_ord*100:.0f}c x{shares} (paper, late, {_how})")
             self._save()
             return
-        try:
-            res = self.client.create_and_post_order(
-                OrderArgs(price=px_ord, size=shares, side=BUY, token_id=token),
-                PartialCreateOrderOptions(tick_size="0.01"), otype)
-            oid = (res or {}).get("orderID") or (res or {}).get("orderId")
-            matched = float((res or {}).get("size_matched") or (res or {}).get("sizeMatched") or 0)
-            if is_taker:
-                # FOK: fill immediately or miss. Do NOT rest; do NOT mark traded on miss so the
-                # next scan can retry while still inside the late t_rem band.
-                if matched <= 0 and oid:
+        if is_taker:
+            # v1.56: FOK at ask; on unfilled/400, optional ONE retry at refreshed ask (no GTC rest).
+            attempts = 2 if CFG.late_fok_retry else 1
+            filled_ok = False
+            for attempt in range(attempts):
+                if attempt > 0:
+                    time.sleep(max(0.05, CFG.late_fok_retry_sleep))
                     try:
-                        od = self.client.get_order(oid) or {}
-                        matched = float(od.get("size_matched") or od.get("sizeMatched") or 0)
+                        book2 = self.om.get_clob_book(token) or {}
                     except Exception:
-                        pass
-                if matched > 0:
-                    sh = int(matched)
-                    fee = _taker_buy_fee(px_ord, sh)
-                    self.traded.add(key)
-                    self.positions[f"{coin}:{ws}"] = {
-                        "coin": coin, "ws": ws, "dir": direction, "token": token,
-                        "entry": px_ord, "shares": sh, "status": "filled",
-                        "late": True, "taker": True, "buy_fee": round(fee, 4)}
-                    logger.info(f"[FILLED TAKER] LATE {coin} {direction} @ {px_ord*100:.0f}c "
-                                f"x{sh} fee=${fee:.3f}")
-                    tg._send(f"🤖 <b>FILLED TAKER</b> LATE {coin} {direction} @ {px_ord*100:.0f}c "
-                             f"x{sh}", dedup_key=f"fill-late-{coin}-{ws}")
-                else:
+                        book2 = {}
+                    ask2 = book2.get("ask")
+                    if not ask2 or not (CFG.late_min_ask <= float(ask2) <= CFG.late_max_ask):
+                        logger.info(f"[LATE MISS] {coin} {direction} retry aborted — "
+                                    f"ask out of band ({ask2})")
+                        break
+                    px_ord = round(float(ask2), 2)
+                    shares = self._late_size_shares(coin, px_ord, lead_state=lead_state)
+                    if self._open_exposure() + px_ord * shares > self.bankroll * CFG.max_open_pct:
+                        logger.info(f"[LATE MISS] {coin} {direction} retry aborted — exposure")
+                        break
+                    logger.info(f"[LATE FOK RETRY] {coin} {direction} fresh ask "
+                                f"{px_ord*100:.0f}c x{shares} (attempt {attempt+1}/{attempts})")
+                try:
+                    res = self.client.create_and_post_order(
+                        OrderArgs(price=px_ord, size=shares, side=BUY, token_id=token),
+                        PartialCreateOrderOptions(tick_size="0.01"), OrderType.FOK)
+                    oid = (res or {}).get("orderID") or (res or {}).get("orderId")
+                    matched = float((res or {}).get("size_matched") or
+                                    (res or {}).get("sizeMatched") or 0)
+                    if matched <= 0 and oid:
+                        try:
+                            od = self.client.get_order(oid) or {}
+                            matched = float(od.get("size_matched") or od.get("sizeMatched") or 0)
+                        except Exception:
+                            pass
+                    if matched > 0:
+                        sh = int(matched)
+                        fee = _taker_buy_fee(px_ord, sh)
+                        self.traded.add(key)
+                        self.positions[f"{coin}:{ws}"] = {
+                            "coin": coin, "ws": ws, "dir": direction, "token": token,
+                            "entry": px_ord, "shares": sh, "status": "filled",
+                            "late": True, "taker": True, "buy_fee": round(fee, 4)}
+                        tag = "FILLED TAKER" if attempt == 0 else "FILLED TAKER RETRY"
+                        logger.info(f"[{tag}] LATE {coin} {direction} @ {px_ord*100:.0f}c "
+                                    f"x{sh} fee=${fee:.3f}")
+                        tg._send(f"🤖 <b>{tag}</b> LATE {coin} {direction} @ {px_ord*100:.0f}c "
+                                 f"x{sh}", dedup_key=f"fill-late-{coin}-{ws}")
+                        filled_ok = True
+                        break
+                    err_txt = str((res or {}).get("errorMsg") or (res or {}).get("error") or "")
                     logger.info(f"[LATE MISS] {coin} {direction} @ {px_ord*100:.0f}c x{shares} "
-                                f"FOK no fill — will retry if still in band")
-            else:
-                # maker GTC path: rest and let check_orders track fills (incl. partials)
+                                f"FOK no fill attempt {attempt+1}/{attempts}"
+                                + (f" ({err_txt[:80]})" if err_txt else ""))
+                except Exception as e:
+                    emsg = str(e)
+                    fok_unfilled = ("fully filled or killed" in emsg.lower()
+                                    or "couldn't be fully filled" in emsg.lower()
+                                    or "could not be fully filled" in emsg.lower())
+                    if fok_unfilled:
+                        logger.info(f"[LATE MISS] {coin} {direction} @ {px_ord*100:.0f}c "
+                                    f"FOK killed attempt {attempt+1}/{attempts}: {emsg[:120]}")
+                    else:
+                        logger.warning(f"[LATE ORDER FAIL] {coin} {direction}: {e}")
+                        break  # non-FOK error: don't hammer
+            if not filled_ok:
+                # leave key out of traded so next scan can try if still in band
+                pass
+        else:
+            # maker GTC path: rest and let check_orders track fills (incl. partials)
+            try:
+                res = self.client.create_and_post_order(
+                    OrderArgs(price=px_ord, size=shares, side=BUY, token_id=token),
+                    PartialCreateOrderOptions(tick_size="0.01"), OrderType.GTC)
+                oid = (res or {}).get("orderID") or (res or {}).get("orderId")
                 self.traded.add(key)
                 if oid:
                     self.open_orders[oid] = {"coin": coin, "ws": ws, "dir": direction,
@@ -1447,8 +1497,8 @@ class CleanBot:
                                 f"x{shares} oid={str(oid)[:10]}")
                 else:
                     logger.warning(f"[LATE ORDER] no oid in result: {res}")
-        except Exception as e:
-            logger.warning(f"[LATE ORDER FAIL] {coin} {direction}: {e}")
+            except Exception as e:
+                logger.warning(f"[LATE ORDER FAIL] {coin} {direction}: {e}")
         self._save()
 
     def _vol_div_entry(self, coin: str):

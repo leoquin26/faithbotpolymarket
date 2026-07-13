@@ -10,6 +10,37 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.56.0 — 2026-07-13 — mild de-overblock: ask 0.68, flip 3bps, one FOK retry
+**Tag:** `cleanbot-v1.56.0` · **Branch:** `yirok-cleanbot-grok` · **Label:** `deoverblock-v156`  
+**Status:** live audition (more volume, same quality core)
+
+Overblock audit (log + research): ~7.6 skips/enter; thin-flip@5bps and max_ask=0.66 cut
++EV rows; FOK fail ~21% of enters (book empty). Package:
+
+1. **`CLEAN_LATE_MAX_ASK=0.68`** (was 0.66) — middle step toward 0.70 research sweet spot.
+2. **`CLEAN_LATE_FLIP_MIN_BPS=3`** (was 5) — fewer false skips; still blocks ultra-thin flips.
+3. **`CLEAN_LATE_FOK_RETRY=on`** — one retry at **refreshed** ask after FOK kill/unfilled
+   (`[LATE FOK RETRY]` / `[FILLED TAKER RETRY]`). Still no resting maker.
+
+**KEPT (do not loosen):** early-require, CL-only spot, fade skip, reverse-underway, EV-gated
+min size, late max USD.
+
+### Rollback if anything goes wrong
+```bash
+# code
+git checkout cleanbot-v1.55.0 -- clean_bot.py market_data.py chainlink_ws.py
+# or full tag
+git checkout cleanbot-v1.55.0
+
+# env (safe known-good knobs)
+CLEAN_LATE_MAX_ASK=0.66
+CLEAN_LATE_FLIP_MIN_BPS=5
+CLEAN_LATE_FOK_RETRY=off
+```
+Then scp + watchdog restart. Env backup on EC2: `.env.bak_v156`.
+
+See also: `ROLLBACK_v1.56.md`
+
 ## v1.55.0 — 2026-07-11 — higher-quality settlement data (Chainlink-first everything)
 **Tag:** `cleanbot-v1.55.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** live
 
