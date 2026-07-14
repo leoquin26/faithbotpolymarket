@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.57.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.58.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -185,15 +185,26 @@ class Cfg:
     late_shade: bool = os.getenv("CLEAN_LATE_SHADE", "on").lower() in ("1", "true", "yes", "on")  # v1.45 A-S maker shading (only applies when late_taker=off): rest deeper when sigma*sqrt(t_rem) exposure is high.
     late_shade_bps: float = float(os.getenv("CLEAN_LATE_SHADE_BPS", "15"))  # bps of expected remaining move per +1c of shading (own-fill terciles: 13.4/30.2bps)
     late_skip_fading: bool = os.getenv("CLEAN_LATE_SKIP_FADING", "on").lower() in ("1", "true", "yes", "on")  # v1.39: skip FADING leaders (favorite ahead but its lead SHRANK from the early→late snapshot, same dir). Uses Chainlink settlement-feed drift trajectory (96% coverage, reliable). Verified: whole band 76.5%/EV+0.167 → skip-fading 81.5%/EV+0.244, recent30% EV+0.202 z+1.27. Keeps growing+reversed leads.
-    # ── v1.52 REVERSE-UNDERWAY (entry-time only): skip when last N-sec settlement-feed ROC
-    # already FIGHTS the lead (pump into a DOWN bet / dump into an UP bet). Jul 11 ETH DOWN
-    # @66c −5.5bps held the lead at entry then wire-reversed last seconds — direction at signal
-    # was correct; this catches the REVERSAL STARTING before we buy. Research late 55-70:
-    # roc60-oppose n=25 WR 64% edge −0.2 (toxic) vs keep n=165 WR 77% edge +11.6; OOS keep
-    # still +11.3. Frequency cost ~10% of late rows with roc data. Fail-open if no ticks.
+    # ── v1.52/v1.58 REVERSE-UNDERWAY: settlement-feed ROC that fights the lead.
+    # v1.52 SKIPPED those (cut ~10% of late rows). v1.58 default: RE-POINT direction
+    # toward the ROC (trade the reverse) when the corrected side is still in the ask band;
+    # only skip if CLEAN_LATE_REV_AS_DIR=off. Never invent a hard block for missing roc.
     late_roc_oppose: bool = os.getenv("CLEAN_LATE_ROC_OPPOSE", "on").lower() in ("1", "true", "yes", "on")
     late_roc_lookback: int = int(os.getenv("CLEAN_LATE_ROC_LOOKBACK", "60"))   # seconds
     late_roc_oppose_bps: float = float(os.getenv("CLEAN_LATE_ROC_OPPOSE_BPS", "2"))  # min opposing move
+    late_rev_as_dir: bool = os.getenv("CLEAN_LATE_REV_AS_DIR", "on").lower() in ("1", "true", "yes", "on")
+    # ── v1.58 multi-signal DIRECTION (not a filter): on flip (and reverse-underway), vote
+    # early + roc + btc vs late drift. Always keeps a bet when any side is in-band.
+    late_dir_vote: bool = os.getenv("CLEAN_LATE_DIR_VOTE", "on").lower() in ("1", "true", "yes", "on")
+    late_dir_late_w: float = float(os.getenv("CLEAN_LATE_DIR_LATE_W", "1.0"))
+    late_dir_early_w: float = float(os.getenv("CLEAN_LATE_DIR_EARLY_W", "1.35"))  # flip losses: early was right
+    late_dir_roc_w: float = float(os.getenv("CLEAN_LATE_DIR_ROC_W", "1.5"))
+    late_dir_btc_w: float = float(os.getenv("CLEAN_LATE_DIR_BTC_W", "0.75"))
+    late_dir_roc_min_bps: float = float(os.getenv("CLEAN_LATE_DIR_ROC_MIN_BPS", "1.5"))
+    # When vote re-points opposite late lead, the "correct" side is often the underdog
+    # (<55c). Allow a slightly lower floor so we don't always fall back to the bad side.
+    # ROLLBACK: CLEAN_LATE_DIR_MIN_ASK=0.55 (same as late_min_ask → pure fallback).
+    late_dir_min_ask: float = float(os.getenv("CLEAN_LATE_DIR_MIN_ASK", "0.45"))
     # ── v1.53 join-quality (deep research Jul 11): require early anchor + EV-gated compound.
     # "NO early snapshot" late 55-70 = edge −7.5 / EV −0.075 (toxic). Growing lead = +21 pts.
     late_require_early: bool = os.getenv("CLEAN_LATE_REQUIRE_EARLY", "on").lower() in ("1", "true", "yes", "on")
@@ -295,21 +306,35 @@ def gamma_winner(coin: str, ws: int):
 
 def _roc(ticks, sec):
     """Rate-of-change (fraction) over `sec` seconds from a tick list (robust to
-    (ts,price) vs (price,ts) ordering)."""
+    (ts,price) vs (price,ts) ordering). Falls back to oldest tick if span short."""
     try:
-        if not ticks or len(ticks) < 2:
-            return 0.0
-        def ts(t): return t[0] if t[0] > 1e8 else t[1]
-        def px(t): return t[1] if t[0] > 1e8 else t[0]
-        now_t = ts(ticks[-1]); now_p = px(ticks[-1]); base = None
-        for t in reversed(ticks):
-            if now_t - ts(t) >= sec:
-                base = px(t); break
-        if base is None:
-            base = px(ticks[0])
-        return (now_p - base) / base if base else 0.0
+        r = _roc_strict(ticks, sec, min_frac=0.0)
+        return 0.0 if r is None else r
     except Exception:
         return 0.0
+
+
+def _roc_strict(ticks, sec, min_frac: float = 0.55):
+    """ROC only if tick span covers ≥ min_frac of `sec`. None = unusable (not 0)."""
+    try:
+        if not ticks or len(ticks) < 2:
+            return None
+        def ts(t): return t[0] if t[0] > 1e8 else t[1]
+        def px(t): return t[1] if t[0] > 1e8 else t[0]
+        now_t = ts(ticks[-1]); now_p = px(ticks[-1])
+        base_p = base_t = None
+        for t in reversed(ticks):
+            if now_t - ts(t) >= sec:
+                base_p, base_t = px(t), ts(t)
+                break
+        if base_p is None:
+            base_p, base_t = px(ticks[0]), ts(ticks[0])
+        span = now_t - base_t if base_t is not None else 0.0
+        if span < float(sec) * float(min_frac) or not base_p:
+            return None
+        return (now_p - base_p) / base_p
+    except Exception:
+        return None
 
 
 def _taker_buy_fee(price: float, shares: float) -> float:
@@ -586,6 +611,84 @@ class CleanBot:
             return "fade"
         except Exception:
             return "none"
+
+    def _late_roc_bps(self, coin: str):
+        """v1.58: denser CL path ROC with lookback fallback 60→45→30. Returns (bps|None, n_ticks)."""
+        try:
+            lb = int(CFG.late_roc_lookback)
+            lookbacks = [lb] + [x for x in (45, 30) if x < lb]
+            ticks = chainlink_ws.get_ticks(coin, max(lookbacks) + 40)
+            n = len(ticks) if ticks else 0
+            if not ticks or n < 5:
+                return None, n
+            for sec in lookbacks:
+                r = _roc_strict(ticks, sec, min_frac=0.55)
+                if r is not None:
+                    return r * 1e4, n
+            return None, n
+        except Exception:
+            return None, 0
+
+    def _late_vote_direction(self, coin: str, ws: int, late_up: bool, lead_state: str,
+                             roc_bps, force_roc: bool = False):
+        """v1.58 multi-signal direction vote. Returns (want_up, detail_str).
+        Weights: late drift, early snap (heavier on flip), roc, BTC cross-asset.
+        Does NOT skip — caller still places a bet if any side is in-band."""
+        votes = {"UP": 0.0, "DOWN": 0.0}
+        votes["UP" if late_up else "DOWN"] += float(CFG.late_dir_late_w)
+        bits = [f"late={'UP' if late_up else 'DOWN'}"]
+
+        early_up = None
+        er = self._early_snapshot(coin, ws)
+        if er:
+            try:
+                e_drift = float(er.get("drift_pct"))
+                early_up = e_drift > 0
+                # On flip, early was right on recent live losses — weight it higher.
+                w = float(CFG.late_dir_early_w) if lead_state == "flip" else float(CFG.late_dir_early_w) * 0.6
+                votes["UP" if early_up else "DOWN"] += w
+                bits.append(f"early={'UP' if early_up else 'DOWN'}@{e_drift:+.3f}%")
+            except Exception:
+                pass
+
+        if roc_bps is not None and (force_roc or abs(roc_bps) >= float(CFG.late_dir_roc_min_bps)):
+            w = float(CFG.late_dir_roc_w)
+            if force_roc:
+                w += 0.75  # reverse-underway: lean harder into the path
+            votes["UP" if roc_bps > 0 else "DOWN"] += w
+            bits.append(f"roc={roc_bps:+.1f}")
+
+        try:
+            btc_d = self._coin_drift("BTC")
+            if btc_d is not None and abs(btc_d) * 1e4 >= 3.0:
+                votes["UP" if btc_d > 0 else "DOWN"] += float(CFG.late_dir_btc_w)
+                bits.append(f"btc={btc_d*1e4:+.1f}bps")
+        except Exception:
+            pass
+
+        # Soft microstructure (optional; never decisive alone)
+        try:
+            fl = binance_ws.get_order_flow(coin, 60)
+            if fl is not None and abs(fl) >= 0.25:
+                votes["UP" if fl > 0 else "DOWN"] += 0.4
+                bits.append(f"flow={fl:+.2f}")
+        except Exception:
+            pass
+
+        if votes["UP"] > votes["DOWN"]:
+            pick_up = True
+        elif votes["DOWN"] > votes["UP"]:
+            pick_up = False
+        else:
+            # tie: flip → trust early if we have it; else late
+            if lead_state == "flip" and early_up is not None:
+                pick_up = early_up
+                bits.append("tie→early")
+            else:
+                pick_up = late_up
+                bits.append("tie→late")
+        detail = f"U={votes['UP']:.2f}/D={votes['DOWN']:.2f} " + " ".join(bits)
+        return pick_up, detail
 
     def _late_size_shares(self, coin: str, price: float, lead_state: str = "none") -> int:
         """v1.54 late sizing.
@@ -1324,40 +1427,75 @@ class CleanBot:
                                 f"(need established lead after dir change)")
                     self._nc_logged.add((coin, ws, "thinflip"))
                 return
-        # REVERSE-UNDERWAY (v1.52/v1.57): CL-family path only (RTDS + on-chain merge; never BN).
-        # Polymarket CLOB still via Tor/proxy — tick densify uses public Polygon RPC (no proxy).
-        roc_bps = None
-        if CFG.late_roc_oppose and CFG.late_roc_oppose_bps > 0:
+        # ROC on densified CL path (v1.57/v1.58 lookback fallback).
+        roc_bps, n_ticks = self._late_roc_bps(coin)
+        thr = float(CFG.late_roc_oppose_bps)
+        fighting = False
+        if roc_bps is not None and CFG.late_roc_oppose and thr > 0:
+            fighting = (is_up and roc_bps <= -thr) or ((not is_up) and roc_bps >= thr)
+        elif roc_bps is None and CFG.late_roc_cl_only:
+            if (coin, ws, "noroc") not in self._nc_logged:
+                logger.info(f"[LATE] {coin} {direction} CL roc sparse "
+                            f"n_ticks={n_ticks} — fail-open (densify may still warm up)")
+                self._nc_logged.add((coin, ws, "noroc"))
+
+        # v1.58 DIRECTION (not a skip): reverse-underway + flip → multi-signal vote.
+        # Keeps frequency: if corrected side ask is out of band, fall back to late side.
+        late_up = is_up
+        dir_note = ""
+        if CFG.late_dir_vote and (lead_state == "flip" or fighting):
+            want_up, vdetail = self._late_vote_direction(
+                coin, ws, late_up, lead_state, roc_bps, force_roc=fighting)
+            if want_up != late_up:
+                is_up = want_up
+                direction = "UP" if is_up else "DOWN"
+                dir_note = f"dirfix late={'UP' if late_up else 'DOWN'}→{direction}"
+                logger.info(f"[LATE DIR] {coin} {dir_note} lead={lead_state} "
+                            f"fight={int(fighting)} n_ticks={n_ticks} | {vdetail}")
+            elif fighting and not CFG.late_rev_as_dir:
+                # Legacy v1.52 path: skip reverse-underway only if vote kept late AND
+                # rev_as_dir is off (operator rollback).
+                if (coin, ws, "rev") not in self._nc_logged:
+                    logger.info(f"[LATE SKIP] {coin} {direction} reverse-underway "
+                                f"roc={roc_bps:+.1f}bps n_ticks={n_ticks}")
+                    self._nc_logged.add((coin, ws, "rev"))
+                return
+        elif fighting and not CFG.late_rev_as_dir:
+            if (coin, ws, "rev") not in self._nc_logged:
+                logger.info(f"[LATE SKIP] {coin} {direction} reverse-underway "
+                            f"roc={roc_bps:+.1f}bps n_ticks={n_ticks}")
+                self._nc_logged.add((coin, ws, "rev"))
+            return
+
+        def _book_for(up_side: bool):
+            tok = info.up_token_id if up_side else info.down_token_id
             try:
-                ticks = chainlink_ws.get_ticks(coin, CFG.late_roc_lookback + 40)
-                n_ticks = len(ticks) if ticks else 0
-                # Need enough samples for a 60s span (v1.57 densify: aim >=8)
-                if ticks and n_ticks >= 5:
-                    roc_bps = _roc(ticks, CFG.late_roc_lookback) * 1e4
-                    thr = CFG.late_roc_oppose_bps
-                    fighting = (is_up and roc_bps <= -thr) or ((not is_up) and roc_bps >= thr)
-                    if fighting:
-                        if (coin, ws, "rev") not in self._nc_logged:
-                            logger.info(f"[LATE SKIP] {coin} {direction} reverse-underway "
-                                        f"roc{CFG.late_roc_lookback}s={roc_bps:+.1f}bps "
-                                        f"n_ticks={n_ticks} (opposes lead ≥{thr:.0f}bps)")
-                            self._nc_logged.add((coin, ws, "rev"))
-                        return
-                elif CFG.late_roc_cl_only:
-                    if (coin, ws, "noroc") not in self._nc_logged:
-                        logger.info(f"[LATE] {coin} {direction} CL roc sparse "
-                                    f"n_ticks={n_ticks} — fail-open (on-chain densify may still warm up)")
-                        self._nc_logged.add((coin, ws, "noroc"))
+                bk = self.om.get_clob_book(tok) or {}
             except Exception:
-                roc_bps = None
-        token = info.up_token_id if is_up else info.down_token_id
-        book = {}
-        try:
-            book = self.om.get_clob_book(token) or {}
-        except Exception:
-            pass
+                bk = {}
+            return tok, bk
+
+        token, book = _book_for(is_up)
         ask = book.get("ask")
-        if not ask or not (CFG.late_min_ask <= float(ask) <= CFG.late_max_ask):
+        corrected = is_up != late_up
+        min_ask_use = (min(float(CFG.late_min_ask), float(CFG.late_dir_min_ask))
+                       if corrected else float(CFG.late_min_ask))
+        max_ask_use = float(CFG.late_max_ask)
+        # If we re-pointed direction but ask is untradeable even with dir floor, fall back
+        # to late side (no overblock — still take the original setup when it is in-band).
+        if corrected and (
+                not ask or not (min_ask_use <= float(ask) <= max_ask_use)):
+            logger.info(f"[LATE DIR] {coin} corrected {direction} ask out of band "
+                        f"({ask}, need {min_ask_use:.2f}-{max_ask_use:.2f}) — "
+                        f"fall back to late={'UP' if late_up else 'DOWN'}")
+            is_up = late_up
+            direction = "UP" if is_up else "DOWN"
+            token, book = _book_for(is_up)
+            ask = book.get("ask")
+            min_ask_use = float(CFG.late_min_ask)
+            dir_note = (dir_note + " fallback_late").strip()
+            corrected = False
+        if not ask or not (min_ask_use <= float(ask) <= max_ask_use):
             return
         # EXECUTION (v1.46 + v1.50): TAKER by default — FOK at ask.
         if CFG.late_taker:
@@ -1400,6 +1538,7 @@ class CleanBot:
                     f"cmult={_cm:.2f}, lead={lead_state}, size={_cmp}, lateEV={_evs}, "
                     f"roc60={_roc}, feed={spot_src}/{strike_src}, "
                     f"BEwr={_be*100:.0f}% need={_cover:.2f}W/L) T={t_rem:.0f}s [AUDITION]"
+                    + (f" [{dir_note}]" if dir_note else "")
                     + (" [DRY]" if CFG.dry else ""))
         if CFG.dry:
             # paper: assume immediate fill at the signal price (taker or maker path)
@@ -1424,7 +1563,7 @@ class CleanBot:
                     except Exception:
                         book2 = {}
                     ask2 = book2.get("ask")
-                    if not ask2 or not (CFG.late_min_ask <= float(ask2) <= CFG.late_max_ask):
+                    if not ask2 or not (min_ask_use <= float(ask2) <= max_ask_use):
                         logger.info(f"[LATE MISS] {coin} {direction} retry aborted — "
                                     f"ask out of band ({ask2})")
                         break
@@ -1929,7 +2068,8 @@ class CleanBot:
         _late = (f"late={'ON' if CFG.late_live else 'off'}[{','.join(CFG.late_coins)}] "
                  f"{'FOK' if CFG.late_taker else 'GTC'} cmult={_lcm} "
                  f"earlyReq={'on' if CFG.late_require_early else 'off'} "
-                 f"grow×{CFG.late_grow_mult:g} cmpEV>{CFG.compound_min_ev:g}@n{CFG.compound_min_ev_n}")
+                 f"grow×{CFG.late_grow_mult:g} cmpEV>{CFG.compound_min_ev:g}@n{CFG.compound_min_ev_n} "
+                 f"dirVote={'on' if CFG.late_dir_vote else 'off'}/revAsDir={'on' if CFG.late_rev_as_dir else 'off'}")
         logger.info(f"=== CleanBot v{VERSION} start | {'DRY' if CFG.dry else 'LIVE'} | "
                     f"{'/'.join(CFG.coins)} | drift>={CFG.drift_bps}bps T>={CFG.min_t}s "
                     f"ask {CFG.min_ask}-{CFG.max_ask} | {_cf} | breaker {CFG.loss_breaker}L/"

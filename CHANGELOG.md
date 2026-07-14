@@ -10,6 +10,30 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.58.0 — 2026-07-14 — late direction vote (fix side, do not cut frequency)
+**Tag:** `cleanbot-v1.58.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** deploy
+
+Owner: flip losses were **wrong direction**, not “too many bets.” Do **not** block
+flip / red-EV / reverse setups — **re-detect direction** and still trade.
+
+1. **`CLEAN_LATE_DIR_VOTE=on`** — on `lead=flip` (or reverse-underway), multi-signal vote:
+   late drift + **early snap** (heavier on flip) + denser CL **roc** + BTC + soft flow.
+2. **`CLEAN_LATE_REV_AS_DIR=on`** — reverse-underway no longer default-SKIPs; it **points
+   the bet with roc** when the corrected side ask is still in 55–70c band.
+3. **Fallback (no overblock):** if corrected side ask is out of band → keep late side.
+4. **`CLEAN_LATE_DIR_MIN_ASK=0.45`** — only for vote-corrected opposite side (underdog often
+   the right token on bad flips); normal late band still 55–70c for uncorrected joins.
+5. **Roc reliability:** lookback fallback 60→45→30 via `_roc_strict` (span ≥55% of window).
+6. Logs: `[LATE DIR] … late=DOWN→UP …` and ENTER tag `[dirfix …]`.
+
+### Rollback
+```bash
+git checkout cleanbot-v1.57.0 -- clean_bot.py
+# or env:
+CLEAN_LATE_DIR_VOTE=off
+CLEAN_LATE_REV_AS_DIR=off   # restores v1.52 skip-on-reverse
+```
+
 ## v1.57.0 — 2026-07-14 — denser Chainlink path for roc (timing upgrade; Tor kept for CLOB)
 **Tag:** `cleanbot-v1.57.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** live
 
