@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.58.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.58.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -193,8 +193,9 @@ class Cfg:
     late_roc_lookback: int = int(os.getenv("CLEAN_LATE_ROC_LOOKBACK", "60"))   # seconds
     late_roc_oppose_bps: float = float(os.getenv("CLEAN_LATE_ROC_OPPOSE_BPS", "2"))  # min opposing move
     late_rev_as_dir: bool = os.getenv("CLEAN_LATE_REV_AS_DIR", "on").lower() in ("1", "true", "yes", "on")
-    # ── v1.58 multi-signal DIRECTION (not a filter): on flip (and reverse-underway), vote
-    # early + roc + btc vs late drift. Always keeps a bet when any side is in-band.
+    # ── v1.58/v1.58.1 multi-signal DIRECTION (not a filter): vote only on lead=flip.
+    # v1.58 also voted on grow+roc-fight → DIR spam + dead-ends (corrected 2c / late 98c).
+    # v1.58.1: vote=flip only; reverse-underway on grow tries roc side if in-band else keeps late.
     late_dir_vote: bool = os.getenv("CLEAN_LATE_DIR_VOTE", "on").lower() in ("1", "true", "yes", "on")
     late_dir_late_w: float = float(os.getenv("CLEAN_LATE_DIR_LATE_W", "1.0"))
     late_dir_early_w: float = float(os.getenv("CLEAN_LATE_DIR_EARLY_W", "1.35"))  # flip losses: early was right
@@ -1439,33 +1440,40 @@ class CleanBot:
                             f"n_ticks={n_ticks} — fail-open (densify may still warm up)")
                 self._nc_logged.add((coin, ws, "noroc"))
 
-        # v1.58 DIRECTION (not a skip): reverse-underway + flip → multi-signal vote.
-        # Keeps frequency: if corrected side ask is out of band, fall back to late side.
+        # v1.58.1 DIRECTION:
+        #  - multi-signal vote ONLY on lead=flip (fixes wrong-side flips; no grow spam)
+        #  - reverse-underway on non-flip: optional roc re-point; else keep late / legacy skip
         late_up = is_up
         dir_note = ""
-        if CFG.late_dir_vote and (lead_state == "flip" or fighting):
+        if CFG.late_dir_vote and lead_state == "flip":
             want_up, vdetail = self._late_vote_direction(
                 coin, ws, late_up, lead_state, roc_bps, force_roc=fighting)
             if want_up != late_up:
                 is_up = want_up
                 direction = "UP" if is_up else "DOWN"
                 dir_note = f"dirfix late={'UP' if late_up else 'DOWN'}→{direction}"
-                logger.info(f"[LATE DIR] {coin} {dir_note} lead={lead_state} "
-                            f"fight={int(fighting)} n_ticks={n_ticks} | {vdetail}")
-            elif fighting and not CFG.late_rev_as_dir:
-                # Legacy v1.52 path: skip reverse-underway only if vote kept late AND
-                # rev_as_dir is off (operator rollback).
+                if (coin, ws, "dirvote") not in self._nc_logged:
+                    logger.info(f"[LATE DIR] {coin} {dir_note} lead=flip "
+                                f"fight={int(fighting)} n_ticks={n_ticks} | {vdetail}")
+                    self._nc_logged.add((coin, ws, "dirvote"))
+        elif fighting:
+            if CFG.late_rev_as_dir and roc_bps is not None:
+                # Re-point toward roc; book step falls back to late if ask unusable.
+                want_up = roc_bps > 0
+                if want_up != late_up:
+                    is_up = want_up
+                    direction = "UP" if is_up else "DOWN"
+                    dir_note = f"revRoc late={'UP' if late_up else 'DOWN'}→{direction}"
+                    if (coin, ws, "dirrev") not in self._nc_logged:
+                        logger.info(f"[LATE DIR] {coin} {dir_note} lead={lead_state} "
+                                    f"roc={roc_bps:+.1f} n_ticks={n_ticks}")
+                        self._nc_logged.add((coin, ws, "dirrev"))
+            else:
                 if (coin, ws, "rev") not in self._nc_logged:
                     logger.info(f"[LATE SKIP] {coin} {direction} reverse-underway "
                                 f"roc={roc_bps:+.1f}bps n_ticks={n_ticks}")
                     self._nc_logged.add((coin, ws, "rev"))
                 return
-        elif fighting and not CFG.late_rev_as_dir:
-            if (coin, ws, "rev") not in self._nc_logged:
-                logger.info(f"[LATE SKIP] {coin} {direction} reverse-underway "
-                            f"roc={roc_bps:+.1f}bps n_ticks={n_ticks}")
-                self._nc_logged.add((coin, ws, "rev"))
-            return
 
         def _book_for(up_side: bool):
             tok = info.up_token_id if up_side else info.down_token_id
@@ -1485,9 +1493,11 @@ class CleanBot:
         # to late side (no overblock — still take the original setup when it is in-band).
         if corrected and (
                 not ask or not (min_ask_use <= float(ask) <= max_ask_use)):
-            logger.info(f"[LATE DIR] {coin} corrected {direction} ask out of band "
-                        f"({ask}, need {min_ask_use:.2f}-{max_ask_use:.2f}) — "
-                        f"fall back to late={'UP' if late_up else 'DOWN'}")
+            if (coin, ws, "dirfb") not in self._nc_logged:
+                logger.info(f"[LATE DIR] {coin} corrected {direction} ask out of band "
+                            f"({ask}, need {min_ask_use:.2f}-{max_ask_use:.2f}) — "
+                            f"fall back to late={'UP' if late_up else 'DOWN'}")
+                self._nc_logged.add((coin, ws, "dirfb"))
             is_up = late_up
             direction = "UP" if is_up else "DOWN"
             token, book = _book_for(is_up)
@@ -1496,6 +1506,15 @@ class CleanBot:
             dir_note = (dir_note + " fallback_late").strip()
             corrected = False
         if not ask or not (min_ask_use <= float(ask) <= max_ask_use):
+            # v1.58.1: never silent — was the main "are we missing windows?" confusion
+            if (coin, ws, "askband") not in self._nc_logged:
+                after_fb = " after dir-fallback" if "fallback" in dir_note else ""
+                logger.info(
+                    f"[LATE SKIP] {coin} {direction} ask_out_of_band{after_fb} "
+                    f"ask={ask} need={min_ask_use:.2f}-{max_ask_use:.2f} "
+                    f"lead={lead_state} fight={int(fighting)}"
+                )
+                self._nc_logged.add((coin, ws, "askband"))
             return
         # EXECUTION (v1.46 + v1.50): TAKER by default — FOK at ask.
         if CFG.late_taker:

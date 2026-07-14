@@ -10,6 +10,25 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.58.1 — 2026-07-14 — dir-vote flip-only + visible ask-band skips
+**Tag:** `cleanbot-v1.58.1` · **Branch:** `yirok-cleanbot-grok` · **Status:** deploy
+
+Window-coverage audit: **not missing 15m windows**; quiet was filters + silent
+returns after dir-vote. Fixes:
+
+1. **Multi-signal dir vote only on `lead=flip`** (no more grow+roc-fight spam / dead-ends).
+2. **Reverse-underway on grow:** still can re-point via roc (`revAsDir`); if corrected ask
+   bad → fall back to late and trade when late ask is in band.
+3. **Log once per window:** `[LATE SKIP] … ask_out_of_band after dir-fallback …` so we never
+   look "blind" when both sides are outside 55–70¢.
+4. Throttle `[LATE DIR]` / fallback logs to **one per coin/window**.
+
+### Rollback
+```bash
+git checkout cleanbot-v1.58.0 -- clean_bot.py
+# or env: CLEAN_LATE_DIR_VOTE=off
+```
+
 ## v1.58.0 — 2026-07-14 — late direction vote (fix side, do not cut frequency)
 **Tag:** `cleanbot-v1.58.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** deploy
 
