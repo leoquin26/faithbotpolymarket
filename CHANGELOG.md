@@ -10,6 +10,24 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.58.2 — 2026-07-14 — mild late frequency (ask 0.70, drift floor 0)
+**Tag:** `cleanbot-v1.58.2` · **Branch:** `yirok-cleanbot-grok` · **Status:** deploy
+
+Quiet audit: windows covered; joins starved by **ask≤0.68** and env **`CLEAN_LATE_DRIFT_BPS=3`**
+(code said 0 = correct). Mild reopen — **not** fade-off / not flip-block removal.
+
+1. **`CLEAN_LATE_MAX_ASK=0.70`** (was 0.68) — catch 69–70¢ favorites still in research band.
+2. **`CLEAN_LATE_DRIFT_BPS=0`** (was 3 in live env) — late edge is ask-band selected; 3bps floor
+   discarded small-but-priced moves.
+3. **KEPT:** fade skip, require_early, flip min 3bps, dir-vote on flip only, CL spot, night sleep.
+
+### Rollback
+```bash
+CLEAN_LATE_MAX_ASK=0.68
+CLEAN_LATE_DRIFT_BPS=3
+# or git checkout cleanbot-v1.58.1 -- clean_bot.py
+```
+
 ## v1.58.1 — 2026-07-14 — dir-vote flip-only + visible ask-band skips
 **Tag:** `cleanbot-v1.58.1` · **Branch:** `yirok-cleanbot-grok` · **Status:** deploy
 

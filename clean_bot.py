@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.58.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.58.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -175,8 +175,10 @@ class Cfg:
     late_min_ask: float = float(os.getenv("CLEAN_LATE_MIN_ASK", "0.55"))
     # v1.56: 0.68 (was 0.66). Overblock audit: ask 66-70 under same filters still +EV; 0.68 = middle step.
     # ROLLBACK: CLEAN_LATE_MAX_ASK=0.66
-    late_max_ask: float = float(os.getenv("CLEAN_LATE_MAX_ASK", "0.68"))
-    late_drift_bps: float = float(os.getenv("CLEAN_LATE_DRIFT_BPS", "0"))  # v1.38.1: the late edge is drift-INDEPENDENT (OOS: drift<5 slice z=+1.53 EV+0.159, STRONGER than drift>=5). The 55-70c ask band already selects "modest favorite"; a drift floor here just discards 2/3 of the verified windows. 0 = no floor.
+    # v1.58.2: default 0.70 (was 0.68). Frequency: many live skips were ask 69–72¢ still
+    # inside research sweet spot; 0.68 cut those. ROLLBACK: CLEAN_LATE_MAX_ASK=0.68
+    late_max_ask: float = float(os.getenv("CLEAN_LATE_MAX_ASK", "0.70"))
+    late_drift_bps: float = float(os.getenv("CLEAN_LATE_DRIFT_BPS", "0"))  # v1.38.1/v1.58.2: late edge is drift-INDEPENDENT (OOS: drift<5 stronger). Env had drifted to 3 and starved joins — default 0; ask band does selection.
     late_mom_agree: bool = os.getenv("CLEAN_LATE_MOM_AGREE", "off").lower() in ("1", "true", "yes", "on")  # v1.38.2 (DEPRECATED, default off): roc60-based; unreliable (roc60 present only ~30% of late windows → fails open). Superseded by late_skip_fading.
     late_taker: bool = os.getenv("CLEAN_LATE_TAKER", "on").lower() in ("1", "true", "yes", "on")  # v1.46 (owner diagnosed it): TAKE the ask at signal time instead of resting a maker order. Live maker fills ran 52% vs 63c (−11pts) — resting orders fill DURING the reversal (adverse selection); the verified +12-16pt shadow edge was measured AT THE ASK. Costs ~1c spread + ~1.6c taker fee; buys the edge as verified.
     late_night_off: bool = os.getenv("CLEAN_LATE_NIGHT_OFF", "on").lower() in ("1", "true", "yes", "on")  # v1.48 session study (both-halves stable): late edge by Lima session = NIGHT 00-07 +0.9pts (zero, fee-negative) vs MORNING +6.6 / AFTERNOON +14.3 / EVENING +12.8. Late engine sleeps 00-07 Lima (~26% of its volume at ~zero EV). Early engine keeps 24h (night +2.9 STABLE — cutting it would be overblocking).
