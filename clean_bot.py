@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.58.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.58.3"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -1534,6 +1534,12 @@ class CleanBot:
             otype = OrderType.GTC
             is_taker = False
         if self.engine_off.get("late"):              # retired by its own 40-trade verdict (v1.47)
+            # Owner must clear engine_off.late in clean_bot_state.json (and ideally reset
+            # late recent_ev) — otherwise every late setup is a silent no-op.
+            if (coin, ws, "retired") not in self._nc_logged:
+                logger.info(f"[LATE SKIP] {coin} late ENGINE RETIRED (self-gov n>=40 EV/$<=-0.03) "
+                            f"— owner reset engine_off.late + clear late recent_ev to re-audition")
+                self._nc_logged.add((coin, ws, "retired"))
             return
         shares = self._late_size_shares(coin, px_ord, lead_state=lead_state)
         # CORRELATION GUARD (v1.39.1)

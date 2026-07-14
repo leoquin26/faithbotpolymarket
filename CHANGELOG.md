@@ -10,6 +10,16 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.58.3 — 2026-07-14 — log late ENGINE RETIRED skips (owner reset)
+**Tag:** `cleanbot-v1.58.3`
+
+Self-gov at n≥40 EV/$≤−0.03 sets `engine_off.late=True` and **silently** blocked every
+late entry (dashboard RETIRED 41/40). Log once per window:
+`[LATE SKIP] … late ENGINE RETIRED … owner reset …`.
+
+Owner reset (live): `engine_off.late=false` + clear late rows from `recent_ev` so the next
+fill does not re-fire verdict on the same 41-trade red book. Early stays retired.
+
 ## v1.58.2 — 2026-07-14 — mild late frequency (ask 0.70, drift floor 0)
 **Tag:** `cleanbot-v1.58.2` · **Branch:** `yirok-cleanbot-grok` · **Status:** deploy
 
