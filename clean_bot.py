@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.56.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.57.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -734,19 +734,19 @@ class CleanBot:
             return
         self._research_seen.add(rk)
         direction = "UP" if dist > 0 else "DOWN"
-        # Settlement-feed momentum/vol first (higher quality for CL markets)
+        # Settlement-feed momentum/vol (v1.57: RTDS+on-chain merge via get_ticks)
         cl_ticks = chainlink_ws.get_ticks(coin, 340)
         roc_source = sigma_source = ""
         if cl_ticks and len(cl_ticks) >= 5:
             roc60 = _roc(cl_ticks, 60); roc300 = _roc(cl_ticks, 300)
-            roc_source = "chainlink_rtds"
+            roc_source = "chainlink_merged"
         else:
             bn_ticks = binance_ws.get_tick_history(coin, 300)
             roc60 = _roc(bn_ticks, 60); roc300 = _roc(bn_ticks, 300)
             roc_source = "binance" if bn_ticks else ""
         sig = chainlink_ws.get_realized_vol(coin, 180)
         if sig and sig > 0:
-            sigma = sig; sigma_source = "chainlink_rtds"
+            sigma = sig; sigma_source = "chainlink_merged"
         else:
             sigma = binance_ws.get_realized_vol(coin, 180); sigma_source = "binance" if sigma else ""
         feed_ok = int(strike_src.startswith("chainlink") and spot_src.startswith("chainlink"))
@@ -1324,14 +1324,15 @@ class CleanBot:
                                 f"(need established lead after dir change)")
                     self._nc_logged.add((coin, ws, "thinflip"))
                 return
-        # REVERSE-UNDERWAY (v1.52/v1.55): Chainlink ROC only (no Binance pollution).
+        # REVERSE-UNDERWAY (v1.52/v1.57): CL-family path only (RTDS + on-chain merge; never BN).
+        # Polymarket CLOB still via Tor/proxy — tick densify uses public Polygon RPC (no proxy).
         roc_bps = None
         if CFG.late_roc_oppose and CFG.late_roc_oppose_bps > 0:
             try:
                 ticks = chainlink_ws.get_ticks(coin, CFG.late_roc_lookback + 40)
-                if (not ticks or len(ticks) < 3) and not CFG.late_roc_cl_only:
-                    ticks = binance_ws.get_tick_history(coin, CFG.late_roc_lookback + 40)
-                if ticks and len(ticks) >= 3:
+                n_ticks = len(ticks) if ticks else 0
+                # Need enough samples for a 60s span (v1.57 densify: aim >=8)
+                if ticks and n_ticks >= 5:
                     roc_bps = _roc(ticks, CFG.late_roc_lookback) * 1e4
                     thr = CFG.late_roc_oppose_bps
                     fighting = (is_up and roc_bps <= -thr) or ((not is_up) and roc_bps >= thr)
@@ -1339,13 +1340,13 @@ class CleanBot:
                         if (coin, ws, "rev") not in self._nc_logged:
                             logger.info(f"[LATE SKIP] {coin} {direction} reverse-underway "
                                         f"roc{CFG.late_roc_lookback}s={roc_bps:+.1f}bps "
-                                        f"(opposes lead ≥{thr:.0f}bps) — not buying into the flip")
+                                        f"n_ticks={n_ticks} (opposes lead ≥{thr:.0f}bps)")
                             self._nc_logged.add((coin, ws, "rev"))
                         return
                 elif CFG.late_roc_cl_only:
                     if (coin, ws, "noroc") not in self._nc_logged:
-                        logger.info(f"[LATE] {coin} {direction} CL roc ticks sparse "
-                                    f"(n={len(ticks) if ticks else 0}) — fail-open, no reverse check")
+                        logger.info(f"[LATE] {coin} {direction} CL roc sparse "
+                                    f"n_ticks={n_ticks} — fail-open (on-chain densify may still warm up)")
                         self._nc_logged.add((coin, ws, "noroc"))
             except Exception:
                 roc_bps = None
@@ -1943,9 +1944,19 @@ class CleanBot:
         binance_ws.start()
         try:
             chainlink_ws.start()                 # settlement-feed strike+spot (Polymarket = Chainlink)
-            logger.info("[CHAINLINK] feed started — strike/spot now on the settlement feed")
+            logger.info("[CHAINLINK] RTDS started — strike/spot settlement family "
+                        "(CLOB still uses Tor/proxy for geo; RTDS is Polymarket WS)")
         except Exception as e:
-            logger.warning(f"[CHAINLINK] start failed ({e}) — falling back to Binance (cross-feed basis risk)")
+            logger.warning(f"[CHAINLINK] RTDS start failed ({e})")
+        try:
+            # v1.57: densify CL path for roc60 — Polygon aggregator polls (NOT via Tor).
+            # Does not replace Tor for order routing; only fills sparse RTDS tick history.
+            import chainlink_onchain as _cl_oc
+            _cl_oc.start()
+            logger.info("[CHAINLINK-ONCHAIN] densify poller started (1s RPC, no proxy) "
+                        "— improves late reverse-underway; CLOB remains proxied")
+        except Exception as e:
+            logger.warning(f"[CHAINLINK-ONCHAIN] start failed ({e}) — roc may stay sparse")
         time.sleep(90)
         self._sync_bankroll()       # start from the REAL on-chain balance, not the saved ledger
         self.hwm = self.bankroll    # fresh profit-lock peak each run (rolling within the run, incl. across midnight)
@@ -2044,6 +2055,10 @@ class CleanBot:
                     _sig = self._signal_health()
                     if _sig is not None:
                         logger.info(f"[SIG] edge={_sig:+.1f}pts")
+                except Exception:
+                    pass
+                try:  # v1.57: CL path density (RTDS+on-chain merge) — target >>8 ticks/120s
+                    logger.info(f"[CL-TICKS] {chainlink_ws.tick_density_report(seconds=120)}")
                 except Exception:
                     pass
                 self._sync_bankroll()       # keep bankroll honest vs the chain (~every 40 scans)

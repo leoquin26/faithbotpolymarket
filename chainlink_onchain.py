@@ -50,7 +50,9 @@ _RPCS = [
     "https://polygon.drpc.org",
 ]
 
-_POLL_SEC = float(os.getenv("CHAINLINK_ONCHAIN_POLL_SEC", "2.5"))
+# v1.57: denser polls for late roc60 (RTDS alone is ~1 tick/15s — reverse-underway starves).
+# Polygon RPC is NOT via Tor (see _NO_PROXY_OPENER). Polymarket CLOB still uses proxy/Tor.
+_POLL_SEC = float(os.getenv("CHAINLINK_ONCHAIN_POLL_SEC", "1.0"))
 _MAX_AGE = float(os.getenv("CHAINLINK_ONCHAIN_MAX_AGE", "30"))
 _TIMEOUT = float(os.getenv("CHAINLINK_ONCHAIN_TIMEOUT", "6"))
 
@@ -63,9 +65,10 @@ _thread: Optional[threading.Thread] = None
 _rpc_idx = 0
 
 # Rolling (timestamp, price) history per coin so callers can compute ROC on the
-# SAME Chainlink feed used for the level. Keep ~10 min at the poll cadence.
+# SAME Chainlink feed used for the level. ~15 min at 1s poll.
 _TICKS: Dict[str, list] = {}
-_TICK_MAX = int(os.getenv("CHAINLINK_ONCHAIN_TICK_MAX", "300"))
+_TICK_MAX = int(os.getenv("CHAINLINK_ONCHAIN_TICK_MAX", "1200"))
+_TICK_MIN_DT = float(os.getenv("CHAINLINK_ONCHAIN_TICK_MIN_DT", "1.0"))
 
 
 def _rpc_call(to: str, data: str) -> Optional[str]:
@@ -136,18 +139,19 @@ def _poll_once():
             _latest[coin] = price
             _updated[coin] = now
             _onchain_ts[coin] = updated_at
-            # Append to rolling history only when the chain value actually moved
-            # OR enough time passed, so ROC reflects real ticks (dedupe identical
-            # consecutive on-chain reads at the same updatedAt).
+            # Denser history for roc60: store on price change OR every _TICK_MIN_DT
+            # (v1.57: was 5s — too sparse for late reverse-underway).
             buf = _TICKS.setdefault(coin, [])
-            if not buf or buf[-1][1] != price or (now - buf[-1][0]) >= 5.0:
+            if (not buf or buf[-1][1] != price
+                    or (now - buf[-1][0]) >= _TICK_MIN_DT):
                 buf.append((now, price))
                 if len(buf) > _TICK_MAX:
                     del buf[: len(buf) - _TICK_MAX]
 
 
 def _run():
-    logger.info("[CHAINLINK-ONCHAIN] poller started (Polygon aggregators)")
+    logger.info(f"[CHAINLINK-ONCHAIN] poller started (Polygon aggregators, "
+                f"poll={_POLL_SEC}s — densifies CL path for roc; CLOB still proxied)")
     while True:
         try:
             _poll_once()

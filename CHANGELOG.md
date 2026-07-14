@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.57.0 — 2026-07-14 — denser Chainlink path for roc (timing upgrade; Tor kept for CLOB)
+**Tag:** `cleanbot-v1.57.0` · **Branch:** `yirok-cleanbot-grok` · **Status:** live
+
+Highest-value timing fix from speed audit: RTDS alone ~7 ticks/120s → reverse-underway
+often `roc60=n/a`. **Not** an HFT race; densify settlement-family path samples.
+
+1. **Start `chainlink_onchain` densify poller** (default **1s** Polygon RPC, **no Tor** —
+   RPCs already bypass proxy). CLOB/orders still use Tor/proxy for geo-block.
+2. **`chainlink_ws.get_ticks` merges RTDS + on-chain** history (`CHAINLINK_MERGE_ONCHAIN=on`).
+3. On-chain tick store every **1s** (was 5s dedupe); larger buffers.
+4. Heartbeat **`[CL-TICKS] ETH=n/120s SOL=…`** — expect denser counts after warm-up.
+5. Reverse-underway logs **n_ticks=** when firing/failing open.
+
+**Tor/proxy unchanged** for Polymarket CLOB (IP restriction). Do not route Polygon RPC via Tor.
+
 ## v1.56.0 — 2026-07-13 — mild de-overblock: ask 0.68, flip 3bps, one FOK retry
 **Tag:** `cleanbot-v1.56.0` · **Branch:** `yirok-cleanbot-grok` · **Label:** `deoverblock-v156`  
 **Status:** live audition (more volume, same quality core)

@@ -25,13 +25,16 @@ _updated: Dict[str, float] = {}
 # polls of the deviation-gated on-chain aggregator (~5bp quantized, heartbeat
 # lag). ~40min at 1 tick/s.
 _ticks: Dict[str, list] = {}
-# v1.55: denser buffer (~90min @1Hz) so late roc60/sigma don't starve after restarts
+# v1.55/v1.57: denser buffer; RTDS is still sparse (~1/15s) so get_ticks merges on-chain
 _TICK_MAX = int(os.getenv("CHAINLINK_WS_TICK_MAX", "5400"))
+# Min seconds between stored RTDS samples (was 1.0). Lower = denser when RTDS chatters.
+_TICK_MIN_DT = float(os.getenv("CHAINLINK_WS_TICK_MIN_DT", "0.25"))
 _lock = threading.Lock()
 _connected = False
 _thread: Optional[threading.Thread] = None
 _last_data_ts: float = 0.0       # last time we received a real price
 _last_err_429: bool = False      # was the most recent failure a rate-limit?
+_merge_onchain = os.getenv("CHAINLINK_MERGE_ONCHAIN", "on").lower() in ("1", "true", "yes", "on")
 
 
 def _coin_from_symbol(sym: str) -> Optional[str]:
@@ -62,8 +65,9 @@ def _on_message(ws, message):
                 _latest[coin] = val
                 _updated[coin] = now
                 buf = _ticks.setdefault(coin, [])
-                # dedupe equal prices but keep a >=1s cadence so ROC spans are real
-                if not buf or buf[-1][1] != val or (now - buf[-1][0]) >= 1.0:
+                # Keep sample if price moved OR enough time passed (v1.57: 0.25s min dt)
+                if (not buf or buf[-1][1] != val
+                        or (now - buf[-1][0]) >= _TICK_MIN_DT):
                     buf.append((now, val))
                     if len(buf) > _TICK_MAX:
                         del buf[: len(buf) - _TICK_MAX]
@@ -189,17 +193,42 @@ def get_price(coin: str, max_age: Optional[float] = None) -> Optional[float]:
     return p
 
 
-def get_ticks(coin: str, seconds: float = 300.0) -> list:
-    """(ts, price) RTDS ticks for the last `seconds`, oldest first."""
+def get_ticks(coin: str, seconds: float = 300.0, merge_onchain: Optional[bool] = None) -> list:
+    """(ts, price) Chainlink-family ticks for the last `seconds`, oldest first.
+
+    v1.57: merge RTDS stream + Polygon on-chain aggregator polls when enabled.
+    On-chain is same oracle family (not Binance). Polymarket CLOB still uses Tor/proxy;
+    on-chain RPC is direct (no proxy) by design.
+    """
     cutoff = time.time() - seconds
+    c = coin.upper()
     with _lock:
-        buf = list(_ticks.get(coin.upper(), []))
-    return [(ts, p) for ts, p in buf if ts >= cutoff]
+        buf = list(_ticks.get(c, []))
+    out = [(ts, p) for ts, p in buf if ts >= cutoff]
+    do_merge = _merge_onchain if merge_onchain is None else merge_onchain
+    if do_merge:
+        try:
+            import chainlink_onchain as _oc
+            for ts, p in _oc.tick_history(c, seconds):
+                if ts >= cutoff and p and p > 0:
+                    out.append((ts, p))
+        except Exception:
+            pass
+        if out:
+            out.sort(key=lambda x: x[0])
+            # Collapse near-duplicates within 0.2s (same sample from both sources)
+            merged = [out[0]]
+            for ts, p in out[1:]:
+                if ts - merged[-1][0] < 0.2 and abs(p - merged[-1][1]) / max(p, 1e-12) < 1e-8:
+                    merged[-1] = (ts, p)  # prefer later sample
+                else:
+                    merged.append((ts, p))
+            out = merged
+    return out
 
 
 def get_realized_vol(coin: str, lookback_sec: int = 180) -> float:
-    """Per-second log-return vol from RTDS ticks (same units as binance_ws.get_realized_vol).
-    v1.55: settlement-feed sigma for research / late — no Binance basis."""
+    """Per-second log-return vol from CL-family ticks (no Binance)."""
     import math
     ticks = get_ticks(coin, lookback_sec + 30)
     if len(ticks) < 10:
@@ -221,6 +250,15 @@ def get_realized_vol(coin: str, lookback_sec: int = 180) -> float:
 
 def tick_count(coin: str, seconds: float = 120.0) -> int:
     return len(get_ticks(coin, seconds))
+
+
+def tick_density_report(coins=("ETH", "SOL", "BTC"), seconds: float = 120.0) -> str:
+    """Human line for heartbeats: how dense is CL path data."""
+    parts = []
+    for c in coins:
+        n = tick_count(c, seconds)
+        parts.append(f"{c}={n}/{int(seconds)}s")
+    return " ".join(parts)
 
 
 def is_connected() -> bool:
