@@ -10,6 +10,40 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## 2026-07-16 — CONFIG: late direction-correction OFF (dirVote + revAsDir)
+**Env-only change** (no code, no version bump) · **Branch:** `yirok-cleanbot-grok` · **Status:** LIVE 15:29 UTC
+
+**Evidence (full-history matched ledger, log fills → outcomes):**
+- `clean` late entries (no correction): n=65, WR 65%, net **−$0.66** — break-even core.
+- `fallback` (correction re-pointed, corrected side out-of-band, bot bet the
+  contradicted ORIGINAL side anyway): n=10, WR **40%**, net **−$14.12**.
+- `dirfix` (bet the flipped side): n=1, 0 wins, −$3.57.
+- Feature total: **4/11, net −$17.69** = the entire $57→$40 drawdown of Jul 15–16.
+- OOS check of "bet the corrected/reversal side instead": 109 deduped windows,
+  IS EV/$ +0.39 → **OOS −0.10**, median bet −1.00, max loss streak 19 → longshot
+  mirage; the market prices reversals fairly. BOTH sides of a fighting window are −EV
+  → the correct action is SKIP (legacy path at clean_bot.py:1473).
+
+**Change:** `.env` on Ireland EC2 (backup `.env.bak_dirvote_off`):
+```bash
+CLEAN_LATE_DIR_VOTE=false
+CLEAN_LATE_REV_AS_DIR=false
+```
+Startup banner confirms `dirVote=off/revAsDir=off`. Fighting windows now log
+`[LATE SKIP] … reverse-underway …` and skip. Clean 55–70c entries unaffected
+(~15/day). Trades/day impact: −2–4, all from the measured −EV subset.
+
+**Meter at change:** `[TRACK:late] 18/29=62% | EV/$ −0.096` (n=29). Deal: the clean
+core re-audits to n≥40; green (≥+0.03) → auto-scale; red (≤−0.03) → verdict retires
+it and that stands.
+
+### Rollback
+```bash
+CLEAN_LATE_DIR_VOTE=true
+CLEAN_LATE_REV_AS_DIR=true
+# or: cp .env.bak_dirvote_off .env  (then restart dance)
+```
+
 ## v1.58.3 — 2026-07-14 — log late ENGINE RETIRED skips (owner reset)
 **Tag:** `cleanbot-v1.58.3`
 
