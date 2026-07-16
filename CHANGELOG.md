@@ -10,6 +10,31 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## 2026-07-16 — NEW: arb_executor.py — live pair-arb engine (owner-approved caps)
+**New process** on Ireland EC2 (alongside clean_bot; NOT in watchdog yet) · **Status:** LIVE 16:22 UTC
+
+**Basis:** arb_monitor measured **990 net-positive pair-arbs in 21 days** (~47/day, avg
++2.0c/pair, median +1.2c, max +36c — all AFTER the 7% taker fee). Buy UP+DOWN when the
+combined ask < $1 after fees → one side redeems $1 at resolution → profit locked at entry,
+zero directional risk. Only loss mode is legging (leg B unfillable → sell leg A back).
+
+**Mechanics:** FOK both legs, scarcer-depth leg first; leg B must still lock >= +0.5c/pair
+at fresh ask (3 attempts) else immediate FOK-sell unwind of leg A; depth-sized entries
+(min 5 pairs); telegram ping per lock; `arb_state.json` daily counters.
+
+**Owner-approved caps:** min edge +1.5c/pair · max $6/arb · max 12 locks/day ·
+$2/day legging-loss stop · $15 USDC reserve for clean_bot · kill file `~/v3-bot/.arb_stop`.
+Worst realistic day = −$2 then self-halt.
+
+**Also:** arb_monitor.py patched to log `FILLABLE=N pairs` (both-leg depth at flagged
+prices) and restarted — it had been hung since the Jul 14 Ireland migration.
+
+### Rollback
+```bash
+ssh ubuntu@34.255.2.158 'touch ~/v3-bot/.arb_stop'   # instant halt (process keeps logging)
+# or kill: ps aux | grep "[a]rb_executor.py" | awk "{print \$2}" | xargs kill
+```
+
 ## 2026-07-16 — CONFIG: late direction-correction OFF (dirVote + revAsDir)
 **Env-only change** (no code, no version bump) · **Branch:** `yirok-cleanbot-grok` · **Status:** LIVE 15:29 UTC
 
