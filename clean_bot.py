@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.58.3"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.59.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -172,6 +172,14 @@ class Cfg:
     late_coins: tuple = tuple(c for c in os.getenv("CLEAN_LATE_COINS", "SOL,ETH").split(",") if c)  # v1.53: drop BTC (late 55-70 EV≈0); SOL/ETH carry the edge
     late_t_min: float = float(os.getenv("CLEAN_LATE_T_MIN", "60"))    # last-window band (matches the shadow-capture zone)
     late_t_max: float = float(os.getenv("CLEAN_LATE_T_MAX", "210"))
+    # v1.59: FIXED-TIME evaluation — the shadow edge (n=295 all/89 OOS, EV/$ +0.114/+0.070)
+    # was measured at an unconditional ~195s snapshot. Live "first moment criteria pass"
+    # triggering buys short-term extremes (adverse selection) and ran -EV while the same
+    # windows at fixed time were +EV. One evaluation per window at first tick <= eval_trem;
+    # no re-triggering later in the window, no chasing below eval_floor (restart/lag guard).
+    late_eval_once: bool = os.getenv("CLEAN_LATE_EVAL_ONCE", "on").lower() in ("1", "true", "yes", "on")
+    late_eval_trem: float = float(os.getenv("CLEAN_LATE_EVAL_TREM", "195"))
+    late_eval_floor: float = float(os.getenv("CLEAN_LATE_EVAL_FLOOR", "150"))
     late_min_ask: float = float(os.getenv("CLEAN_LATE_MIN_ASK", "0.55"))
     # v1.56: 0.68 (was 0.66). Overblock audit: ask 66-70 under same filters still +EV; 0.68 = middle step.
     # ROLLBACK: CLEAN_LATE_MAX_ASK=0.66
@@ -380,6 +388,7 @@ class CleanBot:
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
         self._nc_logged = set()                 # throttle [NO CONFIRM] logs (per window)
+        self._late_evaled = set()               # v1.59: one fixed-time late decision per window
         self._research = {}                     # (coin,ws) -> research row pending resolution
         self._research_seen = set()             # one research row per window
         self.model = None                       # calibrated P(drift wins) model (v1.6)
@@ -1367,6 +1376,16 @@ class CleanBot:
         t_rem = ws + 900 - now
         if not (CFG.late_t_min <= t_rem <= CFG.late_t_max):
             return
+        # v1.59 fixed-time evaluation: ONE unconditional decision per window at ~eval_trem,
+        # mirroring how the shadow edge was measured. Kills first-crossing adverse selection.
+        if CFG.late_eval_once:
+            if t_rem > CFG.late_eval_trem:
+                return                                   # not decision time yet
+            if key in self._late_evaled:
+                return                                   # already decided this window
+            if t_rem < CFG.late_eval_floor:
+                return                                   # missed the slot (lag/restart) — no chasing
+            self._late_evaled.add(key)                   # decide NOW, whatever the outcome
         strike = float(info.threshold_price or 0)
         strike_src = str(info.strike_source or "")
         if not strike_src.startswith("chainlink"):

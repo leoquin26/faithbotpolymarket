@@ -10,6 +10,42 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.59.0 — 2026-07-16 — late REBUILT: fixed-time evaluation (kills trigger adverse selection)
+**Tag:** `cleanbot-v1.59.0` · **Status:** LIVE 19:18 UTC · late latch reset + late `recent_ev` cleared (fresh audition of a structurally different entry rule)
+
+**Discovery (owner demanded improve-not-retire; full shadow mine of 3,711 late windows):**
+evaluating every in-band window ONCE at an unconditional ~195s snapshot is +EV — including
+during the exact days the live engine bled:
+- ALL: n=295, WR 72.9% vs BE 65.1% → **EV/$ +0.114**
+- OOS (last 30%, = Jul 14–16 losing days): n=89, WR 69.7% vs BE 64.8% → **EV/$ +0.070**
+- 65–70c: OOS WR 75.9% vs BE 67.8% → +0.123 · 60–65c: OOS +0.041 · **55–60c: negative both halves**
+- momentum-opposing windows were FINE at fixed time (OOS +0.132) → confirms the dir-vote
+  feature (killed this morning) was solving a non-problem created by the trigger itself.
+
+**Root cause of live −EV vs shadow +EV:** live entered at the FIRST scan tick where criteria
+passed anywhere in t_rem 60–210s → systematically buys short-term extremes (reversal bait),
+plus dir-feature deviations and retry price-chasing. The shadow's fixed-time decision has no
+trigger bias. Same signal, different clock = the whole edge.
+
+**Changes:**
+1. `late_eval_once` (on): ONE decision per (coin,window) at first tick with t_rem ≤
+   `CLEAN_LATE_EVAL_TREM` (195s); no re-trigger later; no entry below `CLEAN_LATE_EVAL_FLOOR`
+   (150s) — no chasing after lag/restarts. `self._late_evaled` per-window latch.
+2. `.env` `CLEAN_LATE_MIN_ASK=0.60` (was 0.55) — 55–60c measured negative IS and OOS.
+3. dirVote/revAsDir stay OFF; night sleep, corr guards, min-size governance unchanged.
+
+**Honesty (verifier gate):** OOS n=89 ✓, EV/$>0 ✓, but z = 0.97 (all) / 1.27 (65–70c) — **below
+the 1.64 bar**. This deploy is therefore an AUDITION at exchange-min size under the standard
+pre-registered verdict (n≥40: ≥+0.03 scale / ≤−0.03 retire, latch stands). Expected pace
+~15–19 evaluations/day → verdict in ~2–3 days.
+
+### Rollback
+```bash
+CLEAN_LATE_EVAL_ONCE=off   # restore first-crossing trigger
+CLEAN_LATE_MIN_ASK=0.55
+# or git checkout cleanbot-v1.58.3 -- clean_bot.py
+```
+
 ## 2026-07-16 — LATE ENGINE RETIRED (owner-executed, math-locked verdict)
 **State change** 17:44 UTC: `engine_off.late=true` (system's own latch; survives bot saves).
 
