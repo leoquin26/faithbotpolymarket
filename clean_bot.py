@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.59.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.59.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -2139,8 +2139,9 @@ class CleanBot:
             # Does not replace Tor for order routing; only fills sparse RTDS tick history.
             import chainlink_onchain as _cl_oc
             _cl_oc.start()
+            _clob_route = "proxied" if os.getenv("HTTPS_PROXY") else "direct (native IP)"
             logger.info("[CHAINLINK-ONCHAIN] densify poller started (1s RPC, no proxy) "
-                        "— improves late reverse-underway; CLOB remains proxied")
+                        f"— improves late reverse-underway; CLOB {_clob_route}")
         except Exception as e:
             logger.warning(f"[CHAINLINK-ONCHAIN] start failed ({e}) — roc may stay sparse")
         time.sleep(90)

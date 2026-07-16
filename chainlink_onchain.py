@@ -150,8 +150,9 @@ def _poll_once():
 
 
 def _run():
+    _clob_route = "proxied" if os.getenv("HTTPS_PROXY") else "direct (native IP)"
     logger.info(f"[CHAINLINK-ONCHAIN] poller started (Polygon aggregators, "
-                f"poll={_POLL_SEC}s — densifies CL path for roc; CLOB still proxied)")
+                f"poll={_POLL_SEC}s — densifies CL path for roc; CLOB {_clob_route})")
     while True:
         try:
             _poll_once()

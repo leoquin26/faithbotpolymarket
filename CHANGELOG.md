@@ -10,6 +10,16 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.59.1 — 2026-07-16 — log truth: CLOB route reported dynamically
+**Tag:** `cleanbot-v1.59.1` · cosmetic/observability
+
+Owner caught startup logs claiming "CLOB still proxied / remains proxied" — stale
+hardcoded strings from the v1.57 US/Tor era. Verified live: `USE_TOR=false`, zero proxy
+vars in the bot process environment, direct egress as 34.255.2.158. Both messages now
+report the actual route from `HTTPS_PROXY` ("direct (native IP)" on Ireland). No
+behavior change.
+
+
 ## v1.59.0 — 2026-07-16 — late REBUILT: fixed-time evaluation (kills trigger adverse selection)
 **Tag:** `cleanbot-v1.59.0` · **Status:** LIVE 19:18 UTC · late latch reset + late `recent_ev` cleared (fresh audition of a structurally different entry rule)
 
