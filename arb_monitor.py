@@ -40,8 +40,19 @@ while True:
                 best[c]["taker_net"] = max(best[c]["taker_net"], net)
                 if net > MIN_NET:
                     taker_arbs += 1
+                    # fillable size: shares available at (or better than) the flagged asks on BOTH legs
+                    pairs = 0.0
+                    try:
+                        ud = om.get_full_depth(info.up_token_id)
+                        dd = om.get_full_depth(info.down_token_id)
+                        u_sh = sum(s for p, s in ud.get("asks", []) if p <= ua + 1e-9)
+                        d_sh = sum(s for p, s in dd.get("asks", []) if p <= da + 1e-9)
+                        pairs = min(u_sh, d_sh)
+                    except Exception:
+                        pass
                     logger.info(f"[TAKER-BUY] {c} UP@{ua:.2f}+DOWN@{da:.2f} gross={1-ua-da:+.3f} "
-                                f"fee={FEE(ua)+FEE(da):.3f} NET=${net:+.3f}/pair")
+                                f"fee={FEE(ua)+FEE(da):.3f} NET=${net:+.3f}/pair "
+                                f"FILLABLE={pairs:.0f}pairs (${net*pairs:+.2f} total)")
             # TAKER sell-both (mint set, sell to bids): collect bids - fees, owe $1
             if ubid and dbid:
                 ubid, dbid = float(ubid), float(dbid)
