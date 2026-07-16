@@ -10,6 +10,23 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## 2026-07-16 — LATE ENGINE RETIRED (owner-executed, math-locked verdict)
+**State change** 17:44 UTC: `engine_off.late=true` (system's own latch; survives bot saves).
+
+At n=30 the rolling meter read 18/30=60% WR, **EV/$ −0.124** — to clear the pre-registered
++0.03 bar at n≥40 the next 10 trades needed ≈ +$17 net ≈ **10 straight wins (p≈1%)**.
+Retirement was mathematically certain; executing it early saved ~10 formality trades.
+The final straw was a CLEAN loss (17:26 SOL DOWN, drift −15.7bps, roc −21bps agreeing,
+61c → lost): the strongest setup class failing — not the (already killed) dir feature.
+
+Day total 2026-07-16: **−$18.78**, bankroll $37.20. All directional engines now OFF
+(early: retired Jul 10 · late: retired Jul 16 · voldiv: off). clean_bot keeps running
+for research capture + position resolution only.
+
+**Reverse (owner only):** set `engine_off.late=false` in `clean_bot_state.json` with the
+bot stopped (pause dance), then restart. Do NOT reverse without a structural change —
+two audits (n=41 Jul 14, n=30 Jul 16) both landed red.
+
 ## 2026-07-16 — NEW: arb_executor.py — live pair-arb engine (owner-approved caps)
 **New process** on Ireland EC2 (alongside clean_bot; NOT in watchdog yet) · **Status:** LIVE 16:22 UTC
 
