@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.59.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.60.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -180,6 +180,16 @@ class Cfg:
     late_eval_once: bool = os.getenv("CLEAN_LATE_EVAL_ONCE", "on").lower() in ("1", "true", "yes", "on")
     late_eval_trem: float = float(os.getenv("CLEAN_LATE_EVAL_TREM", "195"))
     late_eval_floor: float = float(os.getenv("CLEAN_LATE_EVAL_FLOOR", "150"))
+    # v1.60 HIBAND: confirmed 80-90c favorites at the same fixed decision time. Study
+    # (12d, fixed-time): 80-94c blend afterFee -0.005 (never trade the blend), but
+    # roc-agreeing >=3bps subset afterFee +0.017 all / +0.011 OOS (both halves positive,
+    # z<1 = audition-grade). 90c+ confirmed is -0.05 -> hard cap 0.90. Separate engine
+    # tag "hiband": own TRACK meter + own n>=40 verdict so a thin edge can't drag the
+    # core 60-70c band's verdict. Flat exchange-min size while auditioning.
+    late_hiband: bool = os.getenv("CLEAN_LATE_HIBAND", "on").lower() in ("1", "true", "yes", "on")
+    hiband_min_ask: float = float(os.getenv("CLEAN_HIBAND_MIN_ASK", "0.80"))
+    hiband_max_ask: float = float(os.getenv("CLEAN_HIBAND_MAX_ASK", "0.90"))
+    hiband_roc_bps: float = float(os.getenv("CLEAN_HIBAND_ROC_BPS", "3"))
     late_min_ask: float = float(os.getenv("CLEAN_LATE_MIN_ASK", "0.55"))
     # v1.56: 0.68 (was 0.66). Overblock audit: ask 66-70 under same filters still +EV; 0.68 = middle step.
     # ROLLBACK: CLEAN_LATE_MAX_ASK=0.66
@@ -382,8 +392,8 @@ class CleanBot:
         self.day_results = []                   # today's (won, pnl, stake, engine) — for the midnight [SCORE] board
         # SELF-GOVERNANCE (v1.47): the engine executes its own pre-registered verdicts at n>=40
         # per engine — EV/$ >= +0.03 scale up (x2, then x3 cap), -0.03..+0.03 hold, <= -0.03 OFF.
-        self.engine_mult = {"early": 1.0, "late": 1.0, "voldiv": 1.0}   # size multiplier per engine
-        self.engine_off = {"early": False, "late": False, "voldiv": False}  # retired by verdict
+        self.engine_mult = {"early": 1.0, "late": 1.0, "voldiv": 1.0, "hiband": 1.0}   # size multiplier per engine
+        self.engine_off = {"early": False, "late": False, "voldiv": False, "hiband": False}  # retired by verdict
         self.killed = False                     # kill-floor latch (v1.43.1): stays True once fired, owner reset only
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
@@ -1526,17 +1536,28 @@ class CleanBot:
             min_ask_use = float(CFG.late_min_ask)
             dir_note = (dir_note + " fallback_late").strip()
             corrected = False
+        hiband = False
         if not ask or not (min_ask_use <= float(ask) <= max_ask_use):
-            # v1.58.1: never silent — was the main "are we missing windows?" confusion
-            if (coin, ws, "askband") not in self._nc_logged:
-                after_fb = " after dir-fallback" if "fallback" in dir_note else ""
-                logger.info(
-                    f"[LATE SKIP] {coin} {direction} ask_out_of_band{after_fb} "
-                    f"ask={ask} need={min_ask_use:.2f}-{max_ask_use:.2f} "
-                    f"lead={lead_state} fight={int(fighting)}"
-                )
-                self._nc_logged.add((coin, ws, "askband"))
-            return
+            # v1.60 HIBAND: 80-90c favorite WITH agreeing >=3bps roc — the only measured
+            # +EV subset above the core band. Separate engine tag/verdict; min size.
+            _hb_ok = (CFG.late_hiband and not self.engine_off.get("hiband")
+                      and not corrected and ask is not None
+                      and CFG.hiband_min_ask <= float(ask) <= CFG.hiband_max_ask
+                      and roc_bps is not None and abs(roc_bps) >= CFG.hiband_roc_bps
+                      and ((roc_bps > 0) == is_up))
+            if _hb_ok:
+                hiband = True
+            else:
+                # v1.58.1: never silent — was the main "are we missing windows?" confusion
+                if (coin, ws, "askband") not in self._nc_logged:
+                    after_fb = " after dir-fallback" if "fallback" in dir_note else ""
+                    logger.info(
+                        f"[LATE SKIP] {coin} {direction} ask_out_of_band{after_fb} "
+                        f"ask={ask} need={min_ask_use:.2f}-{max_ask_use:.2f} "
+                        f"lead={lead_state} fight={int(fighting)}"
+                    )
+                    self._nc_logged.add((coin, ws, "askband"))
+                return
         # EXECUTION (v1.46 + v1.50): TAKER by default — FOK at ask.
         if CFG.late_taker:
             px_ord = round(float(ask), 2)
@@ -1552,15 +1573,17 @@ class CleanBot:
             px_ord = round(max(0.02, float(ask) - offset), 2)
             otype = OrderType.GTC
             is_taker = False
-        if self.engine_off.get("late"):              # retired by its own 40-trade verdict (v1.47)
+        if not hiband and self.engine_off.get("late"):   # retired by its own 40-trade verdict (v1.47)
             # Owner must clear engine_off.late in clean_bot_state.json (and ideally reset
             # late recent_ev) — otherwise every late setup is a silent no-op.
+            # (hiband has its own engine_off gate at eligibility time.)
             if (coin, ws, "retired") not in self._nc_logged:
                 logger.info(f"[LATE SKIP] {coin} late ENGINE RETIRED (self-gov n>=40 EV/$<=-0.03) "
                             f"— owner reset engine_off.late + clear late recent_ev to re-audition")
                 self._nc_logged.add((coin, ws, "retired"))
             return
-        shares = self._late_size_shares(coin, px_ord, lead_state=lead_state)
+        # hiband audition = flat exchange-min shares, no cmult/compound until its own verdict
+        shares = CFG.shares if hiband else self._late_size_shares(coin, px_ord, lead_state=lead_state)
         # CORRELATION GUARD (v1.39.1)
         if self._corr_sibling(coin, ws, direction):
             return
@@ -1584,6 +1607,7 @@ class CleanBot:
                     f"cmult={_cm:.2f}, lead={lead_state}, size={_cmp}, lateEV={_evs}, "
                     f"roc60={_roc}, feed={spot_src}/{strike_src}, "
                     f"BEwr={_be*100:.0f}% need={_cover:.2f}W/L) T={t_rem:.0f}s [AUDITION]"
+                    + (" [HIBAND]" if hiband else "")
                     + (f" [{dir_note}]" if dir_note else "")
                     + (" [DRY]" if CFG.dry else ""))
         if CFG.dry:
@@ -1592,7 +1616,7 @@ class CleanBot:
             self.positions[f"{coin}:{ws}"] = {"coin": coin, "ws": ws, "dir": direction,
                                               "entry": px_ord, "shares": shares, "token": token,
                                               "status": "filled", "sim": True, "late": True,
-                                              "taker": is_taker,
+                                              "hiband": hiband, "taker": is_taker,
                                               "buy_fee": round(_fee, 4)}
             logger.info(f"[SIM FILL] {coin} {direction} @ {px_ord*100:.0f}c x{shares} (paper, late, {_how})")
             self._save()
@@ -1640,7 +1664,8 @@ class CleanBot:
                         self.positions[f"{coin}:{ws}"] = {
                             "coin": coin, "ws": ws, "dir": direction, "token": token,
                             "entry": px_ord, "shares": sh, "status": "filled",
-                            "late": True, "taker": True, "buy_fee": round(fee, 4)}
+                            "late": True, "hiband": hiband, "taker": True,
+                            "buy_fee": round(fee, 4)}
                         tag = "FILLED TAKER" if attempt == 0 else "FILLED TAKER RETRY"
                         logger.info(f"[{tag}] LATE {coin} {direction} @ {px_ord*100:.0f}c "
                                     f"x{sh} fee=${fee:.3f}")
@@ -1678,7 +1703,7 @@ class CleanBot:
                     self.open_orders[oid] = {"coin": coin, "ws": ws, "dir": direction,
                                              "token": token, "price": px_ord,
                                              "shares": shares, "ts": now, "late": True,
-                                             "taker": False}
+                                             "hiband": hiband, "taker": False}
                     logger.info(f"[GTC] resting LATE {coin} {direction} @ {px_ord*100:.0f}c "
                                 f"x{shares} oid={str(oid)[:10]}")
                 else:
@@ -1807,6 +1832,7 @@ class CleanBot:
             # v1.45.1: carry the ENGINE TAG through the fill (was dropped → every live
             # late/voldiv fill got scored as 'early' on the per-engine boards)
             "late": o.get("late", False), "voldiv": o.get("voldiv", False),
+            "hiband": o.get("hiband", False),
             "taker": is_taker, "buy_fee": round(fee, 4)}
         tag = "FILLED-RACE" if race else ("FILLED-PARTIAL" if partial else "FILLED")
         logger.info(f"[{tag}] {o['coin']} {o['dir']} @ {o['price']*100:.0f}c x{sh}"
@@ -2049,7 +2075,8 @@ class CleanBot:
             # EV/$ staked is the real compounding rate. Each engine gets its own scoreboard so a
             # good engine can't be hidden by a bad one — and each faces its own pre-registered
             # verdict at 40 trades: EV>=+0.03 scale up | -0.03..+0.03 keep min-size | <=-0.03 OFF.
-            _tag = "late" if p.get("late") else ("voldiv" if p.get("voldiv") else "early")
+            _tag = ("hiband" if p.get("hiband") else
+                    "late" if p.get("late") else ("voldiv" if p.get("voldiv") else "early"))
             # stake = entry notional + buy fee (true dollars at risk for EV/$)
             _stake = entry * p.get("shares", CFG.shares) + float(p.get("buy_fee") or 0.0)
             _rec = (1 if won else 0, pnl, _stake, _tag)

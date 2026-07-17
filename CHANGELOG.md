@@ -10,6 +10,35 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.60.0 — 2026-07-17 — HIBAND: confirmed 80-90c engine (separate tag + verdict)
+**Tag:** `cleanbot-v1.60.0` · **Status:** LIVE 14:22 UTC
+
+Owner: "1 bet in hours = still overblocking." Regime check: 44h of runaway favorites —
+142/151 fixed-time evals today priced 80c-96c+; only 5 in-band 60-70c windows existed
+(1 entered → WON +$1.72, first v1.59 fill, a night window). The bot wasn't overblocking
+the core band — the raw material vanished. So the 80-94c zone was re-measured for a
+tradeable subset:
+- 80-94c blend: afterFee **-0.005** (n=1092) → never trade the blend (unchanged)
+- **roc-confirmed (agreeing >=3bps) 80-90c: afterFee +0.017 all / +0.011 OOS (both
+  halves positive, z<1)** → audition-grade
+- confirmed 90-94c: **-0.05** → hard cap at 0.90 · conf+er and conf+d10: halves
+  contradict → rejected
+
+**Implementation:** in `_late_entry`, when the core band rejects the ask, a `hiband`
+entry fires iff 0.80<=ask<=0.90, roc agrees >=3bps, not dir-corrected, engine_off.hiband
+clear. Same fixed-time eval slot. Flat exchange-min shares (no cmult/compound). New
+engine tag `hiband` end-to-end: positions (FOK + sim + GTC + check_orders rebuild —
+the v1.45.1 tag-drop lesson), `[TRACK:hiband]` meter, own n>=40 verdict, engine_off/
+engine_mult defaults (state `update()` merge keeps old files valid). `[HIBAND]` marker
+on entry lines. Expected +15-20 evals/day in runaway regimes — active precisely when
+the core band starves.
+
+### Rollback
+```bash
+CLEAN_LATE_HIBAND=off
+# or git checkout cleanbot-v1.59.1 -- clean_bot.py
+```
+
 ## 2026-07-17 — CONFIG: late frequency expansion (BTC back + 24h coverage)
 **Env-only** (`.env.bak_freq`): `CLEAN_LATE_COINS=SOL,ETH,BTC` · `CLEAN_LATE_NIGHT_OFF=off`.
 
