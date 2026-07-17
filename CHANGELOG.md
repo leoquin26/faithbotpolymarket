@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## 2026-07-17 — CONFIG: late frequency expansion (BTC back + 24h coverage)
+**Env-only** (`.env.bak_freq`): `CLEAN_LATE_COINS=SOL,ETH,BTC` · `CLEAN_LATE_NIGHT_OFF=off`.
+
+Owner demanded regular trades, not rare setups. Full fixed-time expansion study
+(re-measured under the v1.59 clock; the old rejections used the broken trigger):
+- 50-55c: −0.180 · 55-60c: −0.036 → stay CUT
+- **60-70c: +0.134 (n=210, z=2.75), OOS +0.106** — THE edge, ~17-20 evals/day pooled
+- 70-80c: −0.014 (n=415) · 80-90c: +0.016 (z=0.85, ≈fees) · 90c+: −0.001 → churn, NOT added
+- mid-window 300s/450s slots: unstable/thin OOS → NOT added
+- BTC 60-70c pooled +0.155 (per-coin halves noisy; pooled edge carries all 3 coins) → ADDED
+- night 00-07 Lima: +0.056 (z=0.70, ~+0.03 after fees), was ≈0 under old trigger → OPENED
+  (weak-positive, adds ~6 evals/day; the n≥40 verdict judges the blend)
+
+Expected pace ~18-20 evaluations/day 24/7. Same audition: min size, verdict at n≥40.
+
 ## v1.59.1 — 2026-07-16 — log truth: CLOB route reported dynamically
 **Tag:** `cleanbot-v1.59.1` · cosmetic/observability
 
