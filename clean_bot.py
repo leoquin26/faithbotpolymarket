@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.60.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.60.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -188,7 +188,7 @@ class Cfg:
     # core 60-70c band's verdict. Flat exchange-min size while auditioning.
     late_hiband: bool = os.getenv("CLEAN_LATE_HIBAND", "on").lower() in ("1", "true", "yes", "on")
     hiband_min_ask: float = float(os.getenv("CLEAN_HIBAND_MIN_ASK", "0.80"))
-    hiband_max_ask: float = float(os.getenv("CLEAN_HIBAND_MAX_ASK", "0.90"))
+    hiband_max_ask: float = float(os.getenv("CLEAN_HIBAND_MAX_ASK", "0.89"))  # v1.60.1: 0.90 exactly falls in the measured NEGATIVE 90-94c bucket — cap below it
     hiband_roc_bps: float = float(os.getenv("CLEAN_HIBAND_ROC_BPS", "3"))
     late_min_ask: float = float(os.getenv("CLEAN_LATE_MIN_ASK", "0.55"))
     # v1.56: 0.68 (was 0.66). Overblock audit: ask 66-70 under same filters still +EV; 0.68 = middle step.
@@ -481,7 +481,7 @@ class CleanBot:
             # DAILY SCOREBOARD (v1.44): per-engine verdict for the ending day, then reset.
             if self.day_results:
                 logger.info(f"[SCORE] {self.day} per-engine:")
-                for tag in ("early", "late", "voldiv"):
+                for tag in ("early", "late", "voldiv", "hiband"):
                     sub = [r for r in self.day_results if r[3] == tag]
                     if sub:
                         logger.info(self._score_line(sub, tag))
@@ -1386,6 +1386,11 @@ class CleanBot:
         t_rem = ws + 900 - now
         if not (CFG.late_t_min <= t_rem <= CFG.late_t_max):
             return
+        # v1.60.1: prune per-window bookkeeping sets (they grew unbounded — slow leak)
+        if len(self._late_evaled) > 300:
+            _cut = now - 7200
+            self._late_evaled = {k for k in self._late_evaled if k[1] >= _cut}
+            self._nc_logged = {k for k in self._nc_logged if k[1] >= _cut}
         # v1.59 fixed-time evaluation: ONE unconditional decision per window at ~eval_trem,
         # mirroring how the shadow edge was measured. Kills first-crossing adverse selection.
         if CFG.late_eval_once:

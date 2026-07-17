@@ -420,7 +420,7 @@ def engines_state(st):
     mult = st.get("engine_mult") or {}
     off = st.get("engine_off") or {}
     out = []
-    for tag in ("early", "late", "voldiv"):
+    for tag in ("early", "late", "voldiv", "hiband"):
         rows = [x for x in ev if len(x) > 3 and x[3] == tag]
         n = len(rows)
         w = sum(x[0] for x in rows)

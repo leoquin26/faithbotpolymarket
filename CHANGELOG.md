@@ -10,6 +10,32 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.60.1 — 2026-07-17 — audit pass: hiband cap fix + governance visibility + ops script
+**Tag:** `cleanbot-v1.60.1` · **Status:** LIVE 19:04 UTC
+
+Full audit of all engines + recent changes (owner: "improve the code, improve the process").
+
+**Fixed (real bugs):**
+1. **hiband cap was 0.90 INCLUSIVE** — 0.90 exactly belongs to the measured negative
+   90-94c bucket (−0.05 confirmed). Today's SOL@90c entry was in the banned zone (won by
+   luck). `CLEAN_HIBAND_MAX_ASK` default → **0.89**.
+2. **hiband invisible to governance surfaces**: midnight `[SCORE]` board and the dashboard
+   `engines_state` both hardcoded (early,late,voldiv) → hiband added to both (dash now
+   shows all 4 engines; verified live).
+3. **Slow memory leak**: `_late_evaled` / `_nc_logged` per-window sets grew unbounded →
+   pruned (>300 entries → drop windows older than 2h; all entry shapes carry ws at idx 1).
+
+**Audited clean (no change needed):** `traded` persists across restarts (no double-bet
+window); log rotation 20MB active; corr/exposure guards apply to hiband; tag carried
+through every fill path; state `update()` merge back-compatible.
+
+**Ops:**
+- **`_restart_bot.sh`** — canonical restart dance (anchored pkill, late-eval-slot wait,
+  watchdog pause, 1-proc verify). Never ad-hoc restart again (Jul 16 double-bot lesson).
+- **arb_executor STOPPED** — final verdict: pair-arb flags were phantoms of the old
+  US/Tor stale-book path. 30h clean Ireland data: 1 marginal flag (+0.5c), FILLABLE=0.
+  Cost of experiment: $0 (never traded). Monitor stays on for the record.
+
 ## v1.60.0 — 2026-07-17 — HIBAND: confirmed 80-90c engine (separate tag + verdict)
 **Tag:** `cleanbot-v1.60.0` · **Status:** LIVE 14:22 UTC
 
