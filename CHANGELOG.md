@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## 2026-07-18 — NEW: hourly_capture.py — shadow capture for HOURLY Up/Down (read-only)
+**Status:** LIVE 06:31 UTC · NO ORDERS — pure research data collection
+
+The audit identified Polymarket hourly Up/Down (BTC/ETH/SOL/XRP, +96 windows/day,
+BTC $48.8K/window, 1c spreads, Binance 1h-candle settlement) as the real frequency
+expansion. Capture writes `hourly_research.csv` every 30s: Binance spot/candle-open
+drift + both-side book tops + auto-resolved winners (close>=open -> UP).
+Market discovery via deterministic event slugs (`bitcoin-up-or-down-july-18-2026-2am-et`
+pattern, EDT/EST fallback) — gamma listings are stale-polluted, direct slug fetch exact.
+Verified live: 4/4 markets found, books 1c spreads (BTC 0.41/0.40), winners resolving.
+Plan: ~5-7 days of data -> run the fixed-time x band grid on 1h windows -> deploy only
+what passes IS/OOS + fees, as a separate engine with its own verdict. XRP legal here
+(Binance strike, not the tainted Chainlink feed).
+
 ## 2026-07-18 — DEEP AUDIT (21-agent fleet) + CONFIG: fade-skip OFF
 **Env-only** (`.env.bak_fade`): `CLEAN_LATE_SKIP_FADING=off` · LIVE 06:17 UTC via `_restart_bot.sh`
 
