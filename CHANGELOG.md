@@ -10,6 +10,39 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## 2026-07-18 — DEEP AUDIT (21-agent fleet) + CONFIG: fade-skip OFF
+**Env-only** (`.env.bak_fade`): `CLEAN_LATE_SKIP_FADING=off` · LIVE 06:17 UTC via `_restart_bot.sh`
+
+Owner demanded a deep review after a 7h gap between bets. 5-miner parallel audit
+(funnel / gate counterfactuals / timing grid / dead-zone rescue / market universe)
++ adversarial verification.
+
+**The 7h gap was CORRECT:** 81/81 windows evaluated, zero missed cycles; 48 had NO book;
+betting all 33 priced skips = **−$14.92 after fees**; only 3 in-band windows existed
+(net −$0.48). Availability 6.1% last-3d vs 6.9% prior-10 → scarcity is the norm, not a
+malfunction. hiband supply actually ROSE (3.7%→6.0%).
+
+**Gate counterfactuals:** every gate earns its keep (reverse-underway kills = −$17.85,
+thin-flip −$4.23, no-early −0.192 EV/$, out-of-band kills flat with ZERO core-band
+material) EXCEPT **fading-leader**: flagged independently by two miners, then reproduced
+inline: fade-killed 60-70c windows n=70, WR 74.3% vs BE 66.5%, **after-fee +0.096**
+(IS/OOS +0.050/+0.204; 50/50 +0.051/+0.141; 8/14 days positive; siblings 55-60c −0.103 /
+70-80c −0.021 → band structure, not lone spike). The v1.39 "fade=toxic" result was an
+artifact of the OLD first-crossing trigger. Re-admitted → **~+3.5 core-band trades/day
+(+40% core volume)**. AUDITION-grade (z_OOS 1.42 < 1.64); the live n≥40 meter referees.
+
+**Tested and DEAD (do not revisit without new data):** timing grid 50 cells — t825 early
+strip refuted by verifiers (multiple comparisons + dies under 1-2c slippage; consistent
+with the early engine's LIVE failure); t120/240/525 cells are echoes of live edges.
+Dead-zone rescue 97 cells — 13 weak positives ≈ noise expectation; zones stay banned.
+Shadow-log candidates only: B×btcx-disagree×drift3-8 (+0.076, n=76), fade-gate deepening.
+
+**Market universe (the real frequency lever, future project):** HOURLY Up/Down
+BTC/ETH/SOL/XRP = +96 windows/day with REAL liquidity (BTC $48.8K/window, 1c spreads);
+strike = Binance 1h candle open (NOT Chainlink) → XRP re-entry lane dodging the tainted
+feed; requires new strike-capture + shadow research before any trading. 5m series huge
+volume but different microstructure; BNB/DOGE/HYPE 15m fail liquidity today.
+
 ## v1.60.1 — 2026-07-17 — audit pass: hiband cap fix + governance visibility + ops script
 **Tag:** `cleanbot-v1.60.1` · **Status:** LIVE 19:04 UTC
 
