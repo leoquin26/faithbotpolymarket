@@ -10,6 +10,20 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## 2026-07-18 — OPS: py-clob-client-v2 1.0.0 → 1.1.0 (Jul 24 CLOB change readiness)
+Owner flagged the Polymarket changelog: **Jul 24 04:00 UTC** rollout removes
+`transactionHashes` from `POST /order(s)` responses on FAK/FOK matches (replaced by
+`tradeIDs`). Our late engine trades FOK — direct exposure surface.
+
+**Exposure audit:** live code reads only `orderID` + `size_matched` (both unchanged);
+`transactionHashes` appears only in dead backups; retired neg-risk adapter address
+(Jul 17 retirement) only in backups. Installed SDK 1.0.0 had no internal
+transactionHash use either — but the changelog mandates the bump (PR py-clob-client-v2#101
+resolves hashes from tradeIDs), so upgraded to **1.1.0** (`pip --user
+--break-system-packages`), verified the bot's full import surface, restarted via
+`_restart_bot.sh`, CLOB client init clean. Rollback: `pip3 install --user
+--break-system-packages py-clob-client-v2==1.0.0` + restart.
+
 ## 2026-07-18 — NEW: hourly_capture.py — shadow capture for HOURLY Up/Down (read-only)
 **Status:** LIVE 06:31 UTC · NO ORDERS — pure research data collection
 
