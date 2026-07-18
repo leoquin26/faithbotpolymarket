@@ -197,8 +197,8 @@ def get_ticks(coin: str, seconds: float = 300.0, merge_onchain: Optional[bool] =
     """(ts, price) Chainlink-family ticks for the last `seconds`, oldest first.
 
     v1.57: merge RTDS stream + Polygon on-chain aggregator polls when enabled.
-    On-chain is same oracle family (not Binance). Polymarket CLOB still uses Tor/proxy;
-    on-chain RPC is direct (no proxy) by design.
+    On-chain is same oracle family (not Binance). On-chain RPC is direct (no proxy)
+    by design; CLOB route depends on env (direct native IP on Ireland since Jul 2026).
     """
     cutoff = time.time() - seconds
     c = coin.upper()

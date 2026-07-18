@@ -2162,8 +2162,9 @@ class CleanBot:
         binance_ws.start()
         try:
             chainlink_ws.start()                 # settlement-feed strike+spot (Polymarket = Chainlink)
+            _clob_route = "proxied" if os.getenv("HTTPS_PROXY") else "direct (native IP)"
             logger.info("[CHAINLINK] RTDS started — strike/spot settlement family "
-                        "(CLOB still uses Tor/proxy for geo; RTDS is Polymarket WS)")
+                        f"(RTDS is Polymarket WS; CLOB {_clob_route})")
         except Exception as e:
             logger.warning(f"[CHAINLINK] RTDS start failed ({e})")
         try:
