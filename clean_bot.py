@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.60.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.60.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -1657,11 +1657,21 @@ class CleanBot:
                     matched = float((res or {}).get("size_matched") or
                                     (res or {}).get("sizeMatched") or 0)
                     if matched <= 0 and oid:
-                        try:
-                            od = self.client.get_order(oid) or {}
-                            matched = float(od.get("size_matched") or od.get("sizeMatched") or 0)
-                        except Exception:
-                            pass
+                        # v1.60.2 CRITICAL: matching is async (Jul 24 pipeline, live early)
+                        # — a filled FOK can report matched=0 in the immediate response AND
+                        # in an instant get_order. Real double-fills observed on-chain
+                        # 2026-07-19 00:56 & 01:26 (both "no fill" prints filled ~2s later,
+                        # retry doubled the position, ledger tracked neither). POLL before
+                        # believing a miss; an accepted FOK is never "missed" instantly.
+                        for _poll in range(3):
+                            time.sleep(1.2)
+                            try:
+                                od = self.client.get_order(oid) or {}
+                                matched = float(od.get("size_matched") or od.get("sizeMatched") or 0)
+                            except Exception:
+                                matched = 0.0
+                            if matched > 0:
+                                break
                     if matched > 0:
                         sh = int(matched)
                         fee = _taker_buy_fee(px_ord, sh)

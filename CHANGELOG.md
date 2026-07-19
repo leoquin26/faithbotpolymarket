@@ -10,6 +10,30 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.60.2 — 2026-07-19 — CRITICAL: double-fill fix (async matching phantom-miss)
+**Tag:** `cleanbot-v1.60.2` · LIVE 03:18 UTC · env `CLEAN_LATE_FOK_RETRY=off` (`.env.bak_fokretry`)
+
+**OWNER CAUGHT IT** (bot logs could not): on-chain trades showed DOUBLE fills the ledger
+never recorded — BTC UP 00:45 win (2×5sh, $6.00, both "no fill" in the log!) and SOL UP
+01:15 win (2×5sh) [prior similar: Jul 15 21:11]. Log signature: FOK posts → response
+matched=0 → instant get_order also 0 → [LATE MISS] → retry → second real fill. Chain
+shows both filled 1-3s AFTER the miss prints.
+
+**Root cause:** matching turned ASYNC (the Jul 24 changelog pipeline, observed live
+early): order acceptance returns before the match lands, so instant matched reads are 0.
+The FOK retry then converts a phantom miss into a real double position that the bot
+does not track (position dict never written on "miss").
+
+**Fix (two layers):**
+1. Code: on matched=0 with an accepted oid, POLL get_order up to 3× over ~4s before
+   declaring a miss — an accepted FOK is never judged on an instant read.
+2. Env: `CLEAN_LATE_FOK_RETRY=off` — no re-posting while any prior order is unconfirmed.
+
+**Ledger impact of the orphans:** untracked BTC double +$4.00 (redeemed to wallet),
+untracked SOL double... (chain shows the second SOL pair also settled; wallet-truth
+absorbed via the chain-balance sync). Meters missed 2 samples (~1W/1L @60c, ≈neutral).
+Bankroll source-of-truth remains the on-chain sync — dollars are correct.
+
 ## 2026-07-18 — OPS: py-clob-client-v2 1.0.0 → 1.1.0 (Jul 24 CLOB change readiness)
 Owner flagged the Polymarket changelog: **Jul 24 04:00 UTC** rollout removes
 `transactionHashes` from `POST /order(s)` responses on FAK/FOK matches (replaced by
