@@ -34,6 +34,25 @@ untracked SOL double... (chain shows the second SOL pair also settled; wallet-tr
 absorbed via the chain-balance sync). Meters missed 2 samples (~1W/1L @60c, ≈neutral).
 Bankroll source-of-truth remains the on-chain sync — dollars are correct.
 
+## v1.60.3 — 2026-07-19 — deep signal review: sell-path async fix + observability + research floor 0
+**Tag:** `cleanbot-v1.60.3` · LIVE 06:52 UTC · env `CLEAN_RESEARCH_MIN_BPS=0` (`.env.bak_v1603`)
+
+Owner asked for a deep pass over code/signals. Findings:
+1. **`_close_position` (SELL) had the same async-matching bug** fixed on the buy side in
+   v1.60.2: instant matched=0 read on a filled FOK sell would leave the ledger holding
+   shares the wallet already sold (double-count at settlement). Never fired live
+   (0 exit events ever — active exits are rejected/idle) but it is a money path →
+   same 3×1.2s poll before trusting a miss.
+2. **Eval-slot misses were silent**: if the scan loop stalls past the 150s floor the
+   window silently went unevaluated. Now logs `[LATE EVAL MISSED]` (should be ~zero;
+   a cluster = scan-loop health problem).
+3. **Research capture floor 3bps → 0** (capture-only, no trading change): the audit
+   showed the drift>=3bps and thin-flip gates are UNMEASURABLE by construction because
+   the logger never records sub-3bps windows. Now they accrue data; re-audit in ~2 weeks.
+   Trading floors unchanged — sub-3bps remains untradeable until measured.
+Audited clean: `_roc_strict` (coverage-gated, None-not-zero), fixed-time gate ordering,
+tag propagation, corr guards, prune, state persistence, banner truthfulness.
+
 ## 2026-07-18 — OPS: py-clob-client-v2 1.0.0 → 1.1.0 (Jul 24 CLOB change readiness)
 Owner flagged the Polymarket changelog: **Jul 24 04:00 UTC** rollout removes
 `transactionHashes` from `POST /order(s)` responses on FAK/FOK matches (replaced by

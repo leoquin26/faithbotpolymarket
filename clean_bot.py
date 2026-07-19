@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.60.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.60.3"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -1399,7 +1399,14 @@ class CleanBot:
             if key in self._late_evaled:
                 return                                   # already decided this window
             if t_rem < CFG.late_eval_floor:
-                return                                   # missed the slot (lag/restart) — no chasing
+                # v1.60.3: never silent — a missed slot means the scan loop stalled
+                # (API hang / restart); count these, they should be ~zero.
+                if (coin, ws, "evalmiss") not in self._nc_logged:
+                    logger.warning(f"[LATE EVAL MISSED] {coin} slot passed unevaluated "
+                                   f"(t_rem={t_rem:.0f}s < floor {CFG.late_eval_floor:.0f}) "
+                                   f"— scan stall or restart; no chase by design")
+                    self._nc_logged.add((coin, ws, "evalmiss"))
+                return
             self._late_evaled.add(key)                   # decide NOW, whatever the outcome
         strike = float(info.threshold_price or 0)
         strike_src = str(info.strike_source or "")
@@ -1992,6 +1999,20 @@ class CleanBot:
                     OrderArgs(price=sell_px, size=sh, side=SELL, token_id=p["token"]),
                     PartialCreateOrderOptions(tick_size="0.01"), OrderType.FOK)
                 matched = float((res or {}).get("size_matched") or (res or {}).get("sizeMatched") or 0)
+                _oid = (res or {}).get("orderID") or (res or {}).get("orderId")
+                if matched <= 0 and _oid:
+                    # v1.60.3: async matching (same class as the v1.60.2 buy-side double-fill)
+                    # — a filled SELL can read matched=0 instantly; believing it would leave the
+                    # ledger holding shares the wallet already sold. Poll before trusting a miss.
+                    for _poll in range(3):
+                        time.sleep(1.2)
+                        try:
+                            od = self.client.get_order(_oid) or {}
+                            matched = float(od.get("size_matched") or od.get("sizeMatched") or 0)
+                        except Exception:
+                            matched = 0.0
+                        if matched > 0:
+                            break
                 if matched <= 0:
                     if why == "TIME":
                         logger.info(f"[EXIT-MISS] {p['coin']} {p['dir']} sell @ {sell_px*100:.0f}c "
