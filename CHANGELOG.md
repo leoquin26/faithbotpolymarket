@@ -34,6 +34,18 @@ untracked SOL double... (chain shows the second SOL pair also settled; wallet-tr
 absorbed via the chain-balance sync). Meters missed 2 samples (~1W/1L @60c, ≈neutral).
 Bankroll source-of-truth remains the on-chain sync — dollars are correct.
 
+## 2026-07-20 — CONFIG: stale $3.50 late cap raised to $10 (compound had already unlocked)
+**Env** (`.env.bak_maxusd`): `CLEAN_LATE_MAX_USD` 3.50 → 10 · LIVE 23:09 UTC
+
+The v1.54 audition-era absolute cap was silently overriding the pre-registered compound
+unlock: `cmpEV>0@n15` fired days ago (core late n=25, EV/$ +0.197 = 6.5× the +0.03 bar)
+but every bet was squashed back to exchange-min $3.25. With the cap at $10 the real
+governors take over: 8% Kelly base (10% past $70), coin mult, ×12% max_bet_pct ceiling,
+3-loss breaker, and the n≥40 engine_mult verdicts. Effective size now ~$5-7/bet; the
+imminent ×2 verdict will bind at the 12% ceiling and scale with the bankroll.
+NOTE for hiband verdict (~3-4 days): its branch sizes flat CFG.shares and ignores
+engine_mult — needs a code touch when its n≥40 fires.
+
 ## v1.60.3 — 2026-07-19 — deep signal review: sell-path async fix + observability + research floor 0
 **Tag:** `cleanbot-v1.60.3` · LIVE 06:52 UTC · env `CLEAN_RESEARCH_MIN_BPS=0` (`.env.bak_v1603`)
 
