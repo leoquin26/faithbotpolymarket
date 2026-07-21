@@ -46,6 +46,25 @@ is not displayed → `[LATE SKIP] book too thin` (an unfillable FOK collects no 
 Fail-open on depth-fetch errors. Preserves the earned sizing where liquidity exists and
 degrades gracefully to x5 where it does not.
 
+## v1.60.5 — 2026-07-21 — hiband verdict plumbing + hourly watchdog + first hourly signal
+**Tag:** `cleanbot-v1.60.5` · LIVE 17:06 UTC
+
+Owner asked "any improvement?" — three earned items executed, everything else stays
+on the evidence-gated queue:
+1. **hiband scaling plumbing:** its branch sized flat CFG.shares and ignored
+   `engine_mult` — the imminent n>=40 SCALE-UP verdict (n=22, 91%, +0.051) would have
+   been a silent no-op. Now `shares = CFG.shares × engine_mult['hiband']` (deliberately
+   NOT Kelly — a thin edge earns multiplier steps, not bankroll fractions). Book-aware
+   trim still applies. No behavior change until the verdict fires.
+2. **Watchdog now guards `hourly_capture.py`** (`_watchdog.sh.bak` kept; repo copy
+   `_watchdog_ireland.sh`) — a silent capture death would have delayed the next engine.
+3. **First hourly grid read (332 resolved coin-hours):** leading cell = decide at
+   ~13min left, favorite 70-80c, drift>=5bps: **n=31, WR 90.3% vs BE 76.5%, after-fee
+   +0.164, both halves positive** (echo at ~7min: +0.227, n=15). 80-89c ~flat without a
+   roc analog; 25min too early. NOT deployable (n far below bars) — formal IS/OOS+z grid
+   at ~10-14 days of data (~Jul 27-31). Noteworthy: 70-80c is dead on 15m but looks
+   alive on 1h — different window length, different calibration point.
+
 ## 2026-07-20 — CONFIG: stale $3.50 late cap raised to $10 (compound had already unlocked)
 **Env** (`.env.bak_maxusd`): `CLEAN_LATE_MAX_USD` 3.50 → 10 · LIVE 23:09 UTC
 

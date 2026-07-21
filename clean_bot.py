@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.60.4"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.60.5"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -1594,8 +1594,14 @@ class CleanBot:
                             f"— owner reset engine_off.late + clear late recent_ev to re-audition")
                 self._nc_logged.add((coin, ws, "retired"))
             return
-        # hiband audition = flat exchange-min shares, no cmult/compound until its own verdict
-        shares = CFG.shares if hiband else self._late_size_shares(coin, px_ord, lead_state=lead_state)
+        # hiband: flat exchange-min shares × its OWN verdict multiplier (v1.60.5 — before
+        # this, the n>=40 SCALE-UP verdict would have been a silent no-op on hiband).
+        # Deliberately NOT Kelly: the hiband edge is thin (+0.02-0.05/$) and its meter is
+        # the only sizing authority it has earned. Book-aware trim below still applies.
+        if hiband:
+            shares = max(CFG.shares, int(CFG.shares * float(self.engine_mult.get("hiband", 1.0))))
+        else:
+            shares = self._late_size_shares(coin, px_ord, lead_state=lead_state)
         # v1.60.4 BOOK-AWARE FOK SIZING: post-cap-raise (9-10sh) FOKs went 0/2 — top-of-book
         # at the decision moment typically holds ~5-8 shares, and FOK demands the FULL size
         # at <= limit. Take what the book displays (x0.9 safety), floor at exchange-min;
