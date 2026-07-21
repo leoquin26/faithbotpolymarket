@@ -34,6 +34,18 @@ untracked SOL double... (chain shows the second SOL pair also settled; wallet-tr
 absorbed via the chain-balance sync). Meters missed 2 samples (~1W/1L @60c, ≈neutral).
 Bankroll source-of-truth remains the on-chain sync — dollars are correct.
 
+## v1.60.4 — 2026-07-21 — book-aware FOK sizing (cap raise broke the fill rate)
+**Tag:** `cleanbot-v1.60.4` · LIVE 00:14 UTC
+
+Owner flagged 3 straight FOK failures. Data: pre-raise (x5) miss rate 26%; post-raise
+(x9-10 after the $3.50→$10 cap change) **0 fills / 2 misses = 100%** — top-of-book at the
+~190s decision moment typically shows 5-8 shares and FOK demands the full size at ≤ limit.
+Fix: before posting, read `get_full_depth`, size = min(kelly_size, 0.9×displayed shares
+at ≤ limit), floor at exchange-min 5 (`[SIZE->BOOK]` log when trimmed); if even the min
+is not displayed → `[LATE SKIP] book too thin` (an unfillable FOK collects no edge).
+Fail-open on depth-fetch errors. Preserves the earned sizing where liquidity exists and
+degrades gracefully to x5 where it does not.
+
 ## 2026-07-20 — CONFIG: stale $3.50 late cap raised to $10 (compound had already unlocked)
 **Env** (`.env.bak_maxusd`): `CLEAN_LATE_MAX_USD` 3.50 → 10 · LIVE 23:09 UTC
 

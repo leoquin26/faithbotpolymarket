@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.60.3"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.60.4"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -1596,6 +1596,27 @@ class CleanBot:
             return
         # hiband audition = flat exchange-min shares, no cmult/compound until its own verdict
         shares = CFG.shares if hiband else self._late_size_shares(coin, px_ord, lead_state=lead_state)
+        # v1.60.4 BOOK-AWARE FOK SIZING: post-cap-raise (9-10sh) FOKs went 0/2 — top-of-book
+        # at the decision moment typically holds ~5-8 shares, and FOK demands the FULL size
+        # at <= limit. Take what the book displays (x0.9 safety), floor at exchange-min;
+        # if even the min isn't there, skip (an unfillable FOK collects no edge anyway).
+        if is_taker:
+            try:
+                _d = self.om.get_full_depth(token) or {}
+                _avail = sum(s for _p, s in _d.get("asks", []) if _p <= px_ord + 1e-9)
+                if _avail < CFG.shares:
+                    if (coin, ws, "depth") not in self._nc_logged:
+                        logger.info(f"[LATE SKIP] {coin} {direction} book too thin for min "
+                                    f"({_avail:.0f} < {CFG.shares} @ <= {px_ord*100:.0f}c)")
+                        self._nc_logged.add((coin, ws, "depth"))
+                    return
+                _fit = max(CFG.shares, int(_avail * 0.9))
+                if shares > _fit:
+                    logger.info(f"[SIZE->BOOK] {coin} {direction} trimmed x{shares} -> x{_fit} "
+                                f"(book shows {_avail:.0f} @ <= {px_ord*100:.0f}c)")
+                    shares = _fit
+            except Exception as e:
+                logger.debug(f"depth check failed ({e}) — proceeding at planned size")
         # CORRELATION GUARD (v1.39.1)
         if self._corr_sibling(coin, ws, direction):
             return
