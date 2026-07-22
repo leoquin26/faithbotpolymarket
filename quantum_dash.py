@@ -135,13 +135,17 @@ def _poll_state():
     while True:
         try:
             s = json.load(open(STATE, encoding="utf-8"))
-            open_pos = sum(1 for p in (s.get("positions") or {}).values()
-                           if p.get("status") == "filled")
+            opens = []
+            for p in (s.get("positions") or {}).values():
+                if p.get("status") == "filled":
+                    opens.append({"coin": p.get("coin"), "dir": p.get("dir"),
+                                  "entry": p.get("entry"), "shares": p.get("shares"),
+                                  "ws": p.get("ws"), "hiband": bool(p.get("hiband"))})
             _broadcast({"t": "state",
                         "bankroll": s.get("bankroll"),
                         "day_net": round((s.get("wins") or 0) - (s.get("losses") or 0), 2),
                         "killed": bool(s.get("killed")),
-                        "open_positions": open_pos,
+                        "open_positions": len(opens), "open": opens,
                         "engines": _engines_from_state(s)})
         except Exception:
             pass
@@ -191,6 +195,9 @@ RX_TRACK = re.compile(
 @app.get("/api/history")
 def history(_=Depends(_check)):
     equity, trades, ev_trend, days = [], [], [], {}
+    n = w = 0
+    net = best = worst = 0.0
+    cur = mx = 0                                     # win-streak tracking
     try:
         size = os.path.getsize(LOG)
         with open(LOG, "r", encoding="utf-8", errors="replace") as f:
@@ -204,6 +211,14 @@ def history(_=Depends(_check)):
                     equity.append({"ts": ts, "bk": float(bk)})
                     trades.append({"ts": ts, "res": res, "coin": coin, "dir": d,
                                    "px": int(px), "pnl": float(pnl)})
+                    p = float(pnl)
+                    n += 1
+                    w += 1 if res == "WIN" else 0
+                    net += p
+                    best = max(best, p)
+                    worst = min(worst, p)
+                    cur = cur + 1 if res == "WIN" else 0
+                    mx = max(mx, cur)
                     day = ts[:10]
                     agg = days.setdefault(day, {"net": 0.0, "n": 0, "w": 0})
                     agg["net"] = round(agg["net"] + float(pnl), 2)
@@ -212,12 +227,16 @@ def history(_=Depends(_check)):
                     continue
                 m = RX_TRACK.match(ln)
                 if m:
-                    ts, tag, n, w, wr, net, ev = m.groups()
-                    ev_trend.append({"ts": ts, "tag": tag, "n": int(n), "ev": float(ev)})
+                    tts, tag, tn, tw, twr, tnet, ev = m.groups()  # distinct names — must NOT clobber n/w/net stats
+                    ev_trend.append({"ts": tts, "tag": tag, "n": int(tn), "ev": float(ev)})
     except Exception:
         pass
-    return JSONResponse({"equity": equity[-500:], "trades": trades[-80:],
-                         "ev_trend": ev_trend[-200:],
+    stats = {"n": n, "w": w, "l": n - w,
+             "wr": round(100 * w / n, 1) if n else 0.0,
+             "net": round(net, 2), "best": round(best, 2), "worst": round(worst, 2),
+             "streak": mx}
+    return JSONResponse({"equity": equity[-500:], "trades": trades[-120:],
+                         "ev_trend": ev_trend[-200:], "stats": stats,
                          "days": [{"date": k, **v} for k, v in sorted(days.items())[-8:]]})
 
 

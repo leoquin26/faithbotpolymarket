@@ -45,9 +45,9 @@ header{display:flex;align-items:center;gap:22px;padding:10px 20px;
 
 /* ── grid ───────────────────────────────── */
 main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
-  grid-template-columns:340px 1fr 1fr;
+  grid-template-columns:320px 1fr 1fr 340px;
   grid-template-rows:auto auto minmax(120px,1fr);
-  grid-template-areas:"clock coins equity" "engines engines evtrend" "logs logs logs"}
+  grid-template-areas:"clock coins equity ledger" "engines engines evtrend ledger" "live logs logs ledger"}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;
   padding:12px 14px;min-height:0;display:flex;flex-direction:column}
 .ptitle{font-size:11px;letter-spacing:.12em;color:var(--ink3);margin-bottom:8px;
@@ -111,10 +111,40 @@ main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
 .l-skip{color:var(--ink3)} .l-exec{color:var(--warn)} .l-sys{color:var(--ink2)}
 .tapechip{font-family:var(--mono);font-size:11px;color:var(--ink3)}
 
+/* ── ledger (right rail) ── */
+#ledger{grid-area:ledger;padding:0;overflow:hidden}
+.statgrid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);
+  border-bottom:1px solid var(--line)}
+.stat{background:var(--panel);padding:8px 12px}
+.stat .k{font-size:10px;letter-spacing:.08em;color:var(--ink3);text-transform:uppercase}
+.stat .v{font-family:var(--mono);font-size:17px;font-weight:600;margin-top:1px}
+.wl{display:flex;align-items:baseline;gap:6px}
+.wl .w{color:var(--good)} .wl .l{color:var(--bad)} .wl .s{font-size:12px;color:var(--ink3)}
+.ledtitle{font-size:11px;letter-spacing:.12em;color:var(--ink3);text-transform:uppercase;
+  padding:9px 12px 4px}
+#bets{flex:1;overflow-y:auto;padding:0 6px 6px}
+.bet{display:grid;grid-template-columns:44px 1fr auto;gap:8px;align-items:center;
+  padding:6px 8px;border-bottom:1px solid var(--panel2);font-family:var(--mono);font-size:12px}
+.bet .rc{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:5px}
+.bet.win .rc{background:var(--good)} .bet.loss .rc{background:var(--bad)}
+.bet .tm{color:var(--ink3);font-size:10.5px}
+.bet .mid{color:var(--ink2)} .bet .mid b{color:var(--ink)}
+.bet .pnl{font-weight:600;text-align:right}
+.bet.win .pnl{color:var(--good)} .bet.loss .pnl{color:var(--bad)}
+
+/* ── live positions ── */
+#live{grid-area:live}
+.pos{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+  padding:8px 10px;margin-bottom:7px;font-family:var(--mono);font-size:12px}
+.pos .top{display:flex;justify-content:space-between;align-items:center}
+.pos .cd{font-size:11px;color:var(--amber)}
+.pos .sub{font-size:10.5px;color:var(--ink3);margin-top:2px}
+.empty{color:var(--ink3);font-size:12px;font-family:var(--mono);padding:6px 2px}
+
 @media (max-width:1100px){
   main{grid-template-columns:1fr;grid-template-rows:none;overflow-y:auto;
-    grid-template-areas:"clock" "coins" "equity" "engines" "evtrend" "logs"}
-  #coins,#engines{flex-wrap:wrap} body{overflow:auto}
+    grid-template-areas:"clock" "coins" "live" "ledger" "equity" "engines" "evtrend" "logs"}
+  #coins,#engines{flex-wrap:wrap} body{overflow:auto} #ledger{min-height:340px}
 }
 </style>
 </head>
@@ -154,6 +184,22 @@ main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
   <section class="panel" id="equity">
     <div class="ptitle">Equity — bankroll after each settled trade</div>
     <div class="chart" id="eqchart"><svg preserveAspectRatio="none"></svg><div class="tip"></div></div>
+  </section>
+
+  <section class="panel" id="live" aria-label="Live positions">
+    <div class="ptitle">Live bets — open, settling this window</div>
+    <div id="poslist"><div class="empty">no open bets right now</div></div>
+  </section>
+
+  <section class="panel" id="ledger" aria-label="Bets ledger">
+    <div class="statgrid">
+      <div class="stat"><div class="k">Track record</div><div class="v wl"><span id="s-wl">—</span></div></div>
+      <div class="stat"><div class="k">Win rate</div><div class="v" id="s-wr">—</div></div>
+      <div class="stat"><div class="k">Net P&L</div><div class="v" id="s-net">—</div></div>
+      <div class="stat"><div class="k">Best / Worst</div><div class="v" id="s-bw" style="font-size:13px">—</div></div>
+    </div>
+    <div class="ledtitle">Every settled bet <span id="s-count" style="color:var(--ink3)"></span></div>
+    <div id="bets"></div>
   </section>
 
   <section class="panel" id="engines" aria-label="Engine health"></section>
@@ -318,6 +364,24 @@ function addLog(cls,line){
 }
 
 /* ── data plumbing ── */
+function renderLedger(h){
+  const s=h.stats||{n:0,w:0,l:0,wr:0,net:0,best:0,worst:0,streak:0};
+  $("#s-wl").innerHTML=`<span class="w">${s.w}W</span> <span class="s">/</span> <span class="l">${s.l}L</span>`;
+  const wr=$("#s-wr");wr.textContent=s.wr+"%";
+  wr.style.color=s.wr>=60?"var(--good)":s.wr>=50?"var(--warn)":"var(--bad)";
+  const net=$("#s-net");net.textContent=(s.net>0?"+$":"$")+fmt(s.net);
+  net.style.color=s.net>0?"var(--good)":s.net<0?"var(--bad)":"var(--ink)";
+  $("#s-bw").innerHTML=`<span class="up">+${fmt(s.best)}</span> / <span class="down">${fmt(s.worst)}</span>`;
+  $("#s-count").textContent=`· ${s.n} total · best streak ${s.streak}`;
+  const bets=$("#bets");
+  bets.innerHTML=h.trades.slice().reverse().map(t=>{
+    const cc=COINS[t.coin]||"var(--ink2)";
+    return `<div class="bet ${t.res==="WIN"?"win":"loss"}">
+      <span class="tm">${t.ts.slice(11,16)}</span>
+      <span class="mid"><span class="rc"></span><b style="color:${cc}">${t.coin}</b> ${t.dir} @ ${t.px}c</span>
+      <span class="pnl">${t.pnl>0?"+":""}${fmt(t.pnl)}</span></div>`;
+  }).join("");
+}
 async function loadHistory(){
   try{
     const h=await (await fetch("/api/history")).json();
@@ -326,8 +390,33 @@ async function loadHistory(){
     evChart.update([
       {color:"var(--btc)",pts:late.map(x=>({ts:x.ts,y:x.ev}))},
       {color:"var(--eth)",pts:hb.map(x=>({ts:x.ts,y:x.ev}))}]);
+    renderLedger(h);
   }catch(e){}
 }
+
+/* live open positions — countdown + momentum lean */
+let lastChg={},srvSkew=0,openBets=[];
+function renderPositions(){
+  const el=$("#poslist");
+  if(!openBets.length){el.innerHTML='<div class="empty">no open bets right now</div>';return}
+  const now=Date.now()/1000+srvSkew;
+  el.innerHTML=openBets.map(p=>{
+    const trem=Math.max(0,Math.round((p.ws+900)-now));
+    const mm=Math.floor(trem/60),ss=String(trem%60).padStart(2,"0");
+    const cc=COINS[p.coin]||"var(--ink2)";
+    const mom=lastChg[p.coin];
+    let lean="";
+    if(mom!=null){
+      const favUp=(p.dir==="UP"&&mom>0)||(p.dir==="DOWN"&&mom<0);
+      lean=`<span class="${favUp?"up":"down"}">${favUp?"◆ ahead":"◇ behind"} · ${p.coin} ${mom>0?"+":""}${mom}bp/60s</span>`;
+    }
+    return `<div class="pos">
+      <div class="top"><span><b style="color:${cc}">${p.coin}</b> ${p.dir} @ ${Math.round(p.entry*100)}c ×${p.shares}${p.hiband?' <span style="color:var(--amber)">HI</span>':''}</span>
+        <span class="cd">${trem>0?`settles ${mm}:${ss}`:"settling…"}</span></div>
+      <div class="sub">${lean||"tracking…"}</div></div>`;
+  }).join("");
+}
+setInterval(renderPositions,1000);
 async function loadHealth(){
   try{
     const h=await (await fetch("/api/health")).json();
@@ -356,17 +445,20 @@ async function connect(){
   ws.onclose=()=>{$("#d-ws").className="dot off";setTimeout(connect,2000)};
   ws.onmessage=ev=>{
     const m=JSON.parse(ev.data);
-    if(m.t==="log"){addLog(m.cls,m.line);
+    if(m.t==="hello"){srvSkew=m.server_time-Date.now()/1000;}
+    else if(m.t==="log"){addLog(m.cls,m.line);
       if(m.cls==="result"||/VERDICT/.test(m.line))loadHistory();}
     else if(m.t==="state"){
       $("#bankroll").textContent=fmt(m.bankroll);
       const dn=$("#daynet");dn.textContent=`day ${m.day_net>0?"+":""}${fmt(m.day_net)}`;
       dn.className="chip "+(m.day_net>0?"pos":m.day_net<0?"neg":"");
       $("#openpos").textContent=`${m.open_positions} open`;
+      openBets=m.open||[];renderPositions();
       engines(m.engines||[]);}
     else if(m.t==="prices"){
       clock(m.window);
       for(const[c,d] of Object.entries(m.coins||{})){
+        if(d.chg60!=null)lastChg[c]=d.chg60;
         const el=$("#coin-"+c);if(!el||d.px==null)continue;
         el.querySelector(".cpx").textContent=d.px>1000?d.px.toLocaleString(undefined,{maximumFractionDigits:2}):d.px.toFixed(4);
         const [c60,c300]=[d.chg60,d.chg300];
