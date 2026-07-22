@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 """Quantum Desk — real-time CleanBot dashboard backend (read-only).
 FastAPI + WebSocket. Streams: raw log tail, engine/state snapshots (2s), live
-prices + window clock (1s). REST: /api/history (equity, trades, EV trend, days),
-/api/health. Serves quantum_ui/ at /. Port 8096 (old dash stays on 8095).
-Places NO orders, writes NOTHING to bot state — a pure observer."""
-import asyncio, json, os, re, subprocess, threading, time
+prices + window clock (1s). REST: /api/history, /api/health. Serves quantum_ui/.
+
+SECURITY: public exposure is gated by HTTP Basic auth (QUANTUM_DASH_PASS in .env)
+on EVERY route, a per-session token on the websocket, and TLS. Binds publicly on
+8443 with TLS only when both cert files exist; otherwise localhost:8096 plaintext
+(tunnel mode). Places NO orders, writes NOTHING to bot state — a pure observer."""
+import asyncio, json, os, re, secrets, subprocess, threading, time
 from collections import deque
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+except Exception:
+    pass
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 import uvicorn
 
 import binance_ws
@@ -18,18 +28,36 @@ V3 = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(V3, "clean_bot.log")
 STATE = os.path.join(V3, "clean_bot_state.json")
 UI = os.path.join(V3, "quantum_ui")
+CERT = os.path.join(V3, "quantum_cert.pem")
+KEY = os.path.join(V3, "quantum_key.pem")
 COINS = ("BTC", "ETH", "SOL")
 ENGINES = ("late", "hiband", "early", "voldiv")
 
+DASH_USER = os.getenv("QUANTUM_DASH_USER", "leo")
+DASH_PASS = os.getenv("QUANTUM_DASH_PASS", "")     # empty ⇒ auth disabled (tunnel/localhost only)
+
 app = FastAPI()
+security = HTTPBasic(auto_error=True)
 _clients: set = set()
 _loop: asyncio.AbstractEventLoop = None
 _lock = threading.Lock()
-_price_hist = {c: deque(maxlen=900) for c in COINS}   # (ts, px) 1/s
+_price_hist = {c: deque(maxlen=900) for c in COINS}
+_wstokens = deque(maxlen=64)                        # valid websocket session tokens
+
+
+def _check(cred: HTTPBasicCredentials = Depends(security)):
+    """Constant-time Basic-auth guard. No-op when DASH_PASS is unset (tunnel mode)."""
+    if not DASH_PASS:
+        return True
+    ok = (secrets.compare_digest(cred.username, DASH_USER)
+          and secrets.compare_digest(cred.password, DASH_PASS))
+    if not ok:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "bad credentials",
+                            {"WWW-Authenticate": "Basic"})
+    return True
 
 
 def _broadcast(msg: dict):
-    """Thread-safe fanout to every connected websocket."""
     if _loop is None:
         return
     data = json.dumps(msg)
@@ -59,12 +87,11 @@ def _classify(line: str) -> str:
 
 
 def _tail_log():
-    """Follow clean_bot.log from EOF; push every line with a class tag."""
     pos = os.path.getsize(LOG) if os.path.exists(LOG) else 0
     while True:
         try:
             size = os.path.getsize(LOG)
-            if size < pos:                      # rotated
+            if size < pos:
                 pos = 0
             if size > pos:
                 with open(LOG, "r", encoding="utf-8", errors="replace") as f:
@@ -140,7 +167,7 @@ def _poll_prices():
                         base = p
                         break
                 return round((h[-1][1] - base) / base * 1e4, 1) if base else None
-            spark = [round(p, 6) for _, p in list(h)[-240::3]]     # ~80 pts / 4 min
+            spark = [round(p, 6) for _, p in list(h)[-240::3]]
             coins[c] = {"px": h[-1][1] if h else None,
                         "chg60": chg(60), "chg300": chg(300), "spark": spark}
         ws_epoch = int(now // 900) * 900
@@ -160,7 +187,7 @@ RX_TRACK = re.compile(
 
 
 @app.get("/api/history")
-def history():
+def history(_=Depends(_check)):
     equity, trades, ev_trend, days = [], [], [], {}
     try:
         size = os.path.getsize(LOG)
@@ -184,8 +211,7 @@ def history():
                 m = RX_TRACK.match(ln)
                 if m:
                     ts, tag, n, w, wr, net, ev = m.groups()
-                    ev_trend.append({"ts": ts, "tag": tag, "n": int(n),
-                                     "ev": float(ev)})
+                    ev_trend.append({"ts": ts, "tag": tag, "n": int(n), "ev": float(ev)})
     except Exception:
         pass
     return JSONResponse({"equity": equity[-500:], "trades": trades[-80:],
@@ -194,7 +220,7 @@ def history():
 
 
 @app.get("/api/health")
-def health():
+def health(_=Depends(_check)):
     def procs(pat):
         try:
             r = subprocess.run(["pgrep", "-fc", pat], capture_output=True, text=True)
@@ -211,15 +237,26 @@ def health():
             "log_age_s": age, "ws_clients": len(_clients)}
 
 
+@app.get("/api/wstoken")
+def wstoken(_=Depends(_check)):
+    tok = secrets.token_urlsafe(24)
+    _wstokens.append(tok)
+    return {"token": tok}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
+    tok = ws.query_params.get("token", "")
+    if DASH_PASS and tok not in _wstokens:
+        await ws.close(code=1008)
+        return
     await ws.accept()
     with _lock:
         _clients.add(ws)
     try:
         await ws.send_text(json.dumps({"t": "hello", "server_time": time.time()}))
         while True:
-            await ws.receive_text()             # keepalive pings from client
+            await ws.receive_text()
     except (WebSocketDisconnect, Exception):
         pass
     finally:
@@ -227,7 +264,14 @@ async def ws_endpoint(ws: WebSocket):
             _clients.discard(ws)
 
 
-app.mount("/", StaticFiles(directory=UI, html=True), name="ui")
+# Static UI — index.html itself is guarded so the browser prompts for the password.
+@app.get("/", response_class=PlainTextResponse)
+def index(_=Depends(_check)):
+    try:
+        return PlainTextResponse(open(os.path.join(UI, "index.html"), encoding="utf-8").read(),
+                                 media_type="text/html")
+    except Exception:
+        return PlainTextResponse("dashboard UI missing", status_code=500)
 
 
 @app.on_event("startup")
@@ -240,4 +284,10 @@ async def _startup():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8096, log_level="warning")
+    public = os.path.exists(CERT) and os.path.exists(KEY)
+    if public and not DASH_PASS:
+        raise SystemExit("refusing public bind without QUANTUM_DASH_PASS set in .env")
+    kw = dict(host="0.0.0.0", port=8443, ssl_certfile=CERT, ssl_keyfile=KEY) if public \
+        else dict(host="127.0.0.1", port=8096)
+    print(f"[quantum] {'PUBLIC https :8443 (auth on)' if public else 'localhost :8096'}", flush=True)
+    uvicorn.run(app, log_level="warning", **kw)

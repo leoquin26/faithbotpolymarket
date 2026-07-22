@@ -335,8 +335,11 @@ async function loadHealth(){
     $("#d-cap").className="dot "+(h.capture===1?"on":"off");
   }catch(e){$("#d-bot").className="dot";$("#d-cap").className="dot"}
 }
-function connect(){
-  const ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws");
+async function connect(){
+  let token="";
+  try{token=(await (await fetch("/api/wstoken")).json()).token||""}catch(e){}
+  const base=(location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws";
+  const ws=new WebSocket(token?base+"?token="+encodeURIComponent(token):base);
   ws.onopen=()=>{$("#d-ws").className="dot on pulse"};
   ws.onclose=()=>{$("#d-ws").className="dot off";setTimeout(connect,2000)};
   ws.onmessage=ev=>{
