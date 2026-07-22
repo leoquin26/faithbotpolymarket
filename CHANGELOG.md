@@ -46,6 +46,24 @@ is not displayed → `[LATE SKIP] book too thin` (an unfillable FOK collects no 
 Fail-open on depth-fetch errors. Preserves the earned sizing where liquidity exists and
 degrades gracefully to x5 where it does not.
 
+## 2026-07-22 — CONFIG: SOL size tilt 1.5 -> 1.0 (owner found the inverted-size leak)
+**Env** (`.env.bak_solmult`): `CLEAN_LATE_COIN_MULT=SOL=1.0,ETH=1.0` · LIVE 21:54 UTC
+
+Owner's hypothesis: "the signal that triggers a $6 bet wins ~50%; the $3 signal wins
+more — investigate the SIGNALS, not the amounts." Tested every size-driver vs WR on the
+matched core-band ledger (n=87):
+- CMPD 69.6% > MIN 63.4%  ✓ (bigger=better, aligned)
+- lead grow 71.1% > flip 64.7% > fade 60.0%  ✓ (boost fires on stronger setups)
+- **coin SOL 57.5% (n=40) vs ETH 75.0% (n=36) vs BTC 72.7% (n=11)** — SOL is the WORST
+  coin AND carried the ×1.5 size tilt = betting biggest on the weakest coin. Exactly the
+  inverse size↔edge leak the owner intuited.
+
+The SOL=1.5 tilt (clean_bot.py:250) was premised on SHADOW research "SOL EV/$ +0.135
+(best)" — live has FLIPPED it (SOL ~57.5% at ~63c avg ≈ below break-even). Premise dead
+→ revert to neutral equal-weight (not a bet against SOL; removing an unvalidated boost).
+Caveat: SOL-vs-ETH gap is ~1.5 SE on n=40 — suggestive, not iron-clad; equal-weight is
+the honest default. Watch whether SOL WR recovers at neutral size.
+
 ## v1.60.6 — 2026-07-22 — the ×2 VERDICT FIRED; fix that un-muted it
 **Tag:** `cleanbot-v1.60.6` · LIVE 14:12 UTC
 
