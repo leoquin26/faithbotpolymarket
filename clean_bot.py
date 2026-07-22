@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.60.5"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.60.6"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -720,7 +720,11 @@ class CleanBot:
         """
         price = max(0.02, float(price))
         if not self._late_compound_ok():
-            shares = CFG.shares                 # true flat min — no cmult / grow / engine scale
+            # v1.60.6: the n>=40 verdict clears recent_ev, which re-locks this gate for
+            # ~15 trades — muting the very scale-up the verdict just awarded. The earned
+            # engine multiplier applies even in the min-size audition window (the verdict's
+            # own design note says the next step is judged ON THE NEW SIZE).
+            shares = max(CFG.shares, int(CFG.shares * float(self.engine_mult.get("late", 1.0))))
         else:
             base = self._size_shares(price)
             cmult = float(CFG.late_coin_mult.get(coin.upper(), 1.0))

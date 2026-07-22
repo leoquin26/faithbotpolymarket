@@ -46,6 +46,23 @@ is not displayed → `[LATE SKIP] book too thin` (an unfillable FOK collects no 
 Fail-open on depth-fetch errors. Preserves the earned sizing where liquidity exists and
 degrades gracefully to x5 where it does not.
 
+## v1.60.6 — 2026-07-22 — the ×2 VERDICT FIRED; fix that un-muted it
+**Tag:** `cleanbot-v1.60.6` · LIVE 14:12 UTC
+
+**MILESTONE:** `[VERDICT:late] n=40 EV/$ +0.131 >= +0.03 — SCALING to x2` fired
+2026-07-22 07:03 UTC — the pre-registered 40-trade audit certified the rebuilt engine
+at 4.4× the bar (78% WR, net +$21.92). engine_mult.late = 2.0.
+
+**Bug found by the owner's "why not compounding?"**: the verdict clears late
+`recent_ev` (by design — judge the next step on the new size), but that re-locks
+`_late_compound_ok()` (needs n>=15) and the MIN branch ignored `engine_mult` — so
+every post-verdict trade ran at 1× flat min (08:01/13:01/14:01 stakes ~$3.1-3.3),
+muting the earned doubling for ~15 trades. Same blind spot fixed for hiband in v1.60.5.
+
+**Fix:** MIN branch now sizes `CFG.shares × engine_mult.late` (→ 10 shares post-verdict);
+full compound branch (Kelly × cmult × emult, book-aware trim, 12% cap) resumes when the
+fresh window hits n>=15 EV>0. Behavior at mult=1.0 unchanged.
+
 ## v1.60.5 — 2026-07-21 — hiband verdict plumbing + hourly watchdog + first hourly signal
 **Tag:** `cleanbot-v1.60.5` · LIVE 17:06 UTC
 
