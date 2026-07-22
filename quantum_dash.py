@@ -100,7 +100,9 @@ def _tail_log():
                     pos = f.tell()
                 for ln in chunk.splitlines():
                     ln = ln.strip()
-                    if ln:
+                    # skip the short-timestamp stdout echo (every event is double-logged);
+                    # keep only the full "YYYY-MM-DD …" line so the console isn't duplicated
+                    if ln and ln[:2] == "20" and ln[4:5] == "-":
                         _broadcast({"t": "log", "cls": _classify(ln), "line": ln[:500]})
         except Exception:
             pass
@@ -235,6 +237,25 @@ def health(_=Depends(_check)):
     return {"bot": procs("^python3 -u clean_bot.py$"),
             "capture": procs("^python3 -u hourly_capture.py$"),
             "log_age_s": age, "ws_clients": len(_clients)}
+
+
+@app.get("/api/logtail")
+def logtail(n: int = 250, _=Depends(_check)):
+    """Recent history for the console — last n full-timestamp lines, classified."""
+    n = max(1, min(n, 1000))
+    out = []
+    try:
+        size = os.path.getsize(LOG)
+        with open(LOG, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(max(0, size - 600_000))      # ~last 600KB is plenty for 250 lines
+            f.readline()
+            for ln in f:
+                ln = ln.strip()
+                if ln and ln[:2] == "20" and ln[4:5] == "-":
+                    out.append({"cls": _classify(ln), "line": ln[:500]})
+    except Exception:
+        pass
+    return JSONResponse({"lines": out[-n:]})
 
 
 @app.get("/api/wstoken")

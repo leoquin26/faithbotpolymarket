@@ -335,9 +335,21 @@ async function loadHealth(){
     $("#d-cap").className="dot "+(h.capture===1?"on":"off");
   }catch(e){$("#d-bot").className="dot";$("#d-cap").className="dot"}
 }
+let backfilled=false;
+async function backfill(){
+  if(backfilled)return;
+  try{
+    const r=await (await fetch("/api/logtail?n=300")).json();
+    cons.innerHTML="";lines=0;
+    for(const x of r.lines)addLog(x.cls,x.line);
+    backfilled=true;
+    cons.scrollTop=cons.scrollHeight;
+  }catch(e){}
+}
 async function connect(){
   let token="";
   try{token=(await (await fetch("/api/wstoken")).json()).token||""}catch(e){}
+  await backfill();
   const base=(location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws";
   const ws=new WebSocket(token?base+"?token="+encodeURIComponent(token):base);
   ws.onopen=()=>{$("#d-ws").className="dot on pulse"};
