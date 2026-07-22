@@ -25,3 +25,4 @@ restart_if_dead "clean_bot.py"     "cd /home/ubuntu/v3-bot && exec python3 -u cl
 restart_if_dead "cleanbot_dash.py" "cd /home/ubuntu/v3-bot && exec python3 -u cleanbot_dash.py >> dash.log 2>&1"
 restart_if_dead "daily_scout.py"   "cd /home/ubuntu/v3-bot && exec python3 -u daily_scout.py >> logs/daily_scout_stdout.log 2>&1"
 restart_if_dead "hourly_capture.py" "cd /home/ubuntu/v3-bot && exec python3 -u hourly_capture.py >> hourly_capture.log 2>&1"
+restart_if_dead "quantum_dash.py" "cd /home/ubuntu/v3-bot && exec python3 -u quantum_dash.py >> quantum_dash.log 2>&1"

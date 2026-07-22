@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CleanBot · Quantum Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0C121D; --panel:#131B2A; --panel2:#0F1725; --line:#1F2A3D;
+  --ink:#E8EDF5; --ink2:#93A3BB; --ink3:#5C6C84;
+  --amber:#F5B93F; --cyan:#4FC3E8;
+  --btc:#BA811C; --eth:#7B8CDE; --sol:#2F9E80;
+  --good:#35B573; --bad:#E05A4E; --warn:#E0A83A;
+  --mono:'IBM Plex Mono',ui-monospace,Consolas,monospace;
+  --disp:'Space Grotesk',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--disp);font-size:14px;
+  display:flex;flex-direction:column;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+
+/* ── header ─────────────────────────────── */
+header{display:flex;align-items:center;gap:22px;padding:10px 20px;
+  border-bottom:1px solid var(--line);flex:none}
+.wordmark{font-weight:700;letter-spacing:.14em;font-size:13px;color:var(--ink2)}
+.wordmark b{color:var(--amber)}
+.hero{font-family:var(--mono);font-size:30px;font-weight:600;letter-spacing:-.02em}
+.hero small{font-size:13px;color:var(--ink3);font-weight:400;margin-right:6px}
+.chip{font-family:var(--mono);font-size:12px;padding:3px 10px;border:1px solid var(--line);
+  border-radius:4px;color:var(--ink2)}
+.chip.pos{color:var(--good);border-color:color-mix(in srgb,var(--good) 40%,var(--line))}
+.chip.neg{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,var(--line))}
+.spacer{flex:1}
+.dots{display:flex;gap:14px;font-size:11px;color:var(--ink3);font-family:var(--mono)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ink3);
+  margin-right:5px;vertical-align:0}
+.dot.on{background:var(--good)} .dot.off{background:var(--bad)}
+.dot.pulse{animation:pulse 2s infinite}
+@keyframes pulse{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ── grid ───────────────────────────────── */
+main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
+  grid-template-columns:340px 1fr 1fr;
+  grid-template-rows:auto auto minmax(120px,1fr);
+  grid-template-areas:"clock coins equity" "engines engines evtrend" "logs logs logs"}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  padding:12px 14px;min-height:0;display:flex;flex-direction:column}
+.ptitle{font-size:11px;letter-spacing:.12em;color:var(--ink3);margin-bottom:8px;
+  text-transform:uppercase}
+
+/* ── window clock (signature) ───────────── */
+#clock{grid-area:clock;align-items:center}
+.clockwrap{display:flex;align-items:center;gap:16px;width:100%}
+#clocksvg{flex:none}
+.ctime{font-family:var(--mono);font-size:26px;font-weight:600}
+.cphase{font-size:12px;color:var(--ink2);margin-top:2px}
+.cphase.slot{color:var(--amber);font-weight:500}
+
+/* ── coins ──────────────────────────────── */
+#coins{grid-area:coins;flex-direction:row;gap:12px;align-items:stretch}
+.coin{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+  padding:10px 12px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.cname{font-size:11px;letter-spacing:.1em;font-weight:700}
+.cpx{font-family:var(--mono);font-size:19px;font-weight:600}
+.cchg{font-family:var(--mono);font-size:11px;color:var(--ink3)}
+.cchg b{font-weight:500}
+.up{color:var(--good)} .down{color:var(--bad)}
+.spark{margin-top:auto;width:100%;height:34px}
+
+/* ── charts ─────────────────────────────── */
+#equity{grid-area:equity} #evtrend{grid-area:evtrend}
+.chart{flex:1;min-height:90px;position:relative}
+.chart svg{position:absolute;inset:0;width:100%;height:100%}
+.tip{position:absolute;pointer-events:none;background:var(--panel2);
+  border:1px solid var(--line);border-radius:4px;padding:4px 8px;
+  font-family:var(--mono);font-size:11px;display:none;white-space:nowrap;z-index:5}
+.legend{display:flex;gap:14px;font-size:11px;color:var(--ink2);font-family:var(--mono)}
+.legend i{display:inline-block;width:10px;height:2px;vertical-align:middle;margin-right:5px}
+
+/* ── engines ────────────────────────────── */
+#engines{grid-area:engines;flex-direction:row;gap:12px}
+.eng{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+  padding:10px 12px;display:flex;gap:12px;align-items:center;min-width:0}
+.eng.dead{opacity:.45}
+.ering{flex:none}
+.emeta{min-width:0}
+.ename{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.eev{font-family:var(--mono);font-size:17px;font-weight:600}
+.esub{font-family:var(--mono);font-size:11px;color:var(--ink3)}
+.badge{display:inline-block;font-size:10px;font-family:var(--mono);padding:1px 7px;
+  border-radius:3px;border:1px solid var(--line);color:var(--ink2);margin-top:3px}
+.badge.scaled{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 45%,var(--line))}
+.badge.retired{color:var(--bad)}
+
+/* ── logs ───────────────────────────────── */
+#logs{grid-area:logs}
+.logbar{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.f{font-family:var(--mono);font-size:11px;padding:3px 10px;border-radius:4px;
+  border:1px solid var(--line);color:var(--ink2)}
+.f[aria-pressed=true]{color:var(--bg);background:var(--amber);border-color:var(--amber);font-weight:600}
+#console{flex:1;overflow-y:auto;font-family:var(--mono);font-size:11.5px;line-height:1.55;
+  background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+#console div{white-space:pre-wrap;word-break:break-all}
+.l-result b{color:var(--good)} .l-result.lost b{color:var(--bad)}
+.l-enter{color:var(--cyan)} .l-verdict{color:var(--amber)}
+.l-skip{color:var(--ink3)} .l-exec{color:var(--warn)} .l-sys{color:var(--ink2)}
+.tapechip{font-family:var(--mono);font-size:11px;color:var(--ink3)}
+
+@media (max-width:1100px){
+  main{grid-template-columns:1fr;grid-template-rows:none;overflow-y:auto;
+    grid-template-areas:"clock" "coins" "equity" "engines" "evtrend" "logs"}
+  #coins,#engines{flex-wrap:wrap} body{overflow:auto}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="wordmark">CLEANBOT <b>//</b> QUANTUM DESK</div>
+  <div class="hero"><small>$</small><span id="bankroll">—</span></div>
+  <div class="chip" id="daynet">day —</div>
+  <div class="chip" id="openpos">0 open</div>
+  <div class="spacer"></div>
+  <div class="dots">
+    <span><i class="dot" id="d-ws"></i>STREAM</span>
+    <span><i class="dot" id="d-bot"></i>BOT</span>
+    <span><i class="dot" id="d-cap"></i>CAPTURE</span>
+  </div>
+</header>
+
+<main>
+  <section class="panel" id="clock" aria-label="Window clock">
+    <div class="ptitle">Window clock — decision arc 195→150s</div>
+    <div class="clockwrap">
+      <svg id="clocksvg" width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="15 minute window progress">
+        <circle cx="60" cy="60" r="52" fill="none" stroke="var(--line)" stroke-width="7"/>
+        <path id="slotarc" fill="none" stroke="var(--amber)" stroke-opacity=".28" stroke-width="7"/>
+        <path id="progarc" fill="none" stroke="var(--cyan)" stroke-width="7" stroke-linecap="round"/>
+        <circle id="needle" r="4.5" fill="var(--amber)"/>
+      </svg>
+      <div>
+        <div class="ctime" id="trem">—:—</div>
+        <div class="cphase" id="phase">connecting…</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="coins" aria-label="Live prices"></section>
+
+  <section class="panel" id="equity">
+    <div class="ptitle">Equity — bankroll after each settled trade</div>
+    <div class="chart" id="eqchart"><svg preserveAspectRatio="none"></svg><div class="tip"></div></div>
+  </section>
+
+  <section class="panel" id="engines" aria-label="Engine health"></section>
+
+  <section class="panel" id="evtrend">
+    <div class="ptitle">Meter trend — EV/$ per rolling reading
+      <span class="legend" style="float:right">
+        <span><i style="background:var(--btc)"></i>late</span>
+        <span><i style="background:var(--eth)"></i>hiband</span>
+      </span>
+    </div>
+    <div class="chart" id="evchart"><svg preserveAspectRatio="none"></svg><div class="tip"></div></div>
+  </section>
+
+  <section class="panel" id="logs">
+    <div class="logbar">
+      <span class="ptitle" style="margin:0">Live log</span>
+      <button class="f" data-f="all" aria-pressed="true">ALL</button>
+      <button class="f" data-f="enter" aria-pressed="false">ENTRIES</button>
+      <button class="f" data-f="result" aria-pressed="false">WIN/LOSS</button>
+      <button class="f" data-f="verdict" aria-pressed="false">METERS</button>
+      <button class="f" data-f="skip" aria-pressed="false">SKIPS</button>
+      <button class="f" data-f="exec" aria-pressed="false">EXECUTION</button>
+      <span class="spacer"></span>
+      <label class="tapechip"><input type="checkbox" id="follow" checked> follow</label>
+      <span class="tapechip" id="lcount">0 lines</span>
+    </div>
+    <div id="console" role="log" aria-live="off"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+const COINS={BTC:"var(--btc)",ETH:"var(--eth)",SOL:"var(--sol)"};
+const fmt=(v,d=2)=>v==null?"—":Number(v).toFixed(d);
+
+/* ── coin cards ── */
+const coinsEl=$("#coins");
+for(const c of Object.keys(COINS)){
+  coinsEl.insertAdjacentHTML("beforeend",
+   `<div class="coin" id="coin-${c}">
+      <div class="cname" style="color:${COINS[c]}">${c}<span style="color:var(--ink3)">/USD</span></div>
+      <div class="cpx">—</div>
+      <div class="cchg">Δ60s <b>—</b> · Δ5m <b>—</b></div>
+      <svg class="spark" preserveAspectRatio="none" viewBox="0 0 100 34"></svg>
+    </div>`);
+}
+function spark(svg,pts,color){
+  if(!pts||pts.length<2){svg.innerHTML="";return}
+  const min=Math.min(...pts),max=Math.max(...pts),rng=(max-min)||1;
+  const d=pts.map((p,i)=>`${i?"L":"M"}${(i/(pts.length-1)*100).toFixed(2)},${(31-(p-min)/rng*28).toFixed(2)}`).join("");
+  svg.innerHTML=`<path d="${d}" fill="none" stroke="${color}" stroke-width="1.6" vector-effect="non-scaling-stroke"/>`;
+}
+
+/* ── window clock ── */
+const R=52,C=2*Math.PI*R;
+function arc(el,fromS,toS){ // seconds-remaining space: 900..0, clockwise from top
+  const a0=(900-fromS)/900*2*Math.PI-Math.PI/2, a1=(900-toS)/900*2*Math.PI-Math.PI/2;
+  const x0=60+R*Math.cos(a0),y0=60+R*Math.sin(a0),x1=60+R*Math.cos(a1),y1=60+R*Math.sin(a1);
+  const large=(toS-fromS)<-450||((fromS-toS)>450)?1:0;
+  el.setAttribute("d",`M${x0},${y0} A${R},${R} 0 ${large} 1 ${x1},${y1}`);
+}
+arc($("#slotarc"),195,150);
+function clock(w){
+  const t=w.t_rem, mm=String(Math.floor(t/60)),ss=String(t%60).padStart(2,"0");
+  $("#trem").textContent=`${mm}:${ss}`;
+  arc($("#progarc"),900,Math.max(t,1));
+  const a=(900-t)/900*2*Math.PI-Math.PI/2;
+  const n=$("#needle");n.setAttribute("cx",60+R*Math.cos(a));n.setAttribute("cy",60+R*Math.sin(a));
+  const ph=$("#phase");
+  if(w.in_slot){ph.textContent="◈ DECISION WINDOW OPEN";ph.className="cphase slot"}
+  else if(t>195){ph.textContent=`decision in ${t-195}s`;ph.className="cphase"}
+  else{ph.textContent="window closing — settling soon";ph.className="cphase"}
+}
+
+/* ── engines ── */
+function ring(n){const r=17,c=2*Math.PI*r,f=Math.min(n/40,1);
+  return `<svg class="ering" width="44" height="44" viewBox="0 0 44 44">
+    <circle cx="22" cy="22" r="${r}" fill="none" stroke="var(--line)" stroke-width="4"/>
+    <circle cx="22" cy="22" r="${r}" fill="none" stroke="var(--amber)" stroke-width="4"
+      stroke-dasharray="${(f*c).toFixed(1)} ${c}" transform="rotate(-90 22 22)" stroke-linecap="round"/>
+    <text x="22" y="26" text-anchor="middle" font-size="11" fill="var(--ink2)" font-family="var(--mono)">${n}</text>
+  </svg>`}
+function engines(list){
+  const el=$("#engines");el.innerHTML="";
+  for(const e of list){
+    const dead=e.off||e.engine==="voldiv"&&!e.n;
+    const evc=e.ev==null?"var(--ink3)":e.ev>=0.03?"var(--good)":e.ev>=0?"var(--warn)":"var(--bad)";
+    const b=e.off?`<span class="badge retired">RETIRED</span>`
+      :e.mult>1?`<span class="badge scaled">SCALED ×${e.mult.toFixed(0)}</span>`
+      :`<span class="badge">MEASURING</span>`;
+    el.insertAdjacentHTML("beforeend",
+     `<div class="eng${dead?" dead":""}">
+        ${ring(e.n||0)}
+        <div class="emeta">
+          <div class="ename">${e.engine}</div>
+          <div class="eev" style="color:${evc}">${e.ev==null?"—":(e.ev>0?"+":"")+e.ev.toFixed(3)}<span style="font-size:11px;color:var(--ink3)"> EV/$</span></div>
+          <div class="esub">${e.wr==null?"no trades yet":`WR ${e.wr}% · net ${e.net>0?"+":""}${fmt(e.net)} · n ${e.n}/40`}</div>
+          ${b}
+        </div>
+      </div>`);
+  }
+}
+
+/* ── line chart (equity / ev trend) ── */
+function lineChart(host,series,fmtY,fmtTip){
+  const svg=host.querySelector("svg"),tip=host.querySelector(".tip");
+  const draw=()=>{
+    const W=host.clientWidth||300,H=host.clientHeight||120;
+    svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+    const all=series.flatMap(s=>s.pts.map(p=>p.y));
+    if(!all.length){svg.innerHTML=`<text x="12" y="24" fill="var(--ink3)" font-size="12">awaiting data…</text>`;return}
+    const min=Math.min(...all),max=Math.max(...all),rng=(max-min)||1,pad=8;
+    const X=i=>pad+i/(Math.max(...series.map(s=>s.pts.length))-1||1)*(W-2*pad);
+    const Y=v=>H-14-(v-min)/rng*(H-30);
+    let g=`<line x1="0" x2="${W}" y1="${Y(min)}" y2="${Y(min)}" stroke="var(--line)"/>`;
+    g+=`<text x="4" y="${Y(max)+4}" font-size="10" fill="var(--ink3)">${fmtY(max)}</text>
+        <text x="4" y="${Y(min)-3}" font-size="10" fill="var(--ink3)">${fmtY(min)}</text>`;
+    for(const s of series){
+      const d=s.pts.map((p,i)=>`${i?"L":"M"}${X(i).toFixed(1)},${Y(p.y).toFixed(1)}`).join("");
+      g+=`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2"/>`;
+      const lp=s.pts[s.pts.length-1];
+      if(lp)g+=`<circle cx="${X(s.pts.length-1)}" cy="${Y(lp.y)}" r="3" fill="${s.color}"/>`;
+    }
+    svg.innerHTML=g;
+    svg.onmousemove=e=>{
+      const r=svg.getBoundingClientRect(),fx=(e.clientX-r.left);
+      const s0=series[0];if(!s0.pts.length)return;
+      const i=Math.round((fx-pad)/((W-2*pad)/(s0.pts.length-1||1)));
+      const p=s0.pts[Math.max(0,Math.min(i,s0.pts.length-1))];
+      if(!p)return;
+      tip.style.display="block";
+      tip.style.left=Math.min(fx+10,W-130)+"px";tip.style.top="6px";
+      tip.textContent=fmtTip(p);
+    };
+    svg.onmouseleave=()=>tip.style.display="none";
+  };
+  draw();new ResizeObserver(draw).observe(host);
+  return {update(newSeries){series=newSeries;draw()}};
+}
+let eqChart=lineChart($("#eqchart"),[{color:"var(--amber)",pts:[]}],
+  v=>"$"+v.toFixed(0),p=>`${p.ts}  $${p.y.toFixed(2)}`);
+let evChart=lineChart($("#evchart"),[],v=>v.toFixed(2),p=>`${p.ts}  EV ${p.y>0?"+":""}${p.y.toFixed(3)}`);
+
+/* ── log console ── */
+const cons=$("#console");let filter="all",lines=0;
+document.querySelectorAll(".f").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll(".f").forEach(x=>x.setAttribute("aria-pressed","false"));
+  b.setAttribute("aria-pressed","true");filter=b.dataset.f;
+  cons.querySelectorAll("div").forEach(d=>{d.style.display=(filter==="all"||d.dataset.c===filter)?"":"none"});
+});
+function addLog(cls,line){
+  const d=document.createElement("div");
+  d.dataset.c=cls;d.className="l-"+cls+(/\[LOSS\]/.test(line)?" lost":"");
+  d.innerHTML=line.replace(/\[(WIN|LOSS|LATE ENTER|FILLED TAKER|VERDICT:[a-z]+|TRACK:[a-z]+|SIZE->BOOK)\]/g,"<b>[$1]</b>");
+  if(filter!=="all"&&cls!==filter)d.style.display="none";
+  cons.appendChild(d);lines++;
+  while(cons.childElementCount>1500)cons.firstElementChild.remove();
+  $("#lcount").textContent=lines+" lines";
+  if($("#follow").checked)cons.scrollTop=cons.scrollHeight;
+}
+
+/* ── data plumbing ── */
+async function loadHistory(){
+  try{
+    const h=await (await fetch("/api/history")).json();
+    eqChart.update([{color:"var(--amber)",pts:h.equity.map(e=>({ts:e.ts,y:e.bk}))}]);
+    const late=h.ev_trend.filter(x=>x.tag==="late"),hb=h.ev_trend.filter(x=>x.tag==="hiband");
+    evChart.update([
+      {color:"var(--btc)",pts:late.map(x=>({ts:x.ts,y:x.ev}))},
+      {color:"var(--eth)",pts:hb.map(x=>({ts:x.ts,y:x.ev}))}]);
+  }catch(e){}
+}
+async function loadHealth(){
+  try{
+    const h=await (await fetch("/api/health")).json();
+    $("#d-bot").className="dot "+(h.bot===1?"on":"off");
+    $("#d-cap").className="dot "+(h.capture===1?"on":"off");
+  }catch(e){$("#d-bot").className="dot";$("#d-cap").className="dot"}
+}
+function connect(){
+  const ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws");
+  ws.onopen=()=>{$("#d-ws").className="dot on pulse"};
+  ws.onclose=()=>{$("#d-ws").className="dot off";setTimeout(connect,2000)};
+  ws.onmessage=ev=>{
+    const m=JSON.parse(ev.data);
+    if(m.t==="log"){addLog(m.cls,m.line);
+      if(m.cls==="result"||/VERDICT/.test(m.line))loadHistory();}
+    else if(m.t==="state"){
+      $("#bankroll").textContent=fmt(m.bankroll);
+      const dn=$("#daynet");dn.textContent=`day ${m.day_net>0?"+":""}${fmt(m.day_net)}`;
+      dn.className="chip "+(m.day_net>0?"pos":m.day_net<0?"neg":"");
+      $("#openpos").textContent=`${m.open_positions} open`;
+      engines(m.engines||[]);}
+    else if(m.t==="prices"){
+      clock(m.window);
+      for(const[c,d] of Object.entries(m.coins||{})){
+        const el=$("#coin-"+c);if(!el||d.px==null)continue;
+        el.querySelector(".cpx").textContent=d.px>1000?d.px.toLocaleString(undefined,{maximumFractionDigits:2}):d.px.toFixed(4);
+        const [c60,c300]=[d.chg60,d.chg300];
+        el.querySelector(".cchg").innerHTML=
+          `Δ60s <b class="${c60>0?"up":c60<0?"down":""}">${c60==null?"—":(c60>0?"+":"")+c60}bp</b>`+
+          ` · Δ5m <b class="${c300>0?"up":c300<0?"down":""}">${c300==null?"—":(c300>0?"+":"")+c300}bp</b>`;
+        spark(el.querySelector(".spark"),d.spark,COINS[c]);
+      }}
+  };
+  setInterval(()=>{try{ws.send("k")}catch(e){}},25000);
+}
+connect();loadHistory();loadHealth();
+setInterval(loadHealth,15000);setInterval(loadHistory,120000);
+</script>
+</body>
+</html>

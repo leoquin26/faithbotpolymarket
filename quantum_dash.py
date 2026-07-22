@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""Quantum Desk — real-time CleanBot dashboard backend (read-only).
+FastAPI + WebSocket. Streams: raw log tail, engine/state snapshots (2s), live
+prices + window clock (1s). REST: /api/history (equity, trades, EV trend, days),
+/api/health. Serves quantum_ui/ at /. Port 8096 (old dash stays on 8095).
+Places NO orders, writes NOTHING to bot state — a pure observer."""
+import asyncio, json, os, re, subprocess, threading, time
+from collections import deque
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+import uvicorn
+
+import binance_ws
+
+V3 = os.path.dirname(os.path.abspath(__file__))
+LOG = os.path.join(V3, "clean_bot.log")
+STATE = os.path.join(V3, "clean_bot_state.json")
+UI = os.path.join(V3, "quantum_ui")
+COINS = ("BTC", "ETH", "SOL")
+ENGINES = ("late", "hiband", "early", "voldiv")
+
+app = FastAPI()
+_clients: set = set()
+_loop: asyncio.AbstractEventLoop = None
+_lock = threading.Lock()
+_price_hist = {c: deque(maxlen=900) for c in COINS}   # (ts, px) 1/s
+
+
+def _broadcast(msg: dict):
+    """Thread-safe fanout to every connected websocket."""
+    if _loop is None:
+        return
+    data = json.dumps(msg)
+    with _lock:
+        targets = list(_clients)
+    for ws in targets:
+        try:
+            asyncio.run_coroutine_threadsafe(ws.send_text(data), _loop)
+        except Exception:
+            pass
+
+
+LOG_CLASS = (
+    (re.compile(r"\[(WIN|LOSS)\]"), "result"),
+    (re.compile(r"\[LATE ENTER\]|\[FILLED"), "enter"),
+    (re.compile(r"\[VERDICT|\[TRACK"), "verdict"),
+    (re.compile(r"\[LATE SKIP\]|SKIP:"), "skip"),
+    (re.compile(r"\[SIZE->BOOK\]|\[LATE MISS\]|\[LATE EVAL MISSED\]"), "exec"),
+)
+
+
+def _classify(line: str) -> str:
+    for rx, cls in LOG_CLASS:
+        if rx.search(line):
+            return cls
+    return "sys"
+
+
+def _tail_log():
+    """Follow clean_bot.log from EOF; push every line with a class tag."""
+    pos = os.path.getsize(LOG) if os.path.exists(LOG) else 0
+    while True:
+        try:
+            size = os.path.getsize(LOG)
+            if size < pos:                      # rotated
+                pos = 0
+            if size > pos:
+                with open(LOG, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(pos)
+                    chunk = f.read(min(size - pos, 262144))
+                    pos = f.tell()
+                for ln in chunk.splitlines():
+                    ln = ln.strip()
+                    if ln:
+                        _broadcast({"t": "log", "cls": _classify(ln), "line": ln[:500]})
+        except Exception:
+            pass
+        time.sleep(0.4)
+
+
+def _engines_from_state(s: dict) -> list:
+    ev = s.get("recent_ev") or []
+    mult = s.get("engine_mult") or {}
+    off = s.get("engine_off") or {}
+    out = []
+    for tag in ENGINES:
+        rows = [x for x in ev if len(x) > 3 and x[3] == tag]
+        n = len(rows)
+        w = sum(x[0] for x in rows)
+        stk = sum(x[2] for x in rows)
+        net = sum(x[1] for x in rows)
+        m = float(mult.get(tag, 1.0))
+        status = ("RETIRED" if off.get(tag)
+                  else f"SCALED x{m:.0f}" if m > 1 else "MEASURING")
+        out.append({"engine": tag, "n": n, "wins": w,
+                    "wr": round(100 * w / n, 1) if n else None,
+                    "net": round(net, 2),
+                    "ev": round(net / stk, 3) if stk else None,
+                    "mult": m, "off": bool(off.get(tag)), "status": status})
+    return out
+
+
+def _poll_state():
+    while True:
+        try:
+            s = json.load(open(STATE, encoding="utf-8"))
+            open_pos = sum(1 for p in (s.get("positions") or {}).values()
+                           if p.get("status") == "filled")
+            _broadcast({"t": "state",
+                        "bankroll": s.get("bankroll"),
+                        "day_net": round((s.get("wins") or 0) - (s.get("losses") or 0), 2),
+                        "killed": bool(s.get("killed")),
+                        "open_positions": open_pos,
+                        "engines": _engines_from_state(s)})
+        except Exception:
+            pass
+        time.sleep(2.0)
+
+
+def _poll_prices():
+    while True:
+        now = time.time()
+        coins = {}
+        for c in COINS:
+            try:
+                px = binance_ws.get_price(c)
+            except Exception:
+                px = None
+            if px:
+                _price_hist[c].append((now, float(px)))
+            h = _price_hist[c]
+            def chg(sec):
+                if len(h) < 2:
+                    return None
+                base = None
+                for ts, p in h:
+                    if now - ts <= sec:
+                        base = p
+                        break
+                return round((h[-1][1] - base) / base * 1e4, 1) if base else None
+            spark = [round(p, 6) for _, p in list(h)[-240::3]]     # ~80 pts / 4 min
+            coins[c] = {"px": h[-1][1] if h else None,
+                        "chg60": chg(60), "chg300": chg(300), "spark": spark}
+        ws_epoch = int(now // 900) * 900
+        t_rem = int(ws_epoch + 900 - now)
+        _broadcast({"t": "prices", "coins": coins,
+                    "window": {"start": ws_epoch, "t_rem": t_rem,
+                               "in_slot": 150 <= t_rem <= 195}})
+        time.sleep(1.0)
+
+
+RX_RESULT = re.compile(
+    r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| \[(WIN|LOSS)\] (\w+) (UP|DOWN) @ (\d+)c"
+    r" -> \w+ \| ([+-][\d.]+) \| bankroll \$([\d.]+)")
+RX_TRACK = re.compile(
+    r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| \[TRACK:(late|hiband)\] last (\d+): "
+    r"(\d+)/\d+=(\d+)%WR \| net ([+-][\d.]+) \| EV/\$ ([+-][\d.]+)")
+
+
+@app.get("/api/history")
+def history():
+    equity, trades, ev_trend, days = [], [], [], {}
+    try:
+        size = os.path.getsize(LOG)
+        with open(LOG, "r", encoding="utf-8", errors="replace") as f:
+            if size > 8_000_000:
+                f.seek(size - 8_000_000)
+                f.readline()
+            for ln in f:
+                m = RX_RESULT.match(ln)
+                if m:
+                    ts, res, coin, d, px, pnl, bk = m.groups()
+                    equity.append({"ts": ts, "bk": float(bk)})
+                    trades.append({"ts": ts, "res": res, "coin": coin, "dir": d,
+                                   "px": int(px), "pnl": float(pnl)})
+                    day = ts[:10]
+                    agg = days.setdefault(day, {"net": 0.0, "n": 0, "w": 0})
+                    agg["net"] = round(agg["net"] + float(pnl), 2)
+                    agg["n"] += 1
+                    agg["w"] += 1 if res == "WIN" else 0
+                    continue
+                m = RX_TRACK.match(ln)
+                if m:
+                    ts, tag, n, w, wr, net, ev = m.groups()
+                    ev_trend.append({"ts": ts, "tag": tag, "n": int(n),
+                                     "ev": float(ev)})
+    except Exception:
+        pass
+    return JSONResponse({"equity": equity[-500:], "trades": trades[-80:],
+                         "ev_trend": ev_trend[-200:],
+                         "days": [{"date": k, **v} for k, v in sorted(days.items())[-8:]]})
+
+
+@app.get("/api/health")
+def health():
+    def procs(pat):
+        try:
+            r = subprocess.run(["pgrep", "-fc", pat], capture_output=True, text=True)
+            return int((r.stdout or "0").strip() or 0)
+        except Exception:
+            return -1
+    age = None
+    try:
+        age = round(time.time() - os.path.getmtime(LOG), 1)
+    except Exception:
+        pass
+    return {"bot": procs("^python3 -u clean_bot.py$"),
+            "capture": procs("^python3 -u hourly_capture.py$"),
+            "log_age_s": age, "ws_clients": len(_clients)}
+
+
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket):
+    await ws.accept()
+    with _lock:
+        _clients.add(ws)
+    try:
+        await ws.send_text(json.dumps({"t": "hello", "server_time": time.time()}))
+        while True:
+            await ws.receive_text()             # keepalive pings from client
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        with _lock:
+            _clients.discard(ws)
+
+
+app.mount("/", StaticFiles(directory=UI, html=True), name="ui")
+
+
+@app.on_event("startup")
+async def _startup():
+    global _loop
+    _loop = asyncio.get_running_loop()
+    binance_ws.start()
+    for fn in (_tail_log, _poll_state, _poll_prices):
+        threading.Thread(target=fn, daemon=True).start()
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8096, log_level="warning")
