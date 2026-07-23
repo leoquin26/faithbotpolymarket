@@ -64,6 +64,40 @@ The SOL=1.5 tilt (clean_bot.py:250) was premised on SHADOW research "SOL EV/$ +0
 Caveat: SOL-vs-ETH gap is ~1.5 SE on n=40 — suggestive, not iron-clad; equal-weight is
 the honest default. Watch whether SOL WR recovers at neutral size.
 
+## v1.60.8 — 2026-07-23 — POST-MORTEM: ruin-spiral fix (uncapped MIN sizing) + emergency brake
+**Tag:** `cleanbot-v1.60.8` · LIVE 15:43 UTC · late engine RETIRED, de-scaled to ×1
+
+**INCIDENT: bankroll $57.61 → $20.62 (−$37, −64%) in 12 trades, 01:39→14:02 UTC.**
+
+**Cause 1 — MY BUG (v1.60.6), the amplifier.** v1.60.6 applied `engine_mult` inside the
+MIN sizing branch but left it UNCAPPED; the `max_bet_pct` guard existed only in the
+compound branch. Compound stayed locked (the ×2 verdict clears `recent_ev`, re-locking
+`_late_compound_ok`), so EVERY bet took the MIN path: a flat 10 shares regardless of
+bankroll. As the book fell the same ~$6.50 bet went 12% → 30% of it:
+```
+bankroll $53 → x10 $6.60 (12%)   $35 → x10 $7.00 (20%)
+bankroll $40 → x10 $6.50 (16%)   $27 → x10 $6.60 (24%)   $21 → x9 $6.21 (30%)
+```
+**Fix:** the bankroll cap now applies to BOTH branches, plus a redundant cap + `[RUIN
+GUARD]` stand-down on every taker path (incl. hiband, which was also uncapped). Verified
+by simulation against the actual collapse: 16%→11%, 20%→12%, 24%→12%, and full stand-down
+below ~$16 where even the 5-share exchange minimum breaches the risk cap.
+
+**Cause 2 — the signal genuinely failed.** Core band 1W/5L = 17% WR (vs 65–78% measured);
+`[TRACK:late]` 4/13 = 31%, EV/$ **−0.583**, net −$40.55. Not variance-explainable alone.
+
+**Cause 3 — every safety net was blind/off (the systemic failure).**
+- The n≥40 auto-retire could NOT fire: the ×2 SCALE-UP had cleared `recent_ev` to zero, so
+  the engine bled 13 trades at −0.58 EV with its own breaker sample-starved. **Scaling up
+  deleted the protection exactly when risk increased.**
+- 3-loss breaker never tripped — losses were spaced >20 min apart.
+- Daily stop disabled (`stop $999`) by prior owner instruction.
+**Fix:** `[EMERGENCY:<engine>]` brake — retires an engine and de-scales it to ×1 at
+`n>=10` with `EV/$ <= -0.15`, independent of the n≥40 rule (`CLEAN_EMERGENCY_N/EV`).
+
+**Actions taken:** trading halted mid-incident; late engine `engine_off=True`, `mult=1.0`;
+hiband (88% WR, EV +0.009) left live at flat min size. Bankroll $20.62.
+
 ## v1.60.7 — 2026-07-23 — FAK execution: partial fills instead of full misses
 **Tag:** `cleanbot-v1.60.7` · LIVE 01:39 UTC · env `CLEAN_LATE_FAK=on` (rollback: off → FOK)
 

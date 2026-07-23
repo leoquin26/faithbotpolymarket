@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.60.7"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.60.8"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -81,6 +81,15 @@ class Cfg:
     kelly_bump: float = float(os.getenv("CLEAN_KELLY_BUMP", "0.10"))   # Kelly fraction above the threshold
     kelly_bump_at: float = float(os.getenv("CLEAN_KELLY_BUMP_AT", "70"))  # bankroll $ to start sizing up
     max_bet_pct: float = float(os.getenv("CLEAN_MAX_BET_PCT", "0.12")) # never >this % of bankroll/bet
+    # v1.60.8 RUIN GUARD: the exchange minimum (5 shares) is a FIXED dollar cost, so as the
+    # bankroll shrinks it becomes an ever-larger share of the book (at $20, 5sh@65c = 16%;
+    # at $12 it is 27%). Below the bankroll where even the MINIMUM bet exceeds this fraction,
+    # no bet can be sized responsibly — stand down rather than gamble a quarter of the book.
+    max_bet_hard_pct: float = float(os.getenv("CLEAN_MAX_BET_HARD_PCT", "0.20"))
+    # v1.60.8 emergency brake thresholds (see the verdict block): retire an engine early when
+    # EV is catastrophic, without waiting for the n>=40 sample the scale-up reset destroyed.
+    emergency_n: int = int(os.getenv("CLEAN_EMERGENCY_N", "10"))
+    emergency_ev: float = float(os.getenv("CLEAN_EMERGENCY_EV", "-0.15"))
     max_open_pct: float = float(os.getenv("CLEAN_MAX_OPEN_PCT", "0.25"))  # cap total open exposure
     corr_pair_frac: float = float(os.getenv("CLEAN_CORR_PAIR_FRAC", "0.5"))  # ETH+SOL same dir same window = 1 correlated bet, not 2: size each leg at this frac (skip 2nd leg if half < exchange min)
     corr_full_at: float = float(os.getenv("CLEAN_CORR_FULL_AT", "55"))  # v1.31: bankroll $ at which same-dir pairs trade BOTH legs full-size. Legs are +EV (aligned 69% vs 64% BE, n=884); the cap is risk-concentration: at $55+ a pair = ~12% of book (policy-sized) and a paired loss no longer eats the daily stop. Auto-unlocks as the book grows.
@@ -739,8 +748,13 @@ class CleanBot:
                 cmult *= CFG.late_grow_mult
             emult = float(self.engine_mult.get("late", 1.0))
             shares = max(CFG.shares, int(round(base * cmult * emult)))
-            max_sh = max(CFG.shares, int((self.bankroll * CFG.max_bet_pct) / price))
-            shares = min(shares, max_sh)
+        # v1.60.8 CRITICAL — bankroll risk cap now applies to *BOTH* branches.
+        # v1.60.6 applied engine_mult inside the MIN branch but left it UNCAPPED, so a flat
+        # 10-share bet stayed ~$6.50 while the bankroll fell $58 → $21 on 2026-07-23:
+        # 12% → 30% of book per bet, a textbook ruin spiral (-$37 in 12 trades). The cap
+        # below previously lived only in the compound branch — that asymmetry was the bug.
+        max_sh = max(CFG.shares, int((self.bankroll * CFG.max_bet_pct) / price))
+        shares = min(shares, max_sh)
         # $ notional cap (geometry): at 66c, $3.50 → 5sh floor still binds
         if CFG.late_max_usd > 0:
             cap_sh = max(CFG.shares, int(CFG.late_max_usd / price))
@@ -1613,6 +1627,21 @@ class CleanBot:
             shares = max(CFG.shares, int(CFG.shares * float(self.engine_mult.get("hiband", 1.0))))
         else:
             shares = self._late_size_shares(coin, px_ord, lead_state=lead_state)
+        # v1.60.8: risk cap + ruin guard on EVERY taker path (hiband's flat×mult branch
+        # had no cap either). Belt-and-suspenders after the 2026-07-23 ruin spiral.
+        _max_sh = max(CFG.shares, int((self.bankroll * CFG.max_bet_pct) / px_ord))
+        if shares > _max_sh:
+            logger.info(f"[RISK CAP] {coin} {direction} x{shares} -> x{_max_sh} "
+                        f"({CFG.max_bet_pct*100:.0f}% of ${self.bankroll:.2f})")
+            shares = _max_sh
+        if CFG.shares * px_ord > self.bankroll * CFG.max_bet_hard_pct:
+            if (coin, ws, "ruin") not in self._nc_logged:
+                logger.warning(f"[RUIN GUARD] {coin} {direction} STAND DOWN — exchange-min "
+                               f"{CFG.shares}sh@{px_ord*100:.0f}c = ${CFG.shares*px_ord:.2f} "
+                               f"> {CFG.max_bet_hard_pct*100:.0f}% of ${self.bankroll:.2f}. "
+                               f"Bankroll too small to size any bet responsibly.")
+                self._nc_logged.add((coin, ws, "ruin"))
+            return
         # v1.60.4 BOOK-AWARE FOK SIZING: post-cap-raise (9-10sh) FOKs went 0/2 — top-of-book
         # at the decision moment typically holds ~5-8 shares, and FOK demands the FULL size
         # at <= limit. Take what the book displays (x0.9 safety), floor at exchange-min;
@@ -2178,6 +2207,21 @@ class CleanBot:
                 # SELF-GOVERNANCE (v1.47): at n>=40 the engine EXECUTES its own verdict — the
                 # pre-registered rules stop being advisory. OFF is permanent until owner reset
                 # ("engine_off" in state); scaling steps 1x->2x->3x only while EV holds >= +0.03.
+                # v1.60.8 EMERGENCY BRAKE — the n>=40 verdict is BLIND right after a SCALE-UP,
+                # because scaling clears recent_ev. On 2026-07-23 the late engine bled 13
+                # trades at EV/$ -0.58 (-$40, bankroll $58->$21) while its own circuit breaker
+                # could not fire: the sample had been reset to zero by the ×2 verdict it had
+                # just earned. Catastrophic EV must retire an engine at a far smaller n.
+                if (_n >= CFG.emergency_n and _ev <= CFG.emergency_ev
+                        and not self.engine_off.get(_tag)):
+                    self.engine_off[_tag] = True
+                    self.engine_mult[_tag] = 1.0          # also undo any scale-up
+                    logger.warning(f"[EMERGENCY:{_tag}] n={_n} EV/$ {_ev:+.3f} <= "
+                                   f"{CFG.emergency_ev} — ENGINE RETIRED EARLY (catastrophic "
+                                   f"EV; the n>=40 rule was blind after a scale-up reset)")
+                    tg._send(f"🚨 <b>EMERGENCY STOP: {_tag}</b> — n={_n}, EV/$ {_ev:+.3f}. "
+                             f"Engine retired early and de-scaled to x1. Owner reset required.")
+                    self._save()
                 if _n >= 40 and not self.engine_off.get(_tag):
                     if _ev <= -0.03:
                         self.engine_off[_tag] = True
