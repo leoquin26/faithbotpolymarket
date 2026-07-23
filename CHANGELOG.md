@@ -64,6 +64,32 @@ The SOL=1.5 tilt (clean_bot.py:250) was premised on SHADOW research "SOL EV/$ +0
 Caveat: SOL-vs-ETH gap is ~1.5 SE on n=40 — suggestive, not iron-clad; equal-weight is
 the honest default. Watch whether SOL WR recovers at neutral size.
 
+## v1.60.9 — 2026-07-23 — LEAD-STATE WHITELIST: grow-only, applied to BOTH engines
+**Tag:** `cleanbot-v1.60.9` · env `CLEAN_LATE_LEAD_ALLOW=grow` (`.env.bak_growonly`) · LIVE 17:15 UTC
+
+Owner's question — "our proven engines are late and hiband; why not improve THOSE?" —
+prompted a per-engine breakdown on real fill prices (n=126). The SAME ordering replicated
+independently in both price bands:
+```
+LATE  (60-75c):  grow +0.053 (n=40)          | flip -0.020 (n=35) | fade -0.295 (n=19)
+HIBAND(80-89c):  grow +0.100 (n=21, 95.2%WR) | flip -0.157 (n=11) | fade  n=0
+```
+**Cross-engine replication** (two independent bands, same grow>flip>fade ordering) is why
+this is treated as structural rather than a mined cell. Note `fade` is NOT an engine — it
+is a lead-trajectory tag *inside* the late engine (early→late: lead strengthening / flipped
+/ shrinking), which is why cutting it improves the late engine rather than removing one.
+
+**Change:** new `CLEAN_LATE_LEAD_ALLOW` whitelist checked before every entry in BOTH engines
+(the check sits above the band split, so hiband inherits it — hiband previously had NO
+lead filter at all, and its flip subset was the worst cell measured at -0.157).
+Set to `grow`. Effect per trade: late +0.019 → **+0.053**, hiband +0.011 → **+0.100**.
+Volume: ~8.9 → ~5 trades/day — deliberate quality-over-quantity while the bankroll is $20.62.
+
+**Honest caveat:** late-grow's halves are unstable (IS -0.030 / OOS +0.246, n=40) and
+hiband-grow is n=21. Both engines keep flat min size, ×1 mult, and the v1.60.8 guards
+(bankroll cap, RUIN GUARD, emergency brake at n>=10/EV<=-0.15). Legacy behaviour restored
+by clearing the env var.
+
 ## 2026-07-23 (2) — ACCURACY FIX: `fade` re-cut (it caused the collapse) + engine back at ×1
 **Env** (`.env.bak_fadecut`): `CLEAN_LATE_SKIP_FADING=on` · late re-enabled, mult ×1, meter reset · LIVE 16:24 UTC
 

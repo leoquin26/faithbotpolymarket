@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.60.8"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.60.9"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -255,6 +255,10 @@ class Cfg:
     # window is never fully missed — we take a (book-limited) partial position at the same price.
     # NO retry with FAK (a retry after a partial = double-fill risk, the v1.60.2 class).
     late_fak: bool = os.getenv("CLEAN_LATE_FAK", "on").lower() in ("1", "true", "yes", "on")
+    # v1.60.9: which early→late lead trajectories may trade, for BOTH late and hiband.
+    # Empty = allow all (legacy). Set CLEAN_LATE_LEAD_ALLOW=grow for the measured edge.
+    late_lead_allow: tuple = tuple(
+        x.strip() for x in os.getenv("CLEAN_LATE_LEAD_ALLOW", "").split(",") if x.strip())
     # v1.55: never use Binance for late direction/roc (settlement is Chainlink). Skip if CL missing.
     late_require_cl_spot: bool = os.getenv("CLEAN_LATE_REQUIRE_CL_SPOT", "on").lower() in ("1", "true", "yes", "on")
     late_roc_cl_only: bool = os.getenv("CLEAN_LATE_ROC_CL_ONLY", "on").lower() in ("1", "true", "yes", "on")
@@ -1475,6 +1479,18 @@ class CleanBot:
                 self._nc_logged.add((coin, ws, "noearly"))
             return
         # SKIP FADING LEADERS (v1.39): same-dir shrink early→late.
+        # v1.60.9 LEAD-STATE WHITELIST — applies to BOTH engines (late core + hiband),
+        # because the same ordering replicated independently in each price band on real
+        # fill prices (n=126): grow is the edge, flip is negative, fade is toxic.
+        #   late  60-75c:  grow +0.053 (n=40) | flip -0.020 (n=35) | fade -0.295 (n=19)
+        #   hiband 80-89c: grow +0.100 (n=21, 95.2% WR) | flip -0.157 (n=11)
+        # Cross-engine replication is why this is a structural finding, not a mined cell.
+        if CFG.late_lead_allow and lead_state not in CFG.late_lead_allow:
+            if (coin, ws, "leadwl") not in self._nc_logged:
+                logger.info(f"[LATE SKIP] {coin} {direction} lead={lead_state} not in "
+                            f"allowed {','.join(CFG.late_lead_allow)} (grow carries the edge)")
+                self._nc_logged.add((coin, ws, "leadwl"))
+            return
         if CFG.late_skip_fading and lead_state == "fade":
             if (coin, ws, "fade") not in self._nc_logged:
                 er = self._early_snapshot(coin, ws) or {}
