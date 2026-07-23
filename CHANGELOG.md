@@ -64,6 +64,27 @@ The SOL=1.5 tilt (clean_bot.py:250) was premised on SHADOW research "SOL EV/$ +0
 Caveat: SOL-vs-ETH gap is ~1.5 SE on n=40 — suggestive, not iron-clad; equal-weight is
 the honest default. Watch whether SOL WR recovers at neutral size.
 
+## v1.60.7 — 2026-07-23 — FAK execution: partial fills instead of full misses
+**Tag:** `cleanbot-v1.60.7` · LIVE 01:39 UTC · env `CLEAN_LATE_FAK=on` (rollback: off → FOK)
+
+Owner asked to review the last FOK miss. Diagnosis: book-turnover race — the depth snapshot
+goes stale in the ~1s before the order lands, so a whole price level refreshes and the
+all-or-nothing FOK is killed even after the v1.60.4 book-aware trim (22% pre-fix / ~8%
+post-fix miss rate; every miss $0 but a lost trade).
+
+**Fix: taker path FOK → FAK (fill-and-kill).** FAK fills whatever sits at ≤ our price and
+kills the remainder — a window is never fully missed; we take a book-limited PARTIAL
+position at the same price. Safety properties preserved/added:
+- **No retry with FAK** (attempts=1) — a retry after a partial is the exact v1.60.2
+  double-fill hazard.
+- **v1.60.2 async-zero poll KEPT** — matched=0 still polls get_order 3×/1.2s before any
+  miss verdict (async matching can under-report instantly).
+- **Partial tracked at real size** — position/fee/EV use actual `size_matched`, logged
+  `[FILLED TAKER PARTIAL] x{sh}/{req} book-limited`.
+- Book-aware trim still runs first (belt+suspenders). Exit-sell path stays FOK (dormant).
+- Banner + labels now report FAK truthfully.
+
+Verify: watch first fills — expect near-zero `[LATE MISS]`; partials appear as PARTIAL.
 ## v1.60.6 — 2026-07-22 — the ×2 VERDICT FIRED; fix that un-muted it
 **Tag:** `cleanbot-v1.60.6` · LIVE 14:12 UTC
 

@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.60.6"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.60.7"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -239,6 +239,13 @@ class Cfg:
     # ROLLBACK: CLEAN_LATE_FOK_RETRY=off
     late_fok_retry: bool = os.getenv("CLEAN_LATE_FOK_RETRY", "on").lower() in ("1", "true", "yes", "on")
     late_fok_retry_sleep: float = float(os.getenv("CLEAN_LATE_FOK_RETRY_SLEEP", "0.35"))  # seconds before refresh
+    # v1.60.7: FAK (fill-and-kill) instead of FOK for the taker path. FOK is all-or-nothing:
+    # when the top-of-book turns over in the ~1s between the depth read and the order landing,
+    # the whole order is killed (22% pre-fix / ~8% post-book-aware miss rate — all $0 losses
+    # but missed trades). FAK fills WHAT IS THERE at <= our price and kills the remainder, so a
+    # window is never fully missed — we take a (book-limited) partial position at the same price.
+    # NO retry with FAK (a retry after a partial = double-fill risk, the v1.60.2 class).
+    late_fak: bool = os.getenv("CLEAN_LATE_FAK", "on").lower() in ("1", "true", "yes", "on")
     # v1.55: never use Binance for late direction/roc (settlement is Chainlink). Skip if CL missing.
     late_require_cl_spot: bool = os.getenv("CLEAN_LATE_REQUIRE_CL_SPOT", "on").lower() in ("1", "true", "yes", "on")
     late_roc_cl_only: bool = os.getenv("CLEAN_LATE_ROC_CL_ONLY", "on").lower() in ("1", "true", "yes", "on")
@@ -1577,7 +1584,7 @@ class CleanBot:
         # EXECUTION (v1.46 + v1.50): TAKER by default — FOK at ask.
         if CFG.late_taker:
             px_ord = round(float(ask), 2)
-            otype = OrderType.FOK
+            otype = OrderType.FAK if CFG.late_fak else OrderType.FOK
             is_taker = True
         else:
             offset = CFG.maker_offset
@@ -1634,7 +1641,7 @@ class CleanBot:
             return
         if self._open_exposure() + px_ord * shares > self.bankroll * CFG.max_open_pct:
             return
-        _how = "TAKER/FOK" if is_taker else "maker/GTC"
+        _how = (("TAKER/FAK" if CFG.late_fak else "TAKER/FOK") if is_taker else "maker/GTC")
         _fee = _taker_buy_fee(px_ord, shares) if is_taker else 0.0
         _cm = CFG.late_coin_mult.get(coin.upper(), 1.0)
         _ev = self._late_engine_ev()
@@ -1666,7 +1673,9 @@ class CleanBot:
             return
         if is_taker:
             # v1.56: FOK at ask; on unfilled/400, optional ONE retry at refreshed ask (no GTC rest).
-            attempts = 2 if CFG.late_fok_retry else 1
+            # v1.60.7: FAK never retries — it already took what the book had in one shot; a
+            # retry after a partial fill is exactly the double-fill hazard from v1.60.2.
+            attempts = 1 if CFG.late_fak else (2 if CFG.late_fok_retry else 1)
             filled_ok = False
             for attempt in range(attempts):
                 if attempt > 0:
@@ -1690,7 +1699,7 @@ class CleanBot:
                 try:
                     res = self.client.create_and_post_order(
                         OrderArgs(price=px_ord, size=shares, side=BUY, token_id=token),
-                        PartialCreateOrderOptions(tick_size="0.01"), OrderType.FOK)
+                        PartialCreateOrderOptions(tick_size="0.01"), otype)
                     oid = (res or {}).get("orderID") or (res or {}).get("orderId")
                     matched = float((res or {}).get("size_matched") or
                                     (res or {}).get("sizeMatched") or 0)
@@ -1719,16 +1728,22 @@ class CleanBot:
                             "entry": px_ord, "shares": sh, "status": "filled",
                             "late": True, "hiband": hiband, "taker": True,
                             "buy_fee": round(fee, 4)}
-                        tag = "FILLED TAKER" if attempt == 0 else "FILLED TAKER RETRY"
+                        # v1.60.7: FAK may fill PARTIALLY (sh < requested) — that's a success,
+                        # a book-limited position at our price, not a miss.
+                        partial = sh < shares
+                        tag = ("FILLED TAKER PARTIAL" if partial
+                               else "FILLED TAKER" if attempt == 0 else "FILLED TAKER RETRY")
+                        extra = f" ({sh}/{shares} book-limited)" if partial else ""
                         logger.info(f"[{tag}] LATE {coin} {direction} @ {px_ord*100:.0f}c "
-                                    f"x{sh} fee=${fee:.3f}")
+                                    f"x{sh}{extra} fee=${fee:.3f}")
                         tg._send(f"🤖 <b>{tag}</b> LATE {coin} {direction} @ {px_ord*100:.0f}c "
-                                 f"x{sh}", dedup_key=f"fill-late-{coin}-{ws}")
+                                 f"x{sh}{extra}", dedup_key=f"fill-late-{coin}-{ws}")
                         filled_ok = True
                         break
                     err_txt = str((res or {}).get("errorMsg") or (res or {}).get("error") or "")
+                    _ot = "FAK" if CFG.late_fak else "FOK"
                     logger.info(f"[LATE MISS] {coin} {direction} @ {px_ord*100:.0f}c x{shares} "
-                                f"FOK no fill attempt {attempt+1}/{attempts}"
+                                f"{_ot} no fill attempt {attempt+1}/{attempts} (book empty at price)"
                                 + (f" ({err_txt[:80]})" if err_txt else ""))
                 except Exception as e:
                     emsg = str(e)
@@ -1736,8 +1751,10 @@ class CleanBot:
                                     or "couldn't be fully filled" in emsg.lower()
                                     or "could not be fully filled" in emsg.lower())
                     if fok_unfilled:
+                        # FAK shouldn't raise this (it's FOK's all-or-nothing error) — but keep
+                        # the net so a stray kill is logged as a clean $0 miss, never a crash.
                         logger.info(f"[LATE MISS] {coin} {direction} @ {px_ord*100:.0f}c "
-                                    f"FOK killed attempt {attempt+1}/{attempts}: {emsg[:120]}")
+                                    f"killed attempt {attempt+1}/{attempts}: {emsg[:120]}")
                     else:
                         logger.warning(f"[LATE ORDER FAIL] {coin} {direction}: {e}")
                         break  # non-FOK error: don't hammer
@@ -2206,7 +2223,7 @@ class CleanBot:
                if CFG.confirm_coins else "no-confirm")
         _lcm = ",".join(f"{k}={v:g}" for k, v in sorted(CFG.late_coin_mult.items())) or "flat"
         _late = (f"late={'ON' if CFG.late_live else 'off'}[{','.join(CFG.late_coins)}] "
-                 f"{'FOK' if CFG.late_taker else 'GTC'} cmult={_lcm} "
+                 f"{('FAK' if CFG.late_fak else 'FOK') if CFG.late_taker else 'GTC'} cmult={_lcm} "
                  f"earlyReq={'on' if CFG.late_require_early else 'off'} "
                  f"grow×{CFG.late_grow_mult:g} cmpEV>{CFG.compound_min_ev:g}@n{CFG.compound_min_ev_n} "
                  f"dirVote={'on' if CFG.late_dir_vote else 'off'}/revAsDir={'on' if CFG.late_rev_as_dir else 'off'}")
@@ -2219,7 +2236,7 @@ class CleanBot:
                     f"| bankroll ${self.bankroll:.2f} target ${CFG.target_bankroll:.0f} "
                     f"stop ${self._stop_amount():.2f} ===")
         tg._send(f"🤖 <b>CleanBot v{VERSION}</b> started {'LIVE' if not CFG.dry else 'DRY'} | "
-                 f"late FOK · join-quality · {_sz} · "
+                 f"late {('FAK' if CFG.late_fak else 'FOK') if CFG.late_taker else 'GTC'} · join-quality · {_sz} · "
                  f"💰 ${self.bankroll:.2f}→${CFG.target_bankroll:.0f}")
         binance_ws.start()
         try:
