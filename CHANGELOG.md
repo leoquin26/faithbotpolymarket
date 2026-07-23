@@ -64,6 +64,30 @@ The SOL=1.5 tilt (clean_bot.py:250) was premised on SHADOW research "SOL EV/$ +0
 Caveat: SOL-vs-ETH gap is ~1.5 SE on n=40 — suggestive, not iron-clad; equal-weight is
 the honest default. Watch whether SOL WR recovers at neutral size.
 
+## 2026-07-23 (2) — ACCURACY FIX: `fade` re-cut (it caused the collapse) + engine back at ×1
+**Env** (`.env.bak_fadecut`): `CLEAN_LATE_SKIP_FADING=on` · late re-enabled, mult ×1, meter reset · LIVE 16:24 UTC
+
+Owner pushed back correctly: "we already have the data — improve accuracy NOW, don't wait."
+Mined every matched late trade (n=94 core, real fill prices, not CSV snapshots):
+```
+lead=grow  n=40  WR 70.0%  BE 65.1%  afterFee +0.053   ✓
+lead=flip  n=35  WR 65.7%  BE 65.6%  afterFee -0.020   ~flat
+lead=fade  n=19  WR 47.4%  BE 65.3%  afterFee -0.295   ✗ THE LEAK
+```
+`fade` = 47% WR needing 65% — and it produced **4 of the 5 core losses** in the collapse.
+Cutting it: core goes **−0.045 → +0.019** overall, recent window **+0.300**, 7.8 → 6.2
+trades/day. **This reverts the Jul 18 fade re-admission**, which came from the deep-audit
+grid measured on *CSV snapshot prices* — the same methodology I flagged then as unreliable
+("snapshot price ≠ actual fill"). Live fills with real execution say the opposite. Lesson:
+gate re-admissions on fill-price evidence, never snapshot counterfactuals.
+
+**H2 tested and NOT acted on:** roc-opposing bets scored better (+0.038) than roc-agreeing
+(−0.126) — counterintuitive, but the strongly-opposing bucket is already filtered by the
+reverse-underway gate (n=5), so the sample is selection-contaminated. Not actionable.
+
+**Engine restored:** late back ON at ×1 (must re-earn any scale-up), meter reset, with the
+v1.60.8 bankroll cap + RUIN GUARD + emergency brake now protecting it. hiband unchanged.
+
 ## v1.60.8 — 2026-07-23 — POST-MORTEM: ruin-spiral fix (uncapped MIN sizing) + emergency brake
 **Tag:** `cleanbot-v1.60.8` · LIVE 15:43 UTC · late engine RETIRED, de-scaled to ×1
 
