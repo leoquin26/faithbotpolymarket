@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.61.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.61.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -555,29 +555,33 @@ class CleanBot:
         """True if ANOTHER coin already has a live bet (resting order or filled position)
         in the SAME 15m window and the SAME direction. ETH/SOL are ~0.85 correlated, so
         a same-window same-direction pair is one 2x bet, not two — a wrong call loses both
-        legs at once (e.g. 2026-06-26 01:46 ETH+SOL Down both lost, -$7.25 in one window)."""
+        legs at once (e.g. 2026-06-26 01:46 ETH+SOL Down both lost, -$7.25 in one window).
+        v1.61.2: returns the CONFLICTING COIN (truthy) instead of True so the caller can
+        say WHICH leg blocked it — these guards used to return silently, the exact
+        'why isn't it betting?' blindness v1.58.1 fixed everywhere else."""
         for o in self.open_orders.values():
             if o.get("coin") != coin and o.get("ws") == ws and o.get("dir") == direction:
-                return True
+                return o.get("coin")
         for p in self.positions.values():
             if (p.get("coin") != coin and p.get("ws") == ws and p.get("dir") == direction
                     and p.get("status") in ("filled", "open")):
-                return True
-        return False
+                return p.get("coin")
+        return None
 
     def _corr_opposite(self, coin, ws, direction):
         """True if ANOTHER coin already has a live bet in the SAME window but the OPPOSITE
         direction. Data (1067 windows): divergent correlated pairs win only 55% (n=168) vs
         69% when aligned — betting ETH/SOL to decorrelate is a coinflip that loses at favorite
-        prices (e.g. 2026-06-29 SOL DOWN won but ETH UP lost, both actually closed DOWN)."""
+        prices (e.g. 2026-06-29 SOL DOWN won but ETH UP lost, both actually closed DOWN).
+        v1.61.2: returns the conflicting coin (truthy) so the block can be logged."""
         for o in self.open_orders.values():
             if o.get("coin") != coin and o.get("ws") == ws and o.get("dir") != direction:
-                return True
+                return o.get("coin")
         for p in self.positions.values():
             if (p.get("coin") != coin and p.get("ws") == ws and p.get("dir") != direction
                     and p.get("status") in ("filled", "open")):
-                return True
-        return False
+                return p.get("coin")
+        return None
 
     def _size_shares(self, price):
         """Tiered Kelly: conservative while rebuilding, bigger once bankroll recovers past
@@ -1686,12 +1690,30 @@ class CleanBot:
                     shares = _fit
             except Exception as e:
                 logger.debug(f"depth check failed ({e}) — proceeding at planned size")
-        # CORRELATION GUARD (v1.39.1)
-        if self._corr_sibling(coin, ws, direction):
+        # CORRELATION GUARD (v1.39.1) — v1.61.2: these three used to `return` SILENTLY,
+        # so a blocked window looked identical to "no signal" in the log. Owner's standing
+        # rule is never-silent; every skip must name itself.
+        _sib = self._corr_sibling(coin, ws, direction)
+        if _sib:
+            if (coin, ws, "corrsib") not in self._nc_logged:
+                logger.info(f"[LATE SKIP] {coin} {direction} corr-sibling — {_sib} already "
+                            f"holds {direction} this window (~0.85 correlated = one 2x bet)")
+                self._nc_logged.add((coin, ws, "corrsib"))
             return
-        if CFG.corr_opposite_block and self._corr_opposite(coin, ws, direction):
+        _opp = CFG.corr_opposite_block and self._corr_opposite(coin, ws, direction)
+        if _opp:
+            if (coin, ws, "corropp") not in self._nc_logged:
+                logger.info(f"[LATE SKIP] {coin} {direction} corr-opposite — {_opp} holds the "
+                            f"other side this window (divergent pairs = 55% coinflip)")
+                self._nc_logged.add((coin, ws, "corropp"))
             return
-        if self._open_exposure() + px_ord * shares > self.bankroll * CFG.max_open_pct:
+        _exp = self._open_exposure()
+        if _exp + px_ord * shares > self.bankroll * CFG.max_open_pct:
+            if (coin, ws, "expo") not in self._nc_logged:
+                logger.info(f"[LATE SKIP] {coin} {direction} max-open-exposure — open ${_exp:.2f} "
+                            f"+ ${px_ord*shares:.2f} > {CFG.max_open_pct*100:.0f}% of "
+                            f"${self.bankroll:.2f} (${self.bankroll*CFG.max_open_pct:.2f})")
+                self._nc_logged.add((coin, ws, "expo"))
             return
         _how = (("TAKER/FAK" if CFG.late_fak else "TAKER/FOK") if is_taker else "maker/GTC")
         _fee = _taker_buy_fee(px_ord, shares) if is_taker else 0.0

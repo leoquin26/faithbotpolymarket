@@ -10,6 +10,38 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.61.2 — 2026-07-24 — AUDIT: three SILENT skip paths now name themselves
+**Tag:** `cleanbot-v1.61.2` · owner asked for a code audit + accuracy pass.
+
+**Finding (real):** `_late_entry` had THREE `return`s with no log line — corr-sibling,
+corr-opposite, and max-open-exposure. A window blocked by any of them looked *identical
+to "no signal"* in the log and on the dashboard. That is precisely the blindness v1.58.1
+was created to eliminate ("was the main 'are we missing windows?' confusion") and it
+violates the owner's standing never-silent rule. Since corr-sibling + corr-opposite
+together allow at most ONE coin per 15m window, this was silently capping frequency —
+the owner's #1 complaint — with no way to see it.
+
+**Fix:** `_corr_sibling` / `_corr_opposite` now return the CONFLICTING COIN (truthy)
+instead of `True`; all three paths log a deduped `[LATE SKIP] ... corr-sibling / 
+corr-opposite / max-open-exposure` line naming the blocking leg and the numbers. Other
+call sites (voldiv, hiband) use the value in boolean context — unchanged behavior.
+NO trading behavior changed: same gates, same decisions, now visible.
+
+**Audited and found CORRECT (no change):** profit-lock trail stop (hwm and
+day_start_bankroll are re-anchored TOGETHER at startup, so it cannot false-fire after a
+deposit — first hypothesis, disproven); daily stop scales `max($6, 20%)` = $22.69 at
+current bankroll; `_late_lead_state` grow/fade/flip units (pct vs pct) correct;
+`ask=None` is a deliberate >=96c filter in `order_manager.get_clob_book`, verified
+against independent book-sampler data.
+
+**Maker post-price simulation (113k book rows, 258 windows) — INCONCLUSIVE, not acted on.**
+Simulated resting at ask-1c..ask-5c and posting earlier. Sim says fill 78.8% at ask-1c
+with filled-WR 55.6%, i.e. heavy adverse selection. BUT the fill proxy ("best ask reaches
+our price") only counts price-drifting-down-to-us fills and CANNOT see an aggressive
+seller hitting our resting bid — the benign, uninformed fill case. So the sim is
+structurally biased toward adverse fills and understates quality; live fills so far run
+far better. Recorded for when the live maker meter has enough n to check against.
+
 ## env 2026-07-24 — hiband roc gate opened (audit finding: threshold blocked the BEST subgroup)
 `.env.bak_hibandroc` · `CLEAN_HIBAND_ROC_BPS=3 -> 0`. Audit of 1,950 research windows
 (t_left 150-240, one snapshot/window, maker economics = fill ask-1c, fee 0), 80-89c band:
