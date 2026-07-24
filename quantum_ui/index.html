@@ -109,6 +109,8 @@ main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
 .l-result b{color:var(--good)} .l-result.lost b{color:var(--bad)}
 .l-enter{color:var(--cyan)} .l-verdict{color:var(--amber)}
 .l-skip{color:var(--ink3)} .l-exec{color:var(--warn)} .l-sys{color:var(--ink2)}
+.l-maker{color:#b48cff}
+.pos.rest{opacity:.85;border-left:2px solid #b48cff}
 .tapechip{font-family:var(--mono);font-size:11px;color:var(--ink3)}
 
 /* ── ledger (right rail) ── */
@@ -223,6 +225,7 @@ main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
       <button class="f" data-f="verdict" aria-pressed="false">METERS</button>
       <button class="f" data-f="skip" aria-pressed="false">SKIPS</button>
       <button class="f" data-f="exec" aria-pressed="false">EXECUTION</button>
+      <button class="f" data-f="maker" aria-pressed="false">MAKER</button>
       <span class="spacer"></span>
       <label class="tapechip"><input type="checkbox" id="follow" checked> follow</label>
       <span class="tapechip" id="lcount">0 lines</span>
@@ -355,7 +358,7 @@ document.querySelectorAll(".f").forEach(b=>b.onclick=()=>{
 function addLog(cls,line){
   const d=document.createElement("div");
   d.dataset.c=cls;d.className="l-"+cls+(/\[LOSS\]/.test(line)?" lost":"");
-  d.innerHTML=line.replace(/\[(WIN|LOSS|LATE ENTER|FILLED TAKER|VERDICT:[a-z]+|TRACK:[a-z]+|SIZE->BOOK)\]/g,"<b>[$1]</b>");
+  d.innerHTML=line.replace(/\[(WIN|LOSS|LATE ENTER|FILLED TAKER|FILLED|FILLED-PARTIAL|FILLED-RACE|GTC|CANCEL|VERDICT:[a-z]+|TRACK:[a-z]+|SIZE->BOOK)\]/g,"<b>[$1]</b>");
   if(filter!=="all"&&cls!==filter)d.style.display="none";
   cons.appendChild(d);lines++;
   while(cons.childElementCount>1500)cons.firstElementChild.remove();
@@ -395,12 +398,23 @@ async function loadHistory(){
 }
 
 /* live open positions — countdown + momentum lean */
-let lastChg={},srvSkew=0,openBets=[];
+let lastChg={},srvSkew=0,openBets=[],restingBets=[];
 function renderPositions(){
   const el=$("#poslist");
-  if(!openBets.length){el.innerHTML='<div class="empty">no open bets right now</div>';return}
+  if(!openBets.length&&!restingBets.length){el.innerHTML='<div class="empty">no open bets right now</div>';return}
   const now=Date.now()/1000+srvSkew;
-  el.innerHTML=openBets.map(p=>{
+  // maker era: resting GTC orders show the post -> fill/cancel lifecycle live
+  const restHtml=restingBets.map(p=>{
+    const trem=Math.max(0,Math.round((p.ws+900)-now));
+    const tcxl=Math.max(0,trem-90);   // bot cancels unfilled rests at t_rem<90s
+    const mm=Math.floor(tcxl/60),ss=String(tcxl%60).padStart(2,"0");
+    const cc=COINS[p.coin]||"var(--ink2)";
+    return `<div class="pos rest">
+      <div class="top"><span><b style="color:${cc}">${p.coin}</b> ${p.dir} <span style="color:#b48cff">RESTING</span> @ ${Math.round(p.px*100)}c ×${p.shares}${p.hiband?' <span style="color:var(--amber)">HI</span>':''}</span>
+        <span class="cd">${tcxl>0?`fills or cancels ${mm}:${ss}`:"cancelling…"}</span></div>
+      <div class="sub">maker · fee $0 · waiting for a seller at our price</div></div>`;
+  }).join("");
+  el.innerHTML=restHtml+openBets.map(p=>{
     const trem=Math.max(0,Math.round((p.ws+900)-now));
     const mm=Math.floor(trem/60),ss=String(trem%60).padStart(2,"0");
     const cc=COINS[p.coin]||"var(--ink2)";
@@ -452,8 +466,8 @@ async function connect(){
       $("#bankroll").textContent=fmt(m.bankroll);
       const dn=$("#daynet");dn.textContent=`day ${m.day_net>0?"+":""}${fmt(m.day_net)}`;
       dn.className="chip "+(m.day_net>0?"pos":m.day_net<0?"neg":"");
-      $("#openpos").textContent=`${m.open_positions} open`;
-      openBets=m.open||[];renderPositions();
+      $("#openpos").textContent=`${m.open_positions} open`+(m.resting&&m.resting.length?` · ${m.resting.length} resting`:"");
+      openBets=m.open||[];restingBets=m.resting||[];renderPositions();
       engines(m.engines||[]);}
     else if(m.t==="prices"){
       clock(m.window);

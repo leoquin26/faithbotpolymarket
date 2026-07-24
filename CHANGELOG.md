@@ -10,6 +10,38 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.61.0 — 2026-07-23 — MAKER ERA: late+hiband switch to resting GTC (fee $0)
+**Tag:** `cleanbot-v1.61.0` · env `CLEAN_LATE_TAKER=off` (`.env.bak_maker`) — OWNER ORDERED
+the live deploy ("deploy that thing live i dont care"), overriding the shadow-capture-first
+plan. Numbers stated plainly, per the standing rule:
+
+**Why:** Jul 23 external research + clean test on 2,440 July windows: taking the fav-leader
+at t≈195s = WR 82.6%, EV/$ −0.0046 → **gross +0.9%/$, taker fee −1.4%/$. The fee IS the
+entire loss.** Makers pay $0 + earn 20% rebate. Fee = 0.07·p·(1−p) — maximal exactly at
+our 50-70c entries ("7%" was always the RATE, not the cost).
+
+**The honest risk:** v1.46 measured maker fills 52% vs 63c (−11pts) — resting orders fill
+DURING reversals. That measurement was the OLD first-crossing trigger resting from signal
+time. Today differs: fixed-time eval (t≈195s), grow-only whitelist, and the built-in hard
+cancel at t_rem<90s (no last-seconds pick-off window). Different regime, NOT proven safe —
+this deploy IS the measurement, with brakes armed:
+- emergency brake: n≥10 & EV/$≤−0.15 → engine auto-off (bounds the test at ~$5-8 worst case)
+- daily stop $6/20%, 12% bankroll cap, ruin guard — all unchanged.
+
+**Expected behavior change:** fewer FILLED bets/day (a rest only fills if someone sells
+into us at our price — unfilled = [CANCEL], window missed); each fill ~2.4-3.7c/share
+cheaper (spread+fee). Meters keep running per engine; the n≥40 verdict window now measures
+maker economics.
+
+**Code (v1.61.0, minimal):** `open_orders` persisted in state + reloaded on restart —
+a restart mid-rest previously ORPHANED the live GTC order on the book (Jun-28 phantom-fill
+class). Execution flip itself is env-only (the v1.4x maker path was battle-built: partial
+tracking, cancel-race re-verify, age/t_rem cancels).
+
+**Dashboard (Quantum Desk):** resting orders now visible live in the positions panel
+(violet RESTING rows with fill-or-cancel countdown), MAKER log filter chip, [GTC]/[CANCEL]
+lifecycle classified + bolded, header shows "N resting".
+
 ## v1.60.2 — 2026-07-19 — CRITICAL: double-fill fix (async matching phantom-miss)
 **Tag:** `cleanbot-v1.60.2` · LIVE 03:18 UTC · env `CLEAN_LATE_FOK_RETRY=off` (`.env.bak_fokretry`)
 

@@ -76,6 +76,8 @@ LOG_CLASS = (
     (re.compile(r"\[VERDICT|\[TRACK"), "verdict"),
     (re.compile(r"\[LATE SKIP\]|SKIP:"), "skip"),
     (re.compile(r"\[SIZE->BOOK\]|\[LATE MISS\]|\[LATE EVAL MISSED\]"), "exec"),
+    # v1.61.0 maker era: resting-order lifecycle gets its own class in the console
+    (re.compile(r"\[GTC\]|\[CANCEL\]|\[LATE ORDER"), "maker"),
 )
 
 
@@ -141,11 +143,19 @@ def _poll_state():
                     opens.append({"coin": p.get("coin"), "dir": p.get("dir"),
                                   "entry": p.get("entry"), "shares": p.get("shares"),
                                   "ws": p.get("ws"), "hiband": bool(p.get("hiband"))})
+            # v1.61.0 maker era: resting GTC orders, so the dashboard shows the full
+            # post -> fill/cancel lifecycle per window (cancel is at t_rem<90s)
+            resting = []
+            for o in (s.get("open_orders") or {}).values():
+                resting.append({"coin": o.get("coin"), "dir": o.get("dir"),
+                                "px": o.get("price"), "shares": o.get("shares"),
+                                "ws": o.get("ws"), "hiband": bool(o.get("hiband"))})
             _broadcast({"t": "state",
                         "bankroll": s.get("bankroll"),
                         "day_net": round((s.get("wins") or 0) - (s.get("losses") or 0), 2),
                         "killed": bool(s.get("killed")),
                         "open_positions": len(opens), "open": opens,
+                        "resting": resting,
                         "engines": _engines_from_state(s)})
         except Exception:
             pass
