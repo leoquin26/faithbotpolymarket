@@ -10,6 +10,22 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## env 2026-07-24 — hiband roc gate opened (audit finding: threshold blocked the BEST subgroup)
+`.env.bak_hibandroc` · `CLEAN_HIBAND_ROC_BPS=3 -> 0`. Audit of 1,950 research windows
+(t_left 150-240, one snapshot/window, maker economics = fill ask-1c, fee 0), 80-89c band:
+  A roc>=3 & agrees (traded)  n=153 WR 85.0% EV/$ +0.0157
+  B roc weak & agrees (BLOCKED) n=166 WR 88.0% EV/$ +0.0443   <-- the gate was cutting this
+  C roc DISAGREES              n=234 WR 82.1% EV/$ -0.0181   <-- stays blocked (agreement
+                                                                 condition is untouched)
+  D roc missing                n=0 (roc always present in-band -> no code change needed)
+  A+B (new config)             n=319 WR 86.5% EV/$ +0.0306
+The DISCRIMINATION lives in roc SIGN AGREEMENT, not magnitude; the >=3bps threshold halved
+hiband's frequency for no measured gain. Expected ~2x hiband bets/day. Caveats stated to
+owner: snapshot-based (real fills historically run under snapshot estimates), WR CI +/-7.6pp
+on group B, so honest claim is "B is no worse than A", not "B is better". Contained by
+hiband's OWN meter (n=32 live, WR 88%, EV +0.009 taker-era), its emergency brake
+(n>=10, EV<=-0.15) and its n>=40 verdict. Reversible: `cp .env.bak_hibandroc .env`.
+
 ## env 2026-07-24 — CONSTANT-MAKER AUDITION (owner ordered: "more constant, I know the risk")
 `.env.bak_constant` · `CLEAN_LATE_LEAD_ALLOW=grow,flip` (whitelist was fitted on n=61 TAKER
 fills, z=0.88 — never significant; maker meter re-judges flip) · `CLEAN_LATE_MIN_ASK=0.55`
