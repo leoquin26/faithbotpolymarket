@@ -10,6 +10,18 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## env 2026-07-24 — CONSTANT-MAKER AUDITION (owner ordered: "more constant, I know the risk")
+`.env.bak_constant` · `CLEAN_LATE_LEAD_ALLOW=grow,flip` (whitelist was fitted on n=61 TAKER
+fills, z=0.88 — never significant; maker meter re-judges flip) · `CLEAN_LATE_MIN_ASK=0.55`
+(55-60c calibrated: 58.1% hold vs 57c implied; positive as maker). Fee=0 changes the math:
+unfiltered leader-following measured +0.9%/$ gross + ~1.3%/$ entry improvement on 2,440
+windows — the gates existed to out-earn the taker fee, which no longer exists. STILL OUT:
+fade leads (live 47% WR, −0.295/$), dir-vote/rev-as-dir (owner-caught, −$17.69). Unchanged:
+skip-fading, reverse-underway skip, ruin guard, 12% cap, daily stop $6/20%, emergency brake
+n≥10 EV≤−0.15 per engine. Expected 2-4× bet frequency → n=40 maker verdict in ~2-3 days.
+NOTE: at $16 bankroll the RUIN GUARD blocks asks >65c (5sh×0.66=$3.30 > 20%×$16.37=$3.27)
+— the owner's $100 deposit mechanically unjams the audition; stop-loss caps any day at $6.
+
 ## v1.61.1 — 2026-07-24 — CRITICAL: maker cancel-race phantom (first GTC fill untracked)
 **Tag:** `cleanbot-v1.61.1` · found by OWNER (Polymarket UI showed the fill; no Telegram, no dashboard)
 
