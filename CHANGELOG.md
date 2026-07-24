@@ -10,6 +10,21 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.61.1 — 2026-07-24 — CRITICAL: maker cancel-race phantom (first GTC fill untracked)
+**Tag:** `cleanbot-v1.61.1` · found by OWNER (Polymarket UI showed the fill; no Telegram, no dashboard)
+
+First maker window worked end-to-end (01:56:45 [LATE ENTER] BTC DOWN → [GTC] 65c x5) until
+the t_rem<90s safety cancel at 01:58:31: its re-verify did ONE instant get_order read →
+async matching returned matched=0 → "[CANCEL] unfilled" → but the order HAD FILLED on-chain.
+Untracked winning position (BTC went $65,058→$65,032, DOWN won +$1.75).
+
+**Fix:** the cancel-race re-verify now POLLS get_order 3×1.2s before declaring unfilled —
+the exact v1.60.2 policy, now on the maker path too. (v1.60.2 fixed the taker FOK path;
+the GTC cancel path kept the instant read. Same async root cause, second victim.)
+
+**Recovery:** position injected into state as filled; settle loop resolved it normally —
+ledger, meter sample (late), Telegram and dashboard all caught up honestly.
+
 ## v1.61.0 — 2026-07-23 — MAKER ERA: late+hiband switch to resting GTC (fee $0)
 **Tag:** `cleanbot-v1.61.0` · env `CLEAN_LATE_TAKER=off` (`.env.bak_maker`) — OWNER ORDERED
 the live deploy ("deploy that thing live i dont care"), overriding the shadow-capture-first

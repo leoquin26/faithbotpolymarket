@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.61.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.61.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -2001,12 +2001,20 @@ class CleanBot:
                 # cancel, leaving a phantom position that silently drains the wallet when it
                 # loses (e.g. 2026-06-28 06:36 "canceled" SOL DOWN @69c actually filled → −$3.45
                 # untracked). ALWAYS re-verify before assuming unfilled, and track any real fill.
+                # v1.61.1: POLL the re-verify (3x1.2s), same policy as the v1.60.2 taker
+                # fix — async matching returns matched=0 for seconds after a real fill.
+                # First maker casualty: 2026-07-24 01:58 BTC DOWN 65c x5 filled on-chain,
+                # instant read said 0 → "[CANCEL] unfilled" → untracked winning position.
                 matched_after = 0.0
-                try:
-                    od2 = self.client.get_order(oid) or {}
-                    matched_after = float(od2.get("size_matched") or od2.get("sizeMatched") or 0)
-                except Exception:
-                    matched_after = 0.0
+                for _poll in range(3):
+                    time.sleep(1.2)
+                    try:
+                        od2 = self.client.get_order(oid) or {}
+                        matched_after = float(od2.get("size_matched") or od2.get("sizeMatched") or 0)
+                    except Exception:
+                        matched_after = 0.0
+                    if matched_after > 0:
+                        break
                 if matched_after > 0:
                     self._record_fill(o, matched_after, race=True, partial=False)
                 else:
