@@ -10,6 +10,35 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## env 2026-07-25 — compound gate raised to the pre-registered bar (noise-triggered sizing)
+`.env.bak_compoundgate` · `CLEAN_COMPOUND_MIN_EV_N 15 -> 40`, `CLEAN_COMPOUND_MIN_EV 0 -> 0.03`.
+
+**Owner flagged "2 bets in one window".** It was ONE order — `[LATE ENTER] SOL UP 77c x12`,
+one oid `0xe1cda8c5`, matched against TWO counterparties, so the Polymarket UI renders two
+"Comprar" rows (3.4 + 8.6 sh). Not a double-bet; the double-fill class (v1.60.2) did not recur.
+
+**The real defect: the compound gate fires on statistical noise.** Late-meter trail across
+six consecutive settles: n=12 +0.066 -> n=13 -0.025 -> n=14 +0.015 -> **n=15 +0.048 (UNLOCK)**
+-> n=16 -0.100 -> n=17 -0.147. At n=15 the standard error on EV/$ is ~0.157 (95% CI roughly
+[-0.26,+0.36]) — the gate's threshold was 6x narrower than its own error bar. It unlocked on
+a coin-flip reading, sized the next bet 2.4x (5sh $3.85 -> 12sh $9.24), that bet lost $8.47,
+and the meter immediately re-locked. Pure whipsaw: size up into noise, lose big, size down.
+Same failure shape as the 2026-07-23 ruin spiral (scale on thin evidence), just via a
+different knob. New bar = the SAME pre-registered standard the n>=40 verdict system already
+uses (EV/$ >= +0.03 at n >= 40) — one scaling authority, one threshold, no new magic numbers.
+
+**Sizing stays at exchange-min (~$3.30-4.30) until the late engine earns +0.03 over 40
+samples.** Cost: slower size growth. Benefit: losses stay ~$4 instead of ~$9 while the edge
+is still unproven, which is the honest state at n=17.
+
+**v1.61.2 corr-guard logging proved itself the same window:** 02:11:48 blocked ETH UP and
+BTC UP from piling into the very window SOL lost (`corr-sibling — SOL already holds UP`).
+Three correlated losers became one. Before today those two skips were invisible.
+
+**Minor, self-correcting:** ledger recorded 11 sh, exchange filled 12 (final poll caught 11
+before the last chunk). Chain-truth bankroll sync absorbed it ($123 -> $113.66 = -$9.34 real
+vs -$8.47 ledgered). Dollars correct; meter sample understated by ~1 share.
+
 ## v1.61.2 — 2026-07-24 — AUDIT: three SILENT skip paths now name themselves
 **Tag:** `cleanbot-v1.61.2` · owner asked for a code audit + accuracy pass.
 
