@@ -10,6 +10,42 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.62.0 — 2026-07-25 — PER-WINDOW LEG LIMIT replaces the one-coin-per-window ban
+**Tag:** `cleanbot-v1.62.0` · env `CLEAN_MAX_LEGS_PER_WINDOW=2` (`.env.bak_legs2`) · owner asked
+"what if we start adding more coins to the windows?"
+
+**Measured first (753 eligible windows, maker economics entry ask-1c fee 0):**
+```
+1st coin  (what we bet today)          n= 401 WR 74.6%  EV/$ -0.0101 +/-0.0582
+EXTRA same-dir  (corr-sibling blocked) n= 371 WR 77.4%  EV/$ +0.0406 +/-0.0596
+EXTRA other-dir (corr-opposite blocked)n= 158 WR 75.9%  EV/$ +0.0467 +/-0.0956
+```
+The legs the guards were throwing away scored NO WORSE than the one we kept — every CI
+spans zero, so the honest claim is "indistinguishable", not "better". The corr-opposite
+docstring's justification ("divergent pairs = 55% coinflip", n=168) does NOT reproduce on
+the current late/hiband-eligible population: those legs measure 75.9%.
+
+**What IS real is correlation, and it is severe:** in same-direction multi-coin windows
+(n=259) the legs share a fate **80.7%** of the time (67.2% all win, 13.5% all lose, 19.3%
+split). So N same-direction legs really are ~one Nx bet — a VARIANCE fact, not an EV fact.
+
+**Therefore: a limit, not a ban.** New `_window_legs(ws)` + `CLEAN_MAX_LEGS_PER_WINDOW`
+(default 1 = byte-identical to pre-v1.62 behaviour) replaces the blanket corr-sibling /
+corr-opposite block in the LATE path. Set to 2. Rationale for why the old guards were
+right THEN and wrong NOW: they were calibrated on a $25-45 book where 3 legs = 25-45% of
+bankroll; at $115 the same legs are ~10%, and `max_bet_pct` (12%/leg) + `max_open_pct`
+(25% aggregate) + the daily stop are the real, already-armed controls.
+`corr_opposite_block` is untouched and still gates the voldiv path.
+
+**Frequency:** the guards were blocking roughly as many legs as they passed (7 unique
+blocks vs 7 bets since v1.61.2 shipped; +70% eligible legs historically). At 2 legs we take
+a measured step, not the full +70%. Skips still name themselves: `[LATE SKIP] ...
+window-leg-cap 2/2 — already holding [SOL UP, ETH UP] this window`.
+
+**Tests:** suite extended to 36 cases; 6 new ones pin `_window_legs` (counts both
+directions, includes resting orders, excludes other windows, ignores resolved positions,
+limit floors at 1).
+
 ## env 2026-07-25 — compound gate raised to the pre-registered bar (noise-triggered sizing)
 `.env.bak_compoundgate` · `CLEAN_COMPOUND_MIN_EV_N 15 -> 40`, `CLEAN_COMPOUND_MIN_EV 0 -> 0.03`.
 

@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.61.2"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.62.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -93,7 +93,8 @@ class Cfg:
     max_open_pct: float = float(os.getenv("CLEAN_MAX_OPEN_PCT", "0.25"))  # cap total open exposure
     corr_pair_frac: float = float(os.getenv("CLEAN_CORR_PAIR_FRAC", "0.5"))  # ETH+SOL same dir same window = 1 correlated bet, not 2: size each leg at this frac (skip 2nd leg if half < exchange min)
     corr_full_at: float = float(os.getenv("CLEAN_CORR_FULL_AT", "55"))  # v1.31: bankroll $ at which same-dir pairs trade BOTH legs full-size. Legs are +EV (aligned 69% vs 64% BE, n=884); the cap is risk-concentration: at $55+ a pair = ~12% of book (policy-sized) and a paired loss no longer eats the daily stop. Auto-unlocks as the book grows.
-    corr_opposite_block: bool = os.getenv("CLEAN_CORR_OPPOSITE_BLOCK", "on").lower() in ("1","true","yes","on")  # skip a coin bet OPPOSITE a held correlated leg (divergent pairs = 55% coinflip in the data)
+    corr_opposite_block: bool = os.getenv("CLEAN_CORR_OPPOSITE_BLOCK", "on").lower() in ("1","true","yes","on")  # skip a coin bet OPPOSITE a held correlated leg (divergent pairs = 55% coinflip in the data). v1.62.0: the LATE path now uses max_legs_per_window instead; this still gates the voldiv path.
+    max_legs_per_window: int = max(1, int(os.getenv("CLEAN_MAX_LEGS_PER_WINDOW", "1")))  # v1.62.0: how many coins may hold a leg in ONE 15m window. 1 = the pre-v1.62 one-coin-per-window behaviour. Raising it trades variance concentration (same-dir legs share a fate 80.7% of the time, n=259 windows) for frequency (+70% eligible legs at no measured EV cost). Bounded by max_bet_pct per leg and max_open_pct in aggregate.
     position_keep_h: int = int(os.getenv("CLEAN_POSITION_KEEP_H", "48"))  # prune resolved positions older than this (state hygiene)
     stop_pct: float = float(os.getenv("CLEAN_STOP_PCT", "0.15"))       # daily stop = 15% of bankroll
     daily_stop_floor: float = float(os.getenv("CLEAN_DAILY_STOP", "6.0"))  # $ floor for the stop
@@ -582,6 +583,20 @@ class CleanBot:
                     and p.get("status") in ("filled", "open")):
                 return p.get("coin")
         return None
+
+    def _window_legs(self, ws):
+        """v1.62.0: every live leg (resting order or filled position) in this 15m window,
+        as [(coin, dir), ...] — the basis for the per-window leg limit that REPLACED the
+        blanket one-coin-per-window corr guards. Measured on 753 windows: legs blocked by
+        those guards scored WR 77.4%/EV +0.041 (same-dir) and 75.9%/EV +0.047 (opposite)
+        vs 74.6%/EV -0.010 for the leg we actually took — no evidence they were worse.
+        The real cost is CORRELATION: same-direction legs share a fate 80.7% of the time,
+        so the limit (not a blanket ban) plus max_bet_pct/max_open_pct is the honest control."""
+        legs = [(o.get("coin"), o.get("dir")) for o in self.open_orders.values()
+                if o.get("ws") == ws]
+        legs += [(p.get("coin"), p.get("dir")) for p in self.positions.values()
+                 if p.get("ws") == ws and p.get("status") in ("filled", "open")]
+        return legs
 
     def _size_shares(self, price):
         """Tiered Kelly: conservative while rebuilding, bigger once bankroll recovers past
@@ -1690,22 +1705,19 @@ class CleanBot:
                     shares = _fit
             except Exception as e:
                 logger.debug(f"depth check failed ({e}) — proceeding at planned size")
-        # CORRELATION GUARD (v1.39.1) — v1.61.2: these three used to `return` SILENTLY,
-        # so a blocked window looked identical to "no signal" in the log. Owner's standing
-        # rule is never-silent; every skip must name itself.
-        _sib = self._corr_sibling(coin, ws, direction)
-        if _sib:
-            if (coin, ws, "corrsib") not in self._nc_logged:
-                logger.info(f"[LATE SKIP] {coin} {direction} corr-sibling — {_sib} already "
-                            f"holds {direction} this window (~0.85 correlated = one 2x bet)")
-                self._nc_logged.add((coin, ws, "corrsib"))
-            return
-        _opp = CFG.corr_opposite_block and self._corr_opposite(coin, ws, direction)
-        if _opp:
-            if (coin, ws, "corropp") not in self._nc_logged:
-                logger.info(f"[LATE SKIP] {coin} {direction} corr-opposite — {_opp} holds the "
-                            f"other side this window (divergent pairs = 55% coinflip)")
-                self._nc_logged.add((coin, ws, "corropp"))
+        # PER-WINDOW LEG LIMIT (v1.62.0 — replaces the blanket corr-sibling/corr-opposite
+        # ban, which allowed exactly ONE coin per window and was blocking about as many
+        # bets as it let through). At max_legs=1 this is byte-for-byte the old behaviour.
+        # The guards were calibrated on a $25-45 book where 3 legs = 25-45% of bankroll;
+        # at $115 the same 3 legs are ~10%, and max_bet_pct + max_open_pct already bound it.
+        _legs = self._window_legs(ws)
+        if len(_legs) >= CFG.max_legs_per_window:
+            if (coin, ws, "legcap") not in self._nc_logged:
+                _held = ", ".join(f"{c} {d}" for c, d in _legs)
+                logger.info(f"[LATE SKIP] {coin} {direction} window-leg-cap "
+                            f"{len(_legs)}/{CFG.max_legs_per_window} — already holding "
+                            f"[{_held}] this window (same-dir legs share a fate ~81%)")
+                self._nc_logged.add((coin, ws, "legcap"))
             return
         _exp = self._open_exposure()
         if _exp + px_ord * shares > self.bankroll * CFG.max_open_pct:

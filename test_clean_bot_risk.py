@@ -149,6 +149,21 @@ check("opposite None when aligned", b._corr_opposite("SOL", 100, "UP"), None)
 b2 = bot(open_orders={"0x1": {"coin": "BTC", "ws": 100, "dir": "UP"}})
 check("sibling sees RESTING orders too", b2._corr_sibling("SOL", 100, "UP"), "BTC")
 
+print("\n=== 8b. v1.62.0 per-window leg limit (_window_legs) ===")
+b = bot(positions={"ETH:100": {"coin": "ETH", "ws": 100, "dir": "UP", "status": "filled"},
+                   "BTC:100": {"coin": "BTC", "ws": 100, "dir": "DOWN", "status": "filled"},
+                   "SOL:200": {"coin": "SOL", "ws": 200, "dir": "UP", "status": "filled"}},
+        open_orders={"0x1": {"coin": "SOL", "ws": 100, "dir": "UP"}})
+legs100 = b._window_legs(100)
+check("counts BOTH directions in the window", len(legs100), 3)
+check("includes the RESTING order", ("SOL", "UP") in legs100, True)
+check("excludes other windows", b._window_legs(200), [("SOL", "UP")])
+check("empty window -> no legs", b._window_legs(999), [])
+# resolved positions must not keep blocking future windows
+b2 = bot(positions={"ETH:100": {"coin": "ETH", "ws": 100, "dir": "UP", "status": "resolved"}})
+check("resolved legs are not live", b2._window_legs(100), [])
+check("max_legs_per_window floors at 1", CFG.max_legs_per_window >= 1, True)
+
 print("\n=== 9. _late_compound_ok: min-size until EV proven at n>=15 ===")
 check("no samples -> min size", bot(recent_ev=[])._late_compound_ok(), False)
 check("green but too few samples",
