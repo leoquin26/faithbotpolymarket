@@ -10,6 +10,59 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.63.0 — 2026-07-26 — UNIFIED ENGINE: one strategy, gated on the only OOS-validated filter
+**Tag:** `cleanbot-v1.63.0` · env `CLEAN_TRADE_HOURS_UTC=18,19,20,21,22,23` (`.env.bak_unified`)
+· owner: "unify all strategies into one... we know everything we need to build the puzzle".
+
+**Method (project standing rule, applied properly for the first time):** 2,188 window records
+rebuilt from `clean_bot_research.csv` (early row joined to late row to reconstruct lead_state),
+maker economics (entry ask-1c, fee 0), chronological **70/30 TRAIN/TEST** split. 15 candidate
+configs ranked on TRAIN, then evaluated ONCE each on the held-out TEST.
+
+**Result — 14 of 15 died out-of-sample:**
+```
+config                TRAIN EV/$    z   ->  TEST EV/$    z    verdict
+everything (baseline)   +0.0213  +1.62     -0.0010  -0.05    EV<=0
+lead=grow               +0.0515  +2.93     -0.0329  -1.04    EV<=0
+lead in (grow,fade)     +0.0705  +4.22     -0.0156  -0.51    EV<=0
+(grow,fade) excl 90c+   +0.0948  +4.17     -0.0323  -0.77    EV<=0
+ETH only                +0.0579  +2.60     -0.0326  -0.87    EV<=0
+18-24h UTC              +0.0941  +3.96     +0.1040  +2.76    PASS OOS
+```
+Spearman rho(TRAIN EV rank, TEST EV rank) = **+0.10** — our historical fitting carries
+essentially NO information about future performance. Configs with train z>4 went NEGATIVE
+out-of-sample. This retroactively explains every "improvement" that failed live.
+
+**The survivor, stress-tested three more ways:**
+- hour-by-hour: **6/6** hours in the block are positive (not one lucky hour)
+- walk-forward: **5/5** independent chronological folds positive (z +2.77/+0.37/+3.60/+2.66/+1.47)
+- label-shuffle placebo over all 24 possible 6h blocks, 2000 trials: **p ~ 0.001**
+- independent corroboration: the **v1.48 Lima-session study** (different period, different
+  method) found AFTERNOON +14.3pts / EVENING +12.8 — 18-24h UTC IS Lima 13:00-19:00.
+
+**Full split:** IN 18-24h n=570 WR 86.1% (BE 79.4%) EV/$ **+0.0978** z=+4.86 · OUT 00-18h
+n=1618 WR 78.8% (BE 79.6%) EV/$ **-0.0145** z=-1.07. Break-even is IDENTICAL in both
+(79.4 vs 79.6) — the market prices the two windows the same, but favorites actually win 7pp
+more often inside it. A calibration gap, not a pricing one. Inside the window EVERY price
+band, EVERY lead state and EVERY coin is positive; outside, none are. That uniformity is
+what a real time effect looks like — a fitted artifact concentrates in one cell.
+
+**Therefore the unified engine is SIMPLER, not more complex:** trade the whole eligible band,
+all coins, all allowed lead states — but only in the validated hours. Code: new
+`CLEAN_TRADE_HOURS_UTC` whitelist gated on the WINDOW's UTC hour (matches the research
+exactly; "" = all hours = pre-v1.63 behaviour), logged as `[LATE SKIP] ... hour-gate`.
+`late` re-enabled with a CLEARED meter (its 18 retired samples were mostly outside the
+window and included the compound-gate oversize); `hiband` multiplier held at x1.
+
+**Deliberately NOT adopted:** `fade` measures +0.2918 (z=+5.98) inside the window but its
+LIVE fill record is 47% WR / -0.295. Snapshot-vs-live conflict = the exact methodology error
+of 2026-07-18. Stays excluded until live data says otherwise.
+
+**Honest caveats:** snapshot EV, not fill-verified (real fills have historically run under
+snapshot estimates); ~15 days, one market regime. Mechanism hypothesis to test next:
+US-afternoon trending vs Asian/European chop — "buy the leader" pays in trend, dies in chop.
+Tests: 41 cases (5 new pin the hour-gate parser).
+
 ## v1.62.0 — 2026-07-25 — PER-WINDOW LEG LIMIT replaces the one-coin-per-window ban
 **Tag:** `cleanbot-v1.62.0` · env `CLEAN_MAX_LEGS_PER_WINDOW=2` (`.env.bak_legs2`) · owner asked
 "what if we start adding more coins to the windows?"

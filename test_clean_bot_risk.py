@@ -164,6 +164,19 @@ b2 = bot(positions={"ETH:100": {"coin": "ETH", "ws": 100, "dir": "UP", "status":
 check("resolved legs are not live", b2._window_legs(100), [])
 check("max_legs_per_window floors at 1", CFG.max_legs_per_window >= 1, True)
 
+print("\n=== 8c. v1.63.0 hour-gate parsing (the OOS-validated filter) ===")
+# NOTE: env is read in the dataclass field defaults, i.e. at import time (same as every
+# other CLEAN_* setting). So exercise the parser by constructing Cfg directly.
+check("parses the 6-hour window",
+      sorted(cb.Cfg(trade_hours_utc="18,19,20,21,22,23").trade_hours_set),
+      [18, 19, 20, 21, 22, 23])
+check("empty -> all hours (gate OFF)", cb.Cfg(trade_hours_utc="").trade_hours_set, set())
+check("ignores junk / out-of-range",
+      sorted(cb.Cfg(trade_hours_utc="18, 99, xx, 23,").trade_hours_set), [18, 23])
+check("hour 0 valid (not falsy-dropped)", cb.Cfg(trade_hours_utc="0").trade_hours_set, {0})
+check("whitespace tolerated",
+      sorted(cb.Cfg(trade_hours_utc=" 18 , 19 ").trade_hours_set), [18, 19])
+
 print("\n=== 9. _late_compound_ok: min-size until EV proven at n>=15 ===")
 check("no samples -> min size", bot(recent_ev=[])._late_compound_ok(), False)
 check("green but too few samples",

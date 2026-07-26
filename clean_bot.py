@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.62.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.63.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -94,6 +94,18 @@ class Cfg:
     corr_pair_frac: float = float(os.getenv("CLEAN_CORR_PAIR_FRAC", "0.5"))  # ETH+SOL same dir same window = 1 correlated bet, not 2: size each leg at this frac (skip 2nd leg if half < exchange min)
     corr_full_at: float = float(os.getenv("CLEAN_CORR_FULL_AT", "55"))  # v1.31: bankroll $ at which same-dir pairs trade BOTH legs full-size. Legs are +EV (aligned 69% vs 64% BE, n=884); the cap is risk-concentration: at $55+ a pair = ~12% of book (policy-sized) and a paired loss no longer eats the daily stop. Auto-unlocks as the book grows.
     corr_opposite_block: bool = os.getenv("CLEAN_CORR_OPPOSITE_BLOCK", "on").lower() in ("1","true","yes","on")  # skip a coin bet OPPOSITE a held correlated leg (divergent pairs = 55% coinflip in the data). v1.62.0: the LATE path now uses max_legs_per_window instead; this still gates the voldiv path.
+    # v1.63.0 UNIFIED ENGINE — the only filter that survived out-of-sample validation.
+    # Comma list of UTC hours the engine may trade ("" = all hours, pre-v1.63 behaviour).
+    # Evidence (2,188 windows, maker economics, chronological 70/30 split):
+    #   IN  18-24h UTC: n=570  WR 86.1% (BE 79.4%)  EV/$ +0.0978  z=+4.86
+    #   OUT 00-18h UTC: n=1618 WR 78.8% (BE 79.6%)  EV/$ -0.0145  z=-1.07
+    # Same prices, 7pp better win rate -> a genuine calibration gap, not a pricing one.
+    # Survived: the ONLY 1 of 15 candidates to pass OOS; 6/6 hours positive; 5/5
+    # walk-forward folds positive; label-shuffle placebo over all 24 six-hour blocks
+    # p~0.001. Corroborated independently by the v1.48 Lima-session study (afternoon
+    # +14.3pts = the same clock window). Every OTHER filter we believed in (lead state,
+    # roc agreement, coin, price band) died out-of-sample: Spearman rho(train,test) = +0.10.
+    trade_hours_utc: str = os.getenv("CLEAN_TRADE_HOURS_UTC", "")
     max_legs_per_window: int = max(1, int(os.getenv("CLEAN_MAX_LEGS_PER_WINDOW", "1")))  # v1.62.0: how many coins may hold a leg in ONE 15m window. 1 = the pre-v1.62 one-coin-per-window behaviour. Raising it trades variance concentration (same-dir legs share a fate 80.7% of the time, n=259 windows) for frequency (+70% eligible legs at no measured EV cost). Bounded by max_bet_pct per leg and max_open_pct in aggregate.
     position_keep_h: int = int(os.getenv("CLEAN_POSITION_KEEP_H", "48"))  # prune resolved positions older than this (state hygiene)
     stop_pct: float = float(os.getenv("CLEAN_STOP_PCT", "0.15"))       # daily stop = 15% of bankroll
@@ -309,6 +321,19 @@ class Cfg:
             except Exception:
                 continue
         self.late_coin_mult = out
+        # v1.63.0: parse the traded-hours whitelist once. Empty -> every hour allowed.
+        hrs = set()
+        for part in (self.trade_hours_utc or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                h = int(part)
+            except ValueError:
+                continue
+            if 0 <= h <= 23:
+                hrs.add(h)
+        self.trade_hours_set = hrs
 
 
 CFG = Cfg()
@@ -1437,6 +1462,16 @@ class CleanBot:
         key = (coin, ws)
         if key in self.traded:                       # one entry per window (shared with early)
             return
+        # v1.63.0 UNIFIED HOUR GATE — the one filter that passed out-of-sample validation.
+        # Keyed on the WINDOW's UTC hour (not "now") so it matches the research exactly.
+        if CFG.trade_hours_set:
+            _wh = time.gmtime(ws).tm_hour
+            if _wh not in CFG.trade_hours_set:
+                if (coin, ws, "hour") not in self._nc_logged:
+                    logger.info(f"[LATE SKIP] {coin} hour-gate {_wh:02d}h UTC not in traded set "
+                                f"{sorted(CFG.trade_hours_set)} (OOS-validated window only)")
+                    self._nc_logged.add((coin, ws, "hour"))
+                return
         now = time.time()
         t_rem = ws + 900 - now
         if not (CFG.late_t_min <= t_rem <= CFG.late_t_max):
