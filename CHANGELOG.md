@@ -10,6 +10,39 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.63.1 — 2026-07-27 — same-direction legs are LEVERAGE (v1.62.0 conflation, my error)
+**Tag:** `cleanbot-v1.63.1` · owner caught it on the unified engine's first two trades.
+
+**What happened:** 19:26:50 ETH DOWN @60c x5 and 19:26:51 BTC DOWN @88c x5 — SAME window
+(19:15-19:30), SAME direction, both `lead=flip`. Both reversed. BTC settled -$4.40; ETH's
+88c/60c pair cost ~-$7.40 combined. The market had BTC DOWN at 88c (an ~12% tail) and it
+still flipped — genuinely adverse, but the SIZE of the hit was my fault, not the market's.
+
+**Root cause (mine):** v1.62.0 replaced `_corr_sibling` (same-direction ban) and
+`_corr_opposite` (opposite-direction ban) with a single leg COUNT. That erased a real
+distinction I had measured myself two days earlier in the same analysis:
+```
+same-direction legs share a fate 80.7% of the time (n=259 windows)
+  -> a 2nd same-dir leg is LEVERAGE: one 2x bet, not two bets
+opposite-direction legs measured WR 75.9%, EV/$ +0.047
+  -> those genuinely DIVERSIFY, and were the ones worth unblocking
+```
+I unblocked both and kept only a count. The first window that put two same-direction legs
+on the book took double the loss.
+
+**Fix:** new `_same_dir_legs(ws, direction)` — a second leg in the SAME direction is now
+always refused, logged as `[LATE SKIP] ... same-dir leg — ETH already holds DOWN this
+window (~81% shared fate = leverage, not diversification)`. `max_legs_per_window` still
+governs the total, so an OPPOSITE-direction second leg is still allowed (the part the data
+supported). Net effect: keeps the frequency gain that diversifies, drops the one that levers.
+
+**Also this window:** `[EMERGENCY:hiband] n=16 EV/$ -0.168 <= -0.15 — ENGINE RETIRED`.
+hiband is now off (its meter carried yesterday's x2-era damage). Only `late` runs.
+
+**Status, stated plainly:** bankroll $92.75 (from $115.87 deposited). The unified engine has
+n=2, both losses — statistically meaningless, but the correlation defect it exposed is real
+and is now fixed. Tests: 46 cases (5 new pin the same-direction rule).
+
 ## v1.63.0 — 2026-07-26 — UNIFIED ENGINE: one strategy, gated on the only OOS-validated filter
 **Tag:** `cleanbot-v1.63.0` · env `CLEAN_TRADE_HOURS_UTC=18,19,20,21,22,23` (`.env.bak_unified`)
 · owner: "unify all strategies into one... we know everything we need to build the puzzle".

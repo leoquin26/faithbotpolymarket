@@ -164,6 +164,20 @@ b2 = bot(positions={"ETH:100": {"coin": "ETH", "ws": 100, "dir": "UP", "status":
 check("resolved legs are not live", b2._window_legs(100), [])
 check("max_legs_per_window floors at 1", CFG.max_legs_per_window >= 1, True)
 
+print("\n=== 8b2. v1.63.1 same-direction legs are LEVERAGE, not diversification ===")
+print("    (2026-07-27: BTC DOWN 88c + ETH DOWN 60c, one window, both reversed, -$7.40)")
+b = bot(positions={"ETH:100": {"coin": "ETH", "ws": 100, "dir": "DOWN", "status": "filled"}})
+check("2nd leg SAME dir is flagged", b._same_dir_legs(100, "DOWN"), ["ETH"])
+check("2nd leg OPPOSITE dir is allowed", b._same_dir_legs(100, "UP"), [])
+check("other window unaffected", b._same_dir_legs(999, "DOWN"), [])
+b2 = bot(open_orders={"0x1": {"coin": "SOL", "ws": 100, "dir": "UP"}},
+         positions={"BTC:100": {"coin": "BTC", "ws": 100, "dir": "UP", "status": "filled"}})
+check("counts resting AND filled same-dir legs",
+      sorted(b2._same_dir_legs(100, "UP")), ["BTC", "SOL"])
+check("resolved legs do not block", bot(positions={
+    "ETH:100": {"coin": "ETH", "ws": 100, "dir": "DOWN", "status": "resolved"}}
+    )._same_dir_legs(100, "DOWN"), [])
+
 print("\n=== 8c. v1.63.0 hour-gate parsing (the OOS-validated filter) ===")
 # NOTE: env is read in the dataclass field defaults, i.e. at import time (same as every
 # other CLEAN_* setting). So exercise the parser by constructing Cfg directly.

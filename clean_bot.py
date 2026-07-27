@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.63.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.63.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -622,6 +622,13 @@ class CleanBot:
         legs += [(p.get("coin"), p.get("dir")) for p in self.positions.values()
                  if p.get("ws") == ws and p.get("status") in ("filled", "open")]
         return legs
+
+    def _same_dir_legs(self, ws, direction):
+        """v1.63.1: coins already holding THIS direction in THIS window. A second
+        same-direction leg is LEVERAGE (measured 80.7% shared fate, n=259 windows),
+        not diversification — v1.62.0's plain leg COUNT lost that distinction and on
+        2026-07-27 let BTC DOWN 88c + ETH DOWN 60c ride the same window; both reversed."""
+        return [c for c, d in self._window_legs(ws) if d == direction]
 
     def _size_shares(self, price):
         """Tiered Kelly: conservative while rebuilding, bigger once bankroll recovers past
@@ -1746,12 +1753,26 @@ class CleanBot:
         # The guards were calibrated on a $25-45 book where 3 legs = 25-45% of bankroll;
         # at $115 the same 3 legs are ~10%, and max_bet_pct + max_open_pct already bound it.
         _legs = self._window_legs(ws)
+        # v1.63.1: NEVER a second leg in the SAME direction. v1.62.0 collapsed two
+        # different guards into one count, which is wrong: same-direction legs share a
+        # fate 80.7% of the time (measured, n=259 windows) so a 2nd is pure LEVERAGE,
+        # while an opposite-direction leg DIVERSIFIES (measured WR 75.9%, EV +0.047).
+        # Cost of the conflation: 2026-07-27 19:26 BTC DOWN 88c + ETH DOWN 60c in ONE
+        # window = a single 2x correlated bet; both reversed, -$7.40 in one print.
+        _same = self._same_dir_legs(ws, direction)
+        if _same:
+            if (coin, ws, "legsame") not in self._nc_logged:
+                logger.info(f"[LATE SKIP] {coin} {direction} same-dir leg — {', '.join(_same)} "
+                            f"already holds {direction} this window (~81% shared fate = "
+                            f"leverage, not diversification)")
+                self._nc_logged.add((coin, ws, "legsame"))
+            return
         if len(_legs) >= CFG.max_legs_per_window:
             if (coin, ws, "legcap") not in self._nc_logged:
                 _held = ", ".join(f"{c} {d}" for c, d in _legs)
                 logger.info(f"[LATE SKIP] {coin} {direction} window-leg-cap "
                             f"{len(_legs)}/{CFG.max_legs_per_window} — already holding "
-                            f"[{_held}] this window (same-dir legs share a fate ~81%)")
+                            f"[{_held}] this window")
                 self._nc_logged.add((coin, ws, "legcap"))
             return
         _exp = self._open_exposure()
