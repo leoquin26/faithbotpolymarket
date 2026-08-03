@@ -10,6 +10,42 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.64.0 — 2026-08-03 — THE FAV ENGINE: full rebuild around the census discovery
+**Tag:** `cleanbot-v1.64.0` · env `CLEAN_FAV_LIVE=on`, `CLEAN_LATE_LIVE=off` (`.env.bak_fav`)
+· owner: "I refuse to give up" -> re-analysis found the edge -> "rebuild all the engine".
+
+**The discovery (2,020,868 real trades, 6,754 wallets, cash-flow P&L):**
+1. The market has a real favourite-longshot bias: buying favourites 55-90c and HOLDING
+   returns +2.6..+5.5% ROI (favorite buyers net +$349k; longshot buyers net -$256k).
+2. The edge is TIME-STRUCTURED — by seconds remaining at entry (favourites 55-90c):
+   660-900s +4.2% | 480-660s **+7.1% (z=+46)** | 360-480s +4.1% | 240-360s +3.4%
+   | **150-240s +0.16% <- WHERE EVERY PREVIOUS ENGINE ENTERED** | 60-150s +1.8% | 0-60s +3.4%
+   The v1.59 "fixed-time eval at t~195s" — treated as the project's central discovery —
+   walked the bot into the single dead zone of the whole window.
+3. Our drift signal never added value: agreeing with the fav +0.0pp (93% of decisions),
+   disagreeing -8.9pp (z=-2.55). Three weeks of tuning a predictor on top of a trade
+   whose edge is "buy the favourite at the right time".
+4. Holders beat traders: pure hold-to-settlement wallets +0.99% ROI (60.2% profitable)
+   vs sellers -0.83%. Our hold-to-settlement design was right all along.
+
+**The engine (deliberately minimal):** `_fav_entry()` + pure `_pick_favorite()` —
+at t_rem 480-660s, buy whichever side's ask is higher (the favourite) if inside
+55-92c, taker FAK at the ask, hold to settlement. NOTHING else: no drift, no lead
+states, no roc, no hour gate (census edge spans all hours), no maker resting (the 2M
+trades that proved the edge WERE taker fills — matching their execution removes the
+-4.7pp fill-selection gap that ate the maker era). One eval per window, no chase.
+Tagged `fav`: own meter, own n>=40 verdict, own emergency brake (n>=10, EV<=-0.15),
+sizing = exchange-min x its own earned mult under all caps (12%, ruin, exposure,
+2-leg window cap, same-dir block, daily stop 20%). Legacy late/hiband: OFF.
+
+**Honest caveat, stated in advance:** our live fills have historically run ~4.7pp
+below the population at the same price+time. If that gap follows us to 9-minutes-out,
++5.6pp becomes ~+1pp. The fav meter measures exactly this — that is the audition.
+Frequency ~all windows with a 55-92c favourite (est. 30-80/day) -> n>=40 within days.
+
+Tests: 59 cases (13 new: _pick_favorite truth table + fav tag plumbing).
+Dashboard: fav engine panel first, [FAV ENTER] classified, TRACK:fav parsed.
+
 ## v1.63.1 — 2026-07-27 — same-direction legs are LEVERAGE (v1.62.0 conflation, my error)
 **Tag:** `cleanbot-v1.63.1` · owner caught it on the unified engine's first two trades.
 

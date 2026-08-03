@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.63.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.64.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -105,6 +105,21 @@ class Cfg:
     # p~0.001. Corroborated independently by the v1.48 Lima-session study (afternoon
     # +14.3pts = the same clock window). Every OTHER filter we believed in (lead state,
     # roc agreement, coin, price band) died out-of-sample: Spearman rho(train,test) = +0.10.
+    # ── v1.64.0 FAV ENGINE — the rebuild around the wallet-census discovery ──────
+    # 2,020,868 real trades: buying the FAVOURITE (55-90c) and holding to settlement
+    # is +2..+5.6pp above break-even at EVERY price band — EXCEPT in the final ~4
+    # minutes, where the edge decays to zero (t_rem 150-240s: +0.16% ROI, the exact
+    # slot every previous engine entered). Peak: t_rem 480-660s = +5.6pp, ROI +7.1%,
+    # z=+46, n=134,660. Holders beat traders (census: +0.99% vs -0.83% ROI).
+    # NO drift model (measured +0.0pp when agreeing, -8.9pp when not), no lead
+    # states, no roc, no hour gate (the census edge spans all hours). TAKER on
+    # purpose: the 2M trades that proved the edge WERE taker fills — matching their
+    # execution removes the fill-selection gap that ate the maker era (-4.7pp).
+    fav_live: bool = os.getenv("CLEAN_FAV_LIVE", "off").lower() in ("1", "true", "yes", "on")
+    fav_t_min: int = int(os.getenv("CLEAN_FAV_T_MIN", "480"))    # seconds remaining, band floor
+    fav_t_max: int = int(os.getenv("CLEAN_FAV_T_MAX", "660"))    # band ceiling (eval fires on first scan inside)
+    fav_min_ask: float = float(os.getenv("CLEAN_FAV_MIN_ASK", "0.55"))
+    fav_max_ask: float = float(os.getenv("CLEAN_FAV_MAX_ASK", "0.92"))
     trade_hours_utc: str = os.getenv("CLEAN_TRADE_HOURS_UTC", "")
     max_legs_per_window: int = max(1, int(os.getenv("CLEAN_MAX_LEGS_PER_WINDOW", "1")))  # v1.62.0: how many coins may hold a leg in ONE 15m window. 1 = the pre-v1.62 one-coin-per-window behaviour. Raising it trades variance concentration (same-dir legs share a fate 80.7% of the time, n=259 windows) for frequency (+70% eligible legs at no measured EV cost). Bounded by max_bet_pct per leg and max_open_pct in aggregate.
     position_keep_h: int = int(os.getenv("CLEAN_POSITION_KEEP_H", "48"))  # prune resolved positions older than this (state hygiene)
@@ -404,6 +419,29 @@ def _roc_strict(ticks, sec, min_frac: float = 0.55):
         return None
 
 
+def _pick_favorite(up_ask, down_ask, lo: float, hi: float):
+    """v1.64.0: which side is the FAVOURITE, and is it inside the tradeable band?
+    The favourite is simply the higher-priced side. Returns ("UP"|"DOWN", ask) or
+    None (no ask on either side, tie, or favourite outside [lo, hi]).
+    Pure function — unit-tested in test_clean_bot_risk.py."""
+    try:
+        ua = float(up_ask) if up_ask is not None else None
+        da = float(down_ask) if down_ask is not None else None
+    except (TypeError, ValueError):
+        return None
+    if ua is None and da is None:
+        return None
+    if ua is not None and (da is None or ua > da):
+        side, px = "UP", ua
+    elif da is not None and (ua is None or da > ua):
+        side, px = "DOWN", da
+    else:
+        return None                       # exact tie: no favourite
+    if not (lo <= px <= hi):
+        return None
+    return side, round(px, 2)
+
+
 def _taker_buy_fee(price: float, shares: float) -> float:
     """Polymarket crypto taker fee per fill: 0.07 * p * (1-p) per share (embedded in usdcSize).
     Makers pay 0. Used so settlement EV/$ reflects capital actually at risk on taker entries."""
@@ -438,8 +476,9 @@ class CleanBot:
         self.day_results = []                   # today's (won, pnl, stake, engine) — for the midnight [SCORE] board
         # SELF-GOVERNANCE (v1.47): the engine executes its own pre-registered verdicts at n>=40
         # per engine — EV/$ >= +0.03 scale up (x2, then x3 cap), -0.03..+0.03 hold, <= -0.03 OFF.
-        self.engine_mult = {"early": 1.0, "late": 1.0, "voldiv": 1.0, "hiband": 1.0}   # size multiplier per engine
-        self.engine_off = {"early": False, "late": False, "voldiv": False, "hiband": False}  # retired by verdict
+        self.engine_mult = {"early": 1.0, "late": 1.0, "voldiv": 1.0, "hiband": 1.0, "fav": 1.0}   # size multiplier per engine
+        self.engine_off = {"early": False, "late": False, "voldiv": False, "hiband": False, "fav": False}  # retired by verdict
+        self._fav_evaled = set()                # v1.64.0: one fav decision per (coin, ws)
         self.killed = False                     # kill-floor latch (v1.43.1): stays True once fired, owner reset only
         self.breaker_until = 0.0                # cooldown end timestamp
         self._stop_notified = False
@@ -1924,6 +1963,125 @@ class CleanBot:
                 logger.warning(f"[LATE ORDER FAIL] {coin} {direction}: {e}")
         self._save()
 
+    def _fav_entry(self, coin: str):
+        """v1.64.0 FAV ENGINE — buy the favourite at ~9 minutes remaining, hold to
+        settlement. The entire strategy: no direction model, no momentum, no hour
+        gate. Evidence: 2M-trade census (see Cfg.fav_live comment). One fixed-time
+        decision per window inside t_rem [fav_t_min, fav_t_max]; taker FAK at the
+        favourite's ask; tagged 'fav' -> own meter, own n>=40 verdict, own
+        emergency brake. Min-size x its OWN earned multiplier, under every guard."""
+        if not CFG.fav_live or self.engine_off.get("fav"):
+            return
+        info = get_market_info(coin)
+        if not info:
+            return
+        ws = info.window_start
+        key = (coin, ws)
+        if key in self.traded or key in self._fav_evaled:
+            return
+        t_rem = ws + 900 - time.time()
+        if not (CFG.fav_t_min <= t_rem <= CFG.fav_t_max):
+            return
+        self._fav_evaled.add(key)                 # one decision, taken or not — no chase
+        if len(self._fav_evaled) > 600:
+            self._fav_evaled = set(list(self._fav_evaled)[-300:])
+        try:
+            up_bk = self.om.get_clob_book(info.up_token_id) or {}
+            dn_bk = self.om.get_clob_book(info.down_token_id) or {}
+        except Exception as e:
+            logger.debug(f"fav book fetch failed {coin}: {e}")
+            return
+        pick = _pick_favorite(up_bk.get("ask"), dn_bk.get("ask"),
+                              CFG.fav_min_ask, CFG.fav_max_ask)
+        if not pick:
+            if (coin, ws, "favband") not in self._nc_logged:
+                logger.info(f"[FAV SKIP] {coin} no favourite in band "
+                            f"{CFG.fav_min_ask:.2f}-{CFG.fav_max_ask:.2f} "
+                            f"(up={up_bk.get('ask')} down={dn_bk.get('ask')}) T={t_rem:.0f}s")
+                self._nc_logged.add((coin, ws, "favband"))
+            return
+        direction, px_ord = pick
+        token = info.up_token_id if direction == "UP" else info.down_token_id
+        # correlation: a 2nd SAME-direction leg is leverage, not a 2nd bet (v1.63.1)
+        _same = self._same_dir_legs(ws, direction)
+        if _same:
+            if (coin, ws, "favsame") not in self._nc_logged:
+                logger.info(f"[FAV SKIP] {coin} {direction} same-dir leg — {', '.join(_same)} "
+                            f"already holds {direction} this window")
+                self._nc_logged.add((coin, ws, "favsame"))
+            return
+        _legs = self._window_legs(ws)
+        if len(_legs) >= CFG.max_legs_per_window:
+            return
+        # sizing: exchange-min x the engine's own EARNED multiplier, bankroll-capped
+        shares = max(CFG.shares, int(CFG.shares * float(self.engine_mult.get("fav", 1.0))))
+        max_sh = max(CFG.shares, int((self.bankroll * CFG.max_bet_pct) / px_ord))
+        shares = min(shares, max_sh)
+        if CFG.shares * px_ord > self.bankroll * CFG.max_bet_hard_pct:
+            if (coin, ws, "favruin") not in self._nc_logged:
+                logger.warning(f"[RUIN GUARD] FAV {coin} STAND DOWN — exchange-min "
+                               f"${CFG.shares*px_ord:.2f} > {CFG.max_bet_hard_pct*100:.0f}% "
+                               f"of ${self.bankroll:.2f}")
+                self._nc_logged.add((coin, ws, "favruin"))
+            return
+        if self._open_exposure() + px_ord * shares > self.bankroll * CFG.max_open_pct:
+            if (coin, ws, "favexpo") not in self._nc_logged:
+                logger.info(f"[FAV SKIP] {coin} {direction} max-open-exposure")
+                self._nc_logged.add((coin, ws, "favexpo"))
+            return
+        fee = _taker_buy_fee(px_ord, shares)
+        logger.info(f"[FAV ENTER] {coin} {direction} fav@{px_ord*100:.0f}c x{shares} "
+                    f"(${px_ord*shares:.2f}+fee${fee:.2f}, bankroll ${self.bankroll:.0f}, "
+                    f"BEwr={px_ord*100:.0f}%) T={t_rem:.0f}s [AUDITION]"
+                    + (" [DRY]" if CFG.dry else ""))
+        if CFG.dry:
+            self.traded.add(key)
+            self.positions[f"{coin}:{ws}"] = {"coin": coin, "ws": ws, "dir": direction,
+                                              "entry": px_ord, "shares": shares, "token": token,
+                                              "status": "filled", "sim": True, "fav": True,
+                                              "taker": True, "buy_fee": round(fee, 4)}
+            self._save()
+            return
+        try:
+            res = self.client.create_and_post_order(
+                OrderArgs(price=px_ord, size=shares, side=BUY, token_id=token),
+                PartialCreateOrderOptions(tick_size="0.01"), OrderType.FAK)
+            oid = (res or {}).get("orderID") or (res or {}).get("orderId")
+            matched = float((res or {}).get("size_matched") or
+                            (res or {}).get("sizeMatched") or 0)
+            if matched <= 0 and oid:
+                # v1.60.2 policy: async matching lies for seconds — poll before miss
+                for _poll in range(3):
+                    time.sleep(1.2)
+                    try:
+                        od = self.client.get_order(oid) or {}
+                        matched = float(od.get("size_matched") or od.get("sizeMatched") or 0)
+                    except Exception:
+                        matched = 0.0
+                    if matched > 0:
+                        break
+            if matched > 0:
+                sh = int(matched)
+                fee = _taker_buy_fee(px_ord, sh)
+                self.traded.add(key)
+                self.positions[f"{coin}:{ws}"] = {
+                    "coin": coin, "ws": ws, "dir": direction, "token": token,
+                    "entry": px_ord, "shares": sh, "status": "filled",
+                    "fav": True, "taker": True, "buy_fee": round(fee, 4)}
+                partial = sh < shares
+                tag = "FILLED TAKER PARTIAL" if partial else "FILLED TAKER"
+                logger.info(f"[{tag}] FAV {coin} {direction} @ {px_ord*100:.0f}c x{sh} "
+                            f"fee=${fee:.3f}")
+                tg._send(f"🤖 <b>{tag}</b> FAV {coin} {direction} @ {px_ord*100:.0f}c x{sh}",
+                         dedup_key=f"fill-fav-{coin}-{ws}")
+            else:
+                err_txt = str((res or {}).get("errorMsg") or (res or {}).get("error") or "")
+                logger.info(f"[FAV MISS] {coin} {direction} @ {px_ord*100:.0f}c x{shares} "
+                            f"FAK no fill" + (f" ({err_txt[:80]})" if err_txt else ""))
+        except Exception as e:
+            logger.warning(f"[FAV ORDER FAIL] {coin} {direction}: {e}")
+        self._save()
+
     def _vol_div_entry(self, coin: str):
         """Strategy #4 (v1.42) — VOL-DIVERGENCE, a PRICING edge (not direction prediction).
         Fair prob of the lead holding: p = Phi(drift / (sigma*sqrt(t_left))) (driftless BM).
@@ -2309,7 +2467,8 @@ class CleanBot:
             # EV/$ staked is the real compounding rate. Each engine gets its own scoreboard so a
             # good engine can't be hidden by a bad one — and each faces its own pre-registered
             # verdict at 40 trades: EV>=+0.03 scale up | -0.03..+0.03 keep min-size | <=-0.03 OFF.
-            _tag = ("hiband" if p.get("hiband") else
+            _tag = ("fav" if p.get("fav") else
+                    "hiband" if p.get("hiband") else
                     "late" if p.get("late") else ("voldiv" if p.get("voldiv") else "early"))
             # stake = entry notional + buy fee (true dollars at risk for EV/$)
             _stake = entry * p.get("shares", CFG.shares) + float(p.get("buy_fee") or 0.0)
@@ -2493,6 +2652,11 @@ class CleanBot:
                     if CFG.late_live:
                         for c in CFG.late_coins:
                             self._late_entry(c)
+                    # v1.64.0 FAV — the census rebuild: favourite @ ~9min, hold.
+                    # Shares the same daily-stop / breaker / kill-floor guards.
+                    if CFG.fav_live:
+                        for c in CFG.late_coins:
+                            self._fav_entry(c)
                     # Strategy #4 vol-divergence audition — pricing edge, min-size, shares the
                     # same daily-stop / breaker / kill-floor guards.
                     if CFG.vol_div_live:

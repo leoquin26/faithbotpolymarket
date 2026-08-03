@@ -31,7 +31,7 @@ UI = os.path.join(V3, "quantum_ui")
 CERT = os.path.join(V3, "quantum_cert.pem")
 KEY = os.path.join(V3, "quantum_key.pem")
 COINS = ("BTC", "ETH", "SOL")
-ENGINES = ("late", "hiband", "early", "voldiv")
+ENGINES = ("fav", "late", "hiband", "early", "voldiv")
 
 DASH_USER = os.getenv("QUANTUM_DASH_USER", "leo")
 DASH_PASS = os.getenv("QUANTUM_DASH_PASS", "")     # empty ⇒ auth disabled (tunnel/localhost only)
@@ -72,7 +72,7 @@ def _broadcast(msg: dict):
 
 LOG_CLASS = (
     (re.compile(r"\[(WIN|LOSS)\]"), "result"),
-    (re.compile(r"\[LATE ENTER\]|\[FILLED"), "enter"),
+    (re.compile(r"\[LATE ENTER\]|\[FAV ENTER\]|\[FILLED"), "enter"),
     (re.compile(r"\[VERDICT|\[TRACK"), "verdict"),
     (re.compile(r"\[LATE SKIP\]|SKIP:"), "skip"),
     (re.compile(r"\[SIZE->BOOK\]|\[LATE MISS\]|\[LATE EVAL MISSED\]"), "exec"),
@@ -198,7 +198,7 @@ RX_RESULT = re.compile(
     r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| \[(WIN|LOSS)\] (\w+) (UP|DOWN) @ (\d+)c"
     r" -> \w+ \| ([+-][\d.]+) \| bankroll \$([\d.]+)")
 RX_TRACK = re.compile(
-    r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| \[TRACK:(late|hiband)\] last (\d+): "
+    r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| \[TRACK:(late|hiband|fav)\] last (\d+): "
     r"(\d+)/\d+=(\d+)%WR \| net ([+-][\d.]+) \| EV/\$ ([+-][\d.]+)")
 
 

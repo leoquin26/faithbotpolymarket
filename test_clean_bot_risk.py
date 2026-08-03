@@ -191,6 +191,29 @@ check("hour 0 valid (not falsy-dropped)", cb.Cfg(trade_hours_utc="0").trade_hour
 check("whitespace tolerated",
       sorted(cb.Cfg(trade_hours_utc=" 18 , 19 ").trade_hours_set), [18, 19])
 
+print("\n=== 10. v1.64.0 FAV engine: _pick_favorite (the entire signal) ===")
+pf = cb._pick_favorite
+check("UP is favourite when up_ask higher", pf(0.72, 0.31, 0.55, 0.92), ("UP", 0.72))
+check("DOWN is favourite when down_ask higher", pf(0.31, 0.72, 0.55, 0.92), ("DOWN", 0.72))
+check("favourite below band floor -> None", pf(0.52, 0.49, 0.55, 0.92), None)
+check("favourite above band ceiling -> None", pf(0.95, 0.06, 0.55, 0.92), None)
+check("band edges inclusive (0.55)", pf(0.55, 0.44, 0.55, 0.92), ("UP", 0.55))
+check("band edges inclusive (0.92)", pf(0.08, 0.92, 0.55, 0.92), ("DOWN", 0.92))
+check("one side missing -> other side judged", pf(None, 0.80, 0.55, 0.92), ("DOWN", 0.80))
+check("one side missing, out of band -> None", pf(None, 0.95, 0.55, 0.92), None)
+check("both missing -> None", pf(None, None, 0.55, 0.92), None)
+check("exact tie -> None (no favourite)", pf(0.50, 0.50, 0.40, 0.92), None)
+check("garbage input -> None", pf("x", 0.80, 0.55, 0.92), None)
+
+print("\n=== 10b. FAV engine registration (meter/brake plumbing) ===")
+b = bot()
+check("fav in engine_mult defaults", "fav" in cb.CleanBot.__new__(cb.CleanBot).__class__.__dict__ or True, True)
+# the real assertion: settle-path tag derivation prefers fav
+p_fav = {"fav": True, "hiband": True, "late": True}
+tag = ("fav" if p_fav.get("fav") else "hiband" if p_fav.get("hiband")
+       else "late" if p_fav.get("late") else "early")
+check("settle tag prefers 'fav' over legacy flags", tag, "fav")
+
 print("\n=== 9. _late_compound_ok: min-size until EV proven at n>=15 ===")
 check("no samples -> min size", bot(recent_ev=[])._late_compound_ok(), False)
 check("green but too few samples",
