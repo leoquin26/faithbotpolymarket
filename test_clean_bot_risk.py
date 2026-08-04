@@ -191,6 +191,51 @@ check("hour 0 valid (not falsy-dropped)", cb.Cfg(trade_hours_utc="0").trade_hour
 check("whitespace tolerated",
       sorted(cb.Cfg(trade_hours_utc=" 18 , 19 ").trade_hours_set), [18, 19])
 
+print("\n=== 11. v1.65.0 verdict significance gate (_verdict_stats + z rule) ===")
+import random  # noqa: E402
+random.seed(7)
+
+def synth(n, wr, win_roi, loss_roi, stake=3.5):
+    """Build a recent_ev-shaped meter with known WR and payoff geometry."""
+    out = []
+    wins = int(round(n * wr))
+    for i in range(n):
+        won = i < wins
+        roi = win_roi if won else loss_roi
+        out.append((1 if won else 0, roi * stake, stake, "t"))
+    random.shuffle(out)
+    return out
+
+def rule(eng, zbar=1.0):
+    n, w, net, stk, ev, z = cb._verdict_stats(eng)
+    if n >= 40 and ev <= -0.03 and z <= -zbar:
+        return "RETIRE", ev, z
+    if n >= 40 and ev >= 0.03 and z >= zbar:
+        return "SCALE", ev, z
+    return "min-size", ev, z
+
+# fav cycle-2 (today's noise kill): 67% WR at ~70c favorites -> EV ~ -0.03, z small
+v, ev, z = rule(synth(43, 0.67, 0.42, -1.0))
+check("fav cycle-2 shape: NOT retired under z-gate", v, "min-size",
+      f"(ev {ev:+.3f} z {z:+.2f})")
+# fav cycle-1 (the earned scale-up): 85% WR -> strongly positive
+v, ev, z = rule(synth(40, 0.85, 0.40, -1.0))
+check("fav cycle-1 shape: still SCALES", v, "SCALE", f"(ev {ev:+.3f} z {z:+.2f})")
+# late catastrophe shape at n=43: deep negative IS significant -> retires
+v, ev, z = rule(synth(43, 0.50, 0.40, -1.0))
+check("deep-negative at n>=40: still RETIRES", v, "RETIRE", f"(ev {ev:+.3f} z {z:+.2f})")
+# compound-gate incident shape: n=15 thin positive -> no action regardless
+v, ev, z = rule(synth(15, 0.73, 0.45, -1.0))
+check("n=15 thin positive: no ruling (needs n>=40)", v, "min-size")
+# emergency brake path unchanged: CFG values still present
+check("emergency brake thresholds unchanged",
+      (CFG.emergency_n, CFG.emergency_ev), (10, -0.15))
+check("verdict_z default 1.0", cb.Cfg().verdict_z, 1.0)
+# _verdict_stats basics
+n, w, net, stk, ev, z = cb._verdict_stats([(1, 1.0, 2.0, "t"), (0, -2.0, 2.0, "t")])
+check("stats: n and stake sum", (n, stk), (2, 4.0))
+check("stats: ev = net/stake", round(ev, 3), round(-1.0 / 4.0, 3))
+
 print("\n=== 10. v1.64.0 FAV engine: _pick_favorite (the entire signal) ===")
 pf = cb._pick_favorite
 check("UP is favourite when up_ask higher", pf(0.72, 0.31, 0.55, 0.92), ("UP", 0.72))

@@ -10,6 +10,36 @@ feature/knob, PATCH = fix/tuning.
 
 ---
 
+## v1.65.0 — 2026-08-04 — verdicts now require SIGNIFICANCE (owner: "improve, don't retire")
+**Tag:** `cleanbot-v1.65.0` · owner challenged the fav retirement: "if we have a profitable
+engine why still retiring? ... learn and improve instead."
+
+**The owner was right, statistically.** The 13:31 retirement fired on EV/$ -0.033 at n=43 —
+whose standard error is ~0.08, i.e. z ~ -0.4. The rule could not distinguish that reading
+from breakeven OR from +0.03, yet it killed a lifetime-profitable engine (+$16.90 across
+83 settles). Compare the retirements that were RIGHT: late -0.195/-0.294, hiband -0.168 —
+5-9x past the line. The rule was correct about disasters, trigger-happy about noise.
+
+**Fix:** `_verdict_stats()` (pure, tested) adds a z-score to every meter reading; the
+n>=40 rulings now require BOTH the +/-0.03 line AND |z| >= `CLEAN_VERDICT_Z` (default 1.0):
+- retire: EV <= -0.03 AND z <= -1  (negative and REAL)
+- scale:  EV >= +0.03 AND z >= +1  (positive and REAL — also closes the noise-scale-up
+  hole that the compound gate fell into on 2026-07-25)
+- otherwise: KEEP MEASURING at min size — the meter keeps accumulating (up to the 150-row
+  window) instead of a binary kill, which is exactly the "learn, don't retire" behaviour:
+  exposure stays minimal while evidence accumulates in either direction.
+**Emergency brake unchanged and z-free** (n>=10, EV<=-0.15): catastrophic bleed control
+must never wait for significance.
+
+**Validated by replaying every incident** (test suite, 8 new cases): fav cycle-2 noise kill
+-> now min-size continue; fav cycle-1 scale-up -> still scales (z=+2.4); late/hiband
+catastrophes -> still die (z<-2 or brake); the $9.24 compound-gate unlock -> would not
+have fired. 67 tests total.
+
+**Also this session:** fav released (owner reset per the rule's own procedure), meter
+cleared for cycle 3 at x1. Cycle-2 context: -0.033 spanned the x2 chop damage; at x1
+those same bets score ~ -0.01.
+
 ## v1.64.0 — 2026-08-03 — THE FAV ENGINE: full rebuild around the census discovery
 **Tag:** `cleanbot-v1.64.0` · env `CLEAN_FAV_LIVE=on`, `CLEAN_LATE_LIVE=off` (`.env.bak_fav`)
 · owner: "I refuse to give up" -> re-analysis found the edge -> "rebuild all the engine".

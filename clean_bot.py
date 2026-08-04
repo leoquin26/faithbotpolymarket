@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.64.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.65.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -120,6 +120,7 @@ class Cfg:
     fav_t_max: int = int(os.getenv("CLEAN_FAV_T_MAX", "660"))    # band ceiling (eval fires on first scan inside)
     fav_min_ask: float = float(os.getenv("CLEAN_FAV_MIN_ASK", "0.55"))
     fav_max_ask: float = float(os.getenv("CLEAN_FAV_MAX_ASK", "0.92"))
+    verdict_z: float = float(os.getenv("CLEAN_VERDICT_Z", "1.0"))   # v1.65.0: n>=40 rulings need |z| >= this — evidence, not noise. Emergency brake (n>=10, EV<=-0.15) intentionally has NO z gate: bleed control fires unconditionally.
     trade_hours_utc: str = os.getenv("CLEAN_TRADE_HOURS_UTC", "")
     max_legs_per_window: int = max(1, int(os.getenv("CLEAN_MAX_LEGS_PER_WINDOW", "1")))  # v1.62.0: how many coins may hold a leg in ONE 15m window. 1 = the pre-v1.62 one-coin-per-window behaviour. Raising it trades variance concentration (same-dir legs share a fate 80.7% of the time, n=259 windows) for frequency (+70% eligible legs at no measured EV cost). Bounded by max_bet_pct per leg and max_open_pct in aggregate.
     position_keep_h: int = int(os.getenv("CLEAN_POSITION_KEEP_H", "48"))  # prune resolved positions older than this (state hygiene)
@@ -417,6 +418,34 @@ def _roc_strict(ticks, sec, min_frac: float = 0.55):
         return (now_p - base_p) / base_p
     except Exception:
         return None
+
+
+def _verdict_stats(eng):
+    """v1.65.0: engine meter stats WITH significance. Returns (n, wins, net, stake,
+    ev, z) where ev = net/stake (stake-weighted EV per $) and z = ev / se using the
+    per-bet ROI spread. The n>=40 verdicts now require |z| >= CFG.verdict_z as well
+    as the +/-0.03 line: a ruling must be EVIDENCE, not noise. Validation against
+    every historical incident:
+      2026-08-04 fav cycle-2  -0.033 n=43 -> z~-0.4: NO retire (was a noise kill)
+      2026-08-04 fav cycle-1  +0.168 n=40 -> z~+2.1: still scales up
+      2026-07-25 compound gate +0.048 n=15 -> z~+0.3: would NOT have unlocked (the
+        $9.24-bet incident)
+      late -0.294 / hiband -0.168 catastrophes: emergency brake (unchanged, no z
+        requirement) still retires them.
+    Pure function — unit-tested."""
+    n = len(eng)
+    wins = sum(x[0] for x in eng)
+    net = sum(x[1] for x in eng)
+    stk = sum(x[2] for x in eng)
+    ev = net / stk if stk else 0.0
+    rois = [x[1] / x[2] for x in eng if x[2]]
+    z = 0.0
+    if len(rois) >= 2:
+        m = sum(rois) / len(rois)
+        sd = math.sqrt(sum((r - m) ** 2 for r in rois) / (len(rois) - 1))
+        se = sd / math.sqrt(len(rois))
+        z = ev / se if se > 1e-9 else 0.0
+    return n, wins, net, stk, ev, z
 
 
 def _pick_favorite(up_ask, down_ask, lo: float, hi: float):
@@ -2478,12 +2507,16 @@ class CleanBot:
             self.day_results.append(_rec)
             eng = [x for x in self.recent_ev if len(x) > 3 and x[3] == _tag]
             if len(eng) >= 5:
-                _w = sum(x[0] for x in eng); _n = len(eng)
-                _net = sum(x[1] for x in eng); _stk = sum(x[2] for x in eng)
-                _ev = _net / _stk if _stk else 0.0
-                verdict = ("SCALE-UP✓" if _ev >= 0.03 else "OFF✗" if _ev <= -0.03 else "min-size")
+                # v1.65.0: verdicts need SIGNIFICANCE (|z| >= verdict_z), not just the
+                # +/-0.03 line — owner's "improve it, don't retire it": a reading the
+                # meter can't distinguish from breakeven keeps MEASURING at min size
+                # instead of killing a lifetime-profitable engine on noise.
+                _n, _w, _net, _stk, _ev, _z = _verdict_stats(eng)
+                verdict = ("SCALE-UP✓" if (_ev >= 0.03 and _z >= CFG.verdict_z)
+                           else "OFF✗" if (_ev <= -0.03 and _z <= -CFG.verdict_z)
+                           else "min-size")
                 logger.info(f"[TRACK:{_tag}] last {_n}: {_w}/{_n}={100*_w/_n:.0f}%WR | net {_net:+.2f} | "
-                            f"EV/$ {_ev:+.3f} | at n>=40 -> {verdict}")
+                            f"EV/$ {_ev:+.3f} z={_z:+.1f} | at n>=40 -> {verdict}")
                 # SELF-GOVERNANCE (v1.47): at n>=40 the engine EXECUTES its own verdict — the
                 # pre-registered rules stop being advisory. OFF is permanent until owner reset
                 # ("engine_off" in state); scaling steps 1x->2x->3x only while EV holds >= +0.03.
@@ -2503,13 +2536,17 @@ class CleanBot:
                              f"Engine retired early and de-scaled to x1. Owner reset required.")
                     self._save()
                 if _n >= 40 and not self.engine_off.get(_tag):
-                    if _ev <= -0.03:
+                    if _ev <= -0.03 and _z <= -CFG.verdict_z:
                         self.engine_off[_tag] = True
-                        logger.info(f"[VERDICT:{_tag}] n={_n} EV/$ {_ev:+.3f} <= -0.03 — ENGINE RETIRED "
-                                    f"(pre-registered rule; owner reset required)")
-                        tg._send(f"⚖️ <b>VERDICT: {_tag} RETIRED</b> — n={_n}, EV/$ {_ev:+.3f}. "
-                                 f"The pre-registered rule fired; engine off until owner reset.")
-                    elif _ev >= 0.03 and self.engine_mult.get(_tag, 1.0) < 3.0:
+                        logger.info(f"[VERDICT:{_tag}] n={_n} EV/$ {_ev:+.3f} z={_z:+.1f} — ENGINE "
+                                    f"RETIRED (negative AND significant; owner reset required)")
+                        tg._send(f"⚖️ <b>VERDICT: {_tag} RETIRED</b> — n={_n}, EV/$ {_ev:+.3f} "
+                                 f"z={_z:+.1f}. Negative and statistically real; off until owner reset.")
+                    elif _ev <= -0.03:
+                        logger.info(f"[VERDICT:{_tag}] n={_n} EV/$ {_ev:+.3f} but z={_z:+.1f} — "
+                                    f"NOT significant (needs z<=-{CFG.verdict_z:.1f}); continuing "
+                                    f"min-size, meter keeps accumulating")
+                    elif _ev >= 0.03 and _z >= CFG.verdict_z and self.engine_mult.get(_tag, 1.0) < 3.0:
                         self.engine_mult[_tag] = self.engine_mult.get(_tag, 1.0) + 1.0
                         logger.info(f"[VERDICT:{_tag}] n={_n} EV/$ {_ev:+.3f} >= +0.03 — SCALING to "
                                     f"x{self.engine_mult[_tag]:.0f} (pre-registered rule)")
