@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.66.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.66.1"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -2017,6 +2017,19 @@ class CleanBot:
         key = (coin, ws)
         if key in self.traded or key in self._fav_evaled:
             return
+        # v1.66.1 HOUR CONCENTRATION (owner-directed, census-backed): the fav edge is
+        # positive in every UTC block but ~2x larger 12-24h (+8-9% vs +3-5%, n=144k).
+        # With a small book + daily stop, weak-morning drawdowns burn the risk budget
+        # before the double-edge hours arrive (path dependence, observed twice live).
+        # Same whitelist the late engine used: CLEAN_TRADE_HOURS_UTC ("" = all hours).
+        if CFG.trade_hours_set:
+            _wh = time.gmtime(ws).tm_hour
+            if _wh not in CFG.trade_hours_set:
+                if (coin, ws, "favhour") not in self._nc_logged:
+                    logger.info(f"[FAV SKIP] {coin} hour-gate {_wh:02d}h UTC not in "
+                                f"{sorted(CFG.trade_hours_set)} (edge concentration)")
+                    self._nc_logged.add((coin, ws, "favhour"))
+                return
         t_rem = ws + 900 - time.time()
         if not (CFG.fav_t_min <= t_rem <= CFG.fav_t_max):
             return
