@@ -236,6 +236,24 @@ n, w, net, stk, ev, z = cb._verdict_stats([(1, 1.0, 2.0, "t"), (0, -2.0, 2.0, "t
 check("stats: n and stake sum", (n, stk), (2, 4.0))
 check("stats: ev = net/stake", round(ev, 3), round(-1.0 / 4.0, 3))
 
+print("\n=== 12. v1.66.0 maker-fav: _record_fill carries the fav tag ===")
+b = bot(positions={}, open_orders={})
+b.client = None  # never touched by _record_fill
+import types as _tt
+cb.tg = _tt.SimpleNamespace(_send=lambda *a, **k: None)
+o = {"coin": "SOL", "ws": 100, "dir": "UP", "token": "t", "price": 0.66,
+     "shares": 5, "ts": 0.0, "fav": True, "taker": False}
+b._record_fill(o, 5)
+pos = b.positions.get("SOL:100", {})
+check("fav flag carried into the position", pos.get("fav"), True)
+check("maker fill: no taker fee", pos.get("buy_fee"), 0.0)
+check("settle tag would be 'fav'",
+      "fav" if pos.get("fav") else "other", "fav")
+o2 = {"coin": "ETH", "ws": 200, "dir": "DOWN", "token": "t", "price": 0.70,
+      "shares": 5, "ts": 0.0, "late": True, "taker": False}
+b._record_fill(o2, 5)
+check("non-fav orders unaffected", b.positions["ETH:200"].get("fav"), False)
+
 print("\n=== 10. v1.64.0 FAV engine: _pick_favorite (the entire signal) ===")
 pf = cb._pick_favorite
 check("UP is favourite when up_ask higher", pf(0.72, 0.31, 0.55, 0.92), ("UP", 0.72))

@@ -55,7 +55,7 @@ logger.add(os.path.join(V3, "clean_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 
-VERSION = "1.65.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
+VERSION = "1.66.0"  # bump on EVERY change + add a CHANGELOG.md entry + git tag cleanbot-vX.Y.Z
 EARLY_SNAP_PATH = os.path.join(V3, "data", "late_early_snaps.json")  # survive restarts for require_early
 
 
@@ -120,6 +120,15 @@ class Cfg:
     fav_t_max: int = int(os.getenv("CLEAN_FAV_T_MAX", "660"))    # band ceiling (eval fires on first scan inside)
     fav_min_ask: float = float(os.getenv("CLEAN_FAV_MIN_ASK", "0.55"))
     fav_max_ask: float = float(os.getenv("CLEAN_FAV_MAX_ASK", "0.92"))
+    # v1.66.0 MAKER-FAV: the untested quadrant. Census diagnosis (92,613 matched
+    # trades at t_rem 480-660): 44% of fills execute BELOW the posted ask, and those
+    # improved fills win 82.7% vs 78.9% for ask-payers — the price-improved crowd
+    # gets BOTH a cheaper entry and a better win rate. Our taker-at-ask fav captured
+    # only the thin residue. Rest a GTC bid fav_improve under the ask instead; the
+    # existing check_orders machinery cancels unfilled rests at gtc_max_age (180s),
+    # i.e. right at the band floor. Unfilled = missed bet, $0 lost.
+    fav_maker: bool = os.getenv("CLEAN_FAV_MAKER", "off").lower() in ("1", "true", "yes", "on")
+    fav_improve: float = float(os.getenv("CLEAN_FAV_IMPROVE", "0.01"))
     verdict_z: float = float(os.getenv("CLEAN_VERDICT_Z", "1.0"))   # v1.65.0: n>=40 rulings need |z| >= this — evidence, not noise. Emergency brake (n>=10, EV<=-0.15) intentionally has NO z gate: bleed control fires unconditionally.
     trade_hours_utc: str = os.getenv("CLEAN_TRADE_HOURS_UTC", "")
     max_legs_per_window: int = max(1, int(os.getenv("CLEAN_MAX_LEGS_PER_WINDOW", "1")))  # v1.62.0: how many coins may hold a leg in ONE 15m window. 1 = the pre-v1.62 one-coin-per-window behaviour. Raising it trades variance concentration (same-dir legs share a fate 80.7% of the time, n=259 windows) for frequency (+70% eligible legs at no measured EV cost). Bounded by max_bet_pct per leg and max_open_pct in aggregate.
@@ -2071,6 +2080,29 @@ class CleanBot:
                                               "taker": True, "buy_fee": round(fee, 4)}
             self._save()
             return
+        if CFG.fav_maker:
+            # v1.66.0: REST inside the spread instead of paying the ask. check_orders
+            # tracks the fill (v1.61.1 poll included) and cancels by age ~180s = band floor.
+            px_rest = round(max(0.02, px_ord - CFG.fav_improve), 2)
+            try:
+                res = self.client.create_and_post_order(
+                    OrderArgs(price=px_rest, size=shares, side=BUY, token_id=token),
+                    PartialCreateOrderOptions(tick_size="0.01"), OrderType.GTC)
+                oid = (res or {}).get("orderID") or (res or {}).get("orderId")
+                self.traded.add(key)
+                if oid:
+                    self.open_orders[oid] = {"coin": coin, "ws": ws, "dir": direction,
+                                             "token": token, "price": px_rest,
+                                             "shares": shares, "ts": time.time(),
+                                             "fav": True, "taker": False}
+                    logger.info(f"[FAV REST] {coin} {direction} @ {px_rest*100:.0f}c x{shares} "
+                                f"(ask {px_ord*100:.0f}c, fee $0) oid={str(oid)[:10]}")
+                else:
+                    logger.warning(f"[FAV ORDER] no oid in result: {res}")
+            except Exception as e:
+                logger.warning(f"[FAV ORDER FAIL] {coin} {direction}: {e}")
+            self._save()
+            return
         try:
             res = self.client.create_and_post_order(
                 OrderArgs(price=px_ord, size=shares, side=BUY, token_id=token),
@@ -2232,6 +2264,9 @@ class CleanBot:
             # late/voldiv fill got scored as 'early' on the per-engine boards)
             "late": o.get("late", False), "voldiv": o.get("voldiv", False),
             "hiband": o.get("hiband", False),
+            # v1.66.0: carry the FAV tag — without this a maker-fav fill would be
+            # scored as 'early' on the boards (the exact v1.45.1 tag-drop bug class)
+            "fav": o.get("fav", False),
             "taker": is_taker, "buy_fee": round(fee, 4)}
         tag = "FILLED-RACE" if race else ("FILLED-PARTIAL" if partial else "FILLED")
         logger.info(f"[{tag}] {o['coin']} {o['dir']} @ {o['price']*100:.0f}c x{sh}"
