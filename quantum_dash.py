@@ -214,17 +214,17 @@ def _poll_prices():
             spark = [round(p, 6) for _, p in list(h)[-240::3]]
             coins[c] = {"px": h[-1][1] if h else None,
                         "chg60": chg(60), "chg300": chg(300), "spark": spark}
-        ws_epoch = int(now // 900) * 900
-        t_rem = int(ws_epoch + 900 - now)
+        ws_epoch = int(now // 3600) * 3600            # 1H markets are MAIN now
+        t_rem = int(ws_epoch + 3600 - now)
         _broadcast({"t": "prices", "coins": coins,
-                    "window": {"start": ws_epoch, "t_rem": t_rem,
-                               "in_slot": 150 <= t_rem <= 195}})
+                    "window": {"start": ws_epoch, "t_rem": t_rem, "wlen": 3600,
+                               "in_slot": 1800 <= t_rem <= 3300}})
         time.sleep(1.0)
 
 
 RX_RESULT = re.compile(
     r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| \[(WIN|LOSS)\] (\w+) (UP|DOWN) @ (\d+)c"
-    r" -> \w+ \| ([+-][\d.]+) \| bankroll \$([\d.]+)")
+    r" -> \w+ \| ([+-][\d.]+) \| audit net ([+-][\d.]+)")
 RX_TRACK = re.compile(
     r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| \[TRACK:(late|hiband|fav)\] last (\d+): "
     r"(\d+)/\d+=(\d+)%WR \| net ([+-][\d.]+) \| EV/\$ ([+-][\d.]+)")
@@ -237,8 +237,8 @@ def history(_=Depends(_check)):
     net = best = worst = 0.0
     cur = mx = 0                                     # win-streak tracking
     try:
-        size = os.path.getsize(LOG)
-        with open(LOG, "r", encoding="utf-8", errors="replace") as f:
+        size = os.path.getsize(HOUR_LOG)
+        with open(HOUR_LOG, "r", encoding="utf-8", errors="replace") as f:
             if size > 8_000_000:
                 f.seek(size - 8_000_000)
                 f.readline()
@@ -246,7 +246,12 @@ def history(_=Depends(_check)):
                 m = RX_RESULT.match(ln)
                 if m:
                     ts, res, coin, d, px, pnl, bk = m.groups()
-                    equity.append({"ts": ts, "bk": float(bk)})
+                    equity.append({"ts": ts, "bk": float(bk)})   # bk = cumulative audit net
+                    _st = int(px) / 100.0 * 5
+                    _cumstk = getattr(history, "_stk", 0.0) + _st
+                    history._stk = _cumstk
+                    ev_trend.append({"ts": ts, "tag": "hour", "n": n + 1,
+                                     "ev": round(float(bk) / _cumstk, 4)})
                     trades.append({"ts": ts, "res": res, "coin": coin, "dir": d,
                                    "px": int(px), "pnl": float(pnl)})
                     p = float(pnl)

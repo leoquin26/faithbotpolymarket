@@ -181,6 +181,11 @@ main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
     </div>
   </section>
 
+  <section class="panel" id="hourpanel" aria-label="Hourly audit" style="border:1px solid #b48cff33">
+    <div class="ptitle">HOURLY AUDIT — maker @ 30-55min <span id="h-status" class="badge" style="float:right">…</span></div>
+    <div id="h-body" style="font-size:13px;line-height:1.9">waiting for data…</div>
+  </section>
+
   <section class="panel" id="coins" aria-label="Live prices"></section>
 
   <section class="panel" id="equity">
@@ -200,21 +205,17 @@ main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
       <div class="stat"><div class="k">Net P&L</div><div class="v" id="s-net">—</div></div>
       <div class="stat"><div class="k">Best / Worst</div><div class="v" id="s-bw" style="font-size:13px">—</div></div>
     </div>
-    <div class="ledtitle">Every settled bet <span id="s-count" style="color:var(--ink3)"></span></div>
+    <div class="ledtitle">1H AUDIT — every settled bet <span id="s-count" style="color:var(--ink3)"></span></div>
     <div id="bets"></div>
   </section>
 
-  <section class="panel" id="hourpanel" aria-label="Hourly audit" style="border:1px solid #b48cff33">
-    <div class="ptitle">HOURLY AUDIT — maker @ 30-55min <span id="h-status" class="badge" style="float:right">…</span></div>
-    <div id="h-body" style="font-size:13px;line-height:1.9">waiting for data…</div>
-  </section>
 
   <section class="panel" id="engines" aria-label="Engine health"></section>
 
   <section class="panel" id="evtrend">
     <div class="ptitle">Meter trend — EV/$ per rolling reading
       <span class="legend" style="float:right">
-        <span><i style="background:var(--btc)"></i>late</span>
+        <span><i style="background:var(--btc)"></i>1H audit</span>
         <span><i style="background:var(--eth)"></i>hiband</span>
       </span>
     </div>
@@ -265,23 +266,25 @@ function spark(svg,pts,color){
 
 /* ── window clock ── */
 const R=52,C=2*Math.PI*R;
-function arc(el,fromS,toS){ // seconds-remaining space: 900..0, clockwise from top
-  const a0=(900-fromS)/900*2*Math.PI-Math.PI/2, a1=(900-toS)/900*2*Math.PI-Math.PI/2;
+let WLEN=3600; // 1H markets are the MAIN engine now
+function arc(el,fromS,toS){ // seconds-remaining space: WLEN..0, clockwise from top
+  const a0=(WLEN-fromS)/WLEN*2*Math.PI-Math.PI/2, a1=(WLEN-toS)/WLEN*2*Math.PI-Math.PI/2;
   const x0=60+R*Math.cos(a0),y0=60+R*Math.sin(a0),x1=60+R*Math.cos(a1),y1=60+R*Math.sin(a1);
-  const large=(toS-fromS)<-450||((fromS-toS)>450)?1:0;
+  const large=((fromS-toS)>WLEN/2)?1:0;
   el.setAttribute("d",`M${x0},${y0} A${R},${R} 0 ${large} 1 ${x1},${y1}`);
 }
-arc($("#slotarc"),195,150);
+arc($("#slotarc"),3300,1800);   // maker entry band: 55min..30min remaining
 function clock(w){
+  if(w.wlen&&w.wlen!==WLEN){WLEN=w.wlen;arc($("#slotarc"),3300,1800);}
   const t=w.t_rem, mm=String(Math.floor(t/60)),ss=String(t%60).padStart(2,"0");
   $("#trem").textContent=`${mm}:${ss}`;
-  arc($("#progarc"),900,Math.max(t,1));
-  const a=(900-t)/900*2*Math.PI-Math.PI/2;
+  arc($("#progarc"),WLEN,Math.max(t,1));
+  const a=(WLEN-t)/WLEN*2*Math.PI-Math.PI/2;
   const n=$("#needle");n.setAttribute("cx",60+R*Math.cos(a));n.setAttribute("cy",60+R*Math.sin(a));
   const ph=$("#phase");
-  if(w.in_slot){ph.textContent="◈ DECISION WINDOW OPEN";ph.className="cphase slot"}
-  else if(t>195){ph.textContent=`decision in ${t-195}s`;ph.className="cphase"}
-  else{ph.textContent="window closing — settling soon";ph.className="cphase"}
+  if(w.in_slot){ph.textContent="◈ ENTRY BAND OPEN (55-30min)";ph.className="cphase slot"}
+  else if(t>3300){ph.textContent=`entry band in ${t-3300}s`;ph.className="cphase"}
+  else{ph.textContent="band closed — holding to settlement";ph.className="cphase"}
 }
 
 /* ── engines ── */
@@ -413,7 +416,7 @@ async function loadHistory(){
   try{
     const h=await (await fetch("/api/history")).json();
     eqChart.update([{color:"var(--amber)",pts:h.equity.map(e=>({ts:e.ts,y:e.bk}))}]);
-    const late=h.ev_trend.filter(x=>x.tag==="late"),hb=h.ev_trend.filter(x=>x.tag==="hiband");
+    const late=h.ev_trend.filter(x=>x.tag==="hour"),hb=h.ev_trend.filter(x=>x.tag==="hiband");
     evChart.update([
       {color:"var(--btc)",pts:late.map(x=>({ts:x.ts,y:x.ev}))},
       {color:"var(--eth)",pts:hb.map(x=>({ts:x.ts,y:x.ev}))}]);
