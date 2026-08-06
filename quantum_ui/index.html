@@ -204,6 +204,11 @@ main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
     <div id="bets"></div>
   </section>
 
+  <section class="panel" id="hourpanel" aria-label="Hourly audit" style="border:1px solid #b48cff33">
+    <div class="ptitle">HOURLY AUDIT — maker @ 30-55min <span id="h-status" class="badge" style="float:right">…</span></div>
+    <div id="h-body" style="font-size:13px;line-height:1.9">waiting for data…</div>
+  </section>
+
   <section class="panel" id="engines" aria-label="Engine health"></section>
 
   <section class="panel" id="evtrend">
@@ -287,6 +292,25 @@ function ring(n){const r=17,c=2*Math.PI*r,f=Math.min(n/40,1);
       stroke-dasharray="${(f*c).toFixed(1)} ${c}" transform="rotate(-90 22 22)" stroke-linecap="round"/>
     <text x="22" y="26" text-anchor="middle" font-size="11" fill="var(--ink2)" font-family="var(--mono)">${n}</text>
   </svg>`}
+function renderHour(h){
+  const st=$("#h-status"),bd=$("#h-body");
+  if(!st||!bd)return;
+  if(!h){st.textContent="OFFLINE";st.style.color="var(--bad)";
+         bd.textContent="hour_bot state not found";return}
+  if(h.done){st.textContent="COMPLETE";st.style.color="var(--amber)";}
+  else{st.textContent="AUDITING";st.style.color="#b48cff";}
+  const evc=h.ev==null?"var(--ink3)":h.ev>=0.03?"var(--good)":h.ev>=0?"var(--warn)":"var(--bad)";
+  const pct=Math.min(100,Math.round(100*h.n/40));
+  let live="";
+  if(h.open)live=`<div>📌 holding <b>${h.open.coin} ${h.open.dir}</b> @ ${Math.round(h.open.px*100)}c ×${h.open.sh} → settles top of hour</div>`;
+  else if(h.order)live=`<div style="color:#b48cff">◫ resting <b>${h.order.coin} ${h.order.dir}</b> @ ${Math.round(h.order.px*100)}c (fills or cancels at 30min mark)</div>`;
+  else live=`<div style="color:var(--ink3)">idle — next entry window at 30-55min remaining</div>`;
+  bd.innerHTML=
+    `<div><b>${h.w}W</b> / <b>${h.l}L</b> of <b>${h.n}</b> settles · net <b style="color:${h.net>=0?'var(--good)':'var(--bad)'}">${h.net>=0?'+':''}$${h.net.toFixed(2)}</b> · EV/$ <b style="color:${evc}">${h.ev==null?'—':(h.ev>=0?'+':'')+h.ev.toFixed(3)}</b></div>
+     <div style="background:var(--ink3)22;border-radius:4px;height:8px;margin:4px 0"><div style="width:${pct}%;height:8px;border-radius:4px;background:#b48cff"></div></div>
+     <div style="color:var(--ink3)">verdict at n=40 (${40-h.n} to go) · hard stop at −$15${h.done?` · <b>${h.done}</b>`:''}</div>
+     ${live}`;
+}
 function engines(list){
   const el=$("#engines");el.innerHTML="";
   for(const e of list){
@@ -468,7 +492,7 @@ async function connect(){
       dn.className="chip "+(m.day_net>0?"pos":m.day_net<0?"neg":"");
       $("#openpos").textContent=`${m.open_positions} open`+(m.resting&&m.resting.length?` · ${m.resting.length} resting`:"");
       openBets=m.open||[];restingBets=m.resting||[];renderPositions();
-      engines(m.engines||[]);}
+      engines(m.engines||[]);renderHour(m.hour);}
     else if(m.t==="prices"){
       clock(m.window);
       for(const[c,d] of Object.entries(m.coins||{})){

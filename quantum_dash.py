@@ -27,6 +27,8 @@ import binance_ws
 V3 = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(V3, "clean_bot.log")
 STATE = os.path.join(V3, "clean_bot_state.json")
+HOUR_LOG = os.path.join(V3, "hour_bot.log")
+HOUR_STATE = os.path.join(V3, "hour_bot_state.json")
 UI = os.path.join(V3, "quantum_ui")
 CERT = os.path.join(V3, "quantum_cert.pem")
 KEY = os.path.join(V3, "quantum_key.pem")
@@ -78,6 +80,8 @@ LOG_CLASS = (
     (re.compile(r"\[SIZE->BOOK\]|\[LATE MISS\]|\[LATE EVAL MISSED\]"), "exec"),
     # v1.61.0 maker era: resting-order lifecycle gets its own class in the console
     (re.compile(r"\[GTC\]|\[CANCEL\]|\[LATE ORDER"), "maker"),
+    # hour-bot audition lifecycle (separate process, same console)
+    (re.compile(r"\[REST\]|\[HOUR VERDICT\]|\[FILLED-RACE\]"), "maker"),
 )
 
 
@@ -88,27 +92,35 @@ def _classify(line: str) -> str:
     return "sys"
 
 
-def _tail_log():
-    pos = os.path.getsize(LOG) if os.path.exists(LOG) else 0
+def _tail_file(path, prefix=""):
+    pos = os.path.getsize(path) if os.path.exists(path) else 0
     while True:
         try:
-            size = os.path.getsize(LOG)
+            size = os.path.getsize(path) if os.path.exists(path) else 0
             if size < pos:
                 pos = 0
             if size > pos:
-                with open(LOG, "r", encoding="utf-8", errors="replace") as f:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
                     f.seek(pos)
                     chunk = f.read(min(size - pos, 262144))
                     pos = f.tell()
                 for ln in chunk.splitlines():
                     ln = ln.strip()
-                    # skip the short-timestamp stdout echo (every event is double-logged);
-                    # keep only the full "YYYY-MM-DD …" line so the console isn't duplicated
+                    # keep only full "YYYY-MM-DD …" lines (skips the short-ts stdout echo)
                     if ln and ln[:2] == "20" and ln[4:5] == "-":
-                        _broadcast({"t": "log", "cls": _classify(ln), "line": ln[:500]})
+                        _broadcast({"t": "log", "cls": _classify(ln),
+                                    "line": (prefix + ln)[:500]})
         except Exception:
             pass
         time.sleep(0.4)
+
+
+def _tail_log():
+    _tail_file(LOG)
+
+
+def _tail_hour_log():
+    _tail_file(HOUR_LOG, prefix="[1H] ")
 
 
 def _engines_from_state(s: dict) -> list:
@@ -150,12 +162,28 @@ def _poll_state():
                 resting.append({"coin": o.get("coin"), "dir": o.get("dir"),
                                 "px": o.get("price"), "shares": o.get("shares"),
                                 "ws": o.get("ws"), "hiband": bool(o.get("hiband"))})
+            # HOURLY AUDIT (hour_bot.py — separate process, own state file)
+            hour = None
+            try:
+                h = json.load(open(HOUR_STATE, encoding="utf-8"))
+                bets = h.get("bets") or []
+                hn = len(bets)
+                hw = sum(1 for b in bets if b.get("won"))
+                stk = sum(b.get("px", 0) * b.get("sh", 0) for b in bets)
+                hour = {"n": hn, "w": hw, "l": hn - hw,
+                        "net": round(h.get("net", 0.0), 2),
+                        "ev": round(h.get("net", 0.0) / stk, 3) if stk else None,
+                        "open": h.get("open"), "order": h.get("order"),
+                        "done": h.get("done") or ""}
+            except Exception:
+                pass
             _broadcast({"t": "state",
                         "bankroll": s.get("bankroll"),
                         "day_net": round((s.get("wins") or 0) - (s.get("losses") or 0), 2),
                         "killed": bool(s.get("killed")),
                         "open_positions": len(opens), "open": opens,
                         "resting": resting,
+                        "hour": hour,
                         "engines": _engines_from_state(s)})
         except Exception:
             pass
@@ -329,7 +357,7 @@ async def _startup():
     global _loop
     _loop = asyncio.get_running_loop()
     binance_ws.start()
-    for fn in (_tail_log, _poll_state, _poll_prices):
+    for fn in (_tail_log, _tail_hour_log, _poll_state, _poll_prices):
         threading.Thread(target=fn, daemon=True).start()
 
 
