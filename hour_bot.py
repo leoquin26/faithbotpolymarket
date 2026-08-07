@@ -255,6 +255,13 @@ class HourBot:
                                        "px": px, "slug": slug}
                     logger.info(f"[REST] {coin} {d} @ {px*100:.0f}c x{SHARES} "
                                 f"(bid {bid*100:.0f}/ask {ask*100:.0f}) T={t_left/60:.0f}min")
+                    # SIGNAL FEED: the decision itself, pushed the moment it's made —
+                    # the owner can mirror it manually or just watch the engine work.
+                    tg._send(f"📡 <b>HOURLY SIGNAL</b> — {coin} favourite is <b>{d}</b> "
+                             f"(ask {ask*100:.0f}c). Bot resting {px*100:.0f}c ×{SHARES}, "
+                             f"{t_left/60:.0f}min to close. Mirror: buy {d} ≤ {px*100:.0f}c "
+                             f"on the {coin} 1h market, hold to settlement.",
+                             dedup_key=f"hsig-{coin}-{hs}")
                     self.save()
                     return
             except Exception as e:
