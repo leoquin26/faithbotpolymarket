@@ -39,10 +39,10 @@ logger.add(os.path.join(V3, "hour_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 COINS = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}
-SHARES = 5
+SHARES = 8            # cycle 2: scaled per the passed n=40 audit (was 5)
 MIN_ASK, MAX_ASK = 0.55, 0.92
 T_ENTRY_MAX, T_ENTRY_MIN, T_CANCEL = 3300, 1800, 1800
-STOP_N, STOP_NET = 40, -15.0
+STOP_N, STOP_NET = 40, -20.0   # cycle 2 stops (fresh meter, scaled stop)
 ET_OFFSET = 4          # EDT; capture tool falls back to 5 (EST) on miss — we try both
 
 
@@ -211,7 +211,7 @@ class HourBot:
                     pass
                 time.sleep(1.5)                        # v1.61.1 lesson: async fills lie
                 m = self.matched_of(o["oid"])
-                if m > 0:
+                if int(m) >= 1:
                     sh = int(m)
                     self.s["open"] = {"hs": o["hs"], "coin": o["coin"], "dir": o["dir"],
                                       "px": o["px"], "sh": sh, "slug": o["slug"]}
