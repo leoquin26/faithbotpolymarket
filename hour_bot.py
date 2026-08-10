@@ -40,7 +40,7 @@ logger.add(os.path.join(V3, "hour_bot.log"), level="INFO",
 
 COINS = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}
 SHARES = 10           # cycle 3: pooled 80-settle record earned +25% (z~+1.9); cycle-2 standalone z=0.70 capped the step
-MIN_ASK, MAX_ASK = 0.55, 0.92
+MIN_ASK, MAX_ASK = 0.55, 0.85  # 85-92c trimmed: n=141 offline ROI +0.49% z=+0.2 (zero edge, worst geometry); 75-85c is the strongest band (+5.94% z=+2.2)
 T_ENTRY_MAX, T_ENTRY_MIN, T_CANCEL = 3300, 1800, 1800
 STOP_N, STOP_NET = 40, -25.0   # cycle 3 stops
 ET_OFFSET = 4          # EDT; capture tool falls back to 5 (EST) on miss — we try both
