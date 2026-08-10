@@ -46,8 +46,8 @@ header{display:flex;align-items:center;gap:22px;padding:10px 20px;
 /* ── grid ───────────────────────────────── */
 main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
   grid-template-columns:320px 1fr 1fr 340px;
-  grid-template-rows:auto auto minmax(120px,1fr);
-  grid-template-areas:"clock hour hour ledger" "coins equity evtrend ledger" "cycles logs logs ledger"}
+  grid-template-rows:auto auto auto minmax(120px,1fr);
+  grid-template-areas:"clock hour hour ledger" "brain brain brain ledger" "coins equity evtrend ledger" "cycles logs logs ledger"}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;
   padding:12px 14px;min-height:0;display:flex;flex-direction:column}
 .ptitle{font-size:11px;letter-spacing:.12em;color:var(--ink3);margin-bottom:8px;
@@ -84,6 +84,16 @@ main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
 
 /* ── engines ────────────────────────────── */
 #cycles{grid-area:cycles} #hourpanel{grid-area:hour}
+#brain{grid-area:brain;flex-direction:row;gap:16px;align-items:center;border:1px solid #b48cff33}
+.heart{width:16px;height:16px;border-radius:50%;background:var(--bad);flex:none}
+.heart.beat{background:var(--good);animation:hb 1.6s infinite}
+.heart.slow{background:var(--warn)}
+@keyframes hb{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.4);opacity:.55}}
+.neuron{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+  padding:8px 12px;display:flex;flex-direction:column;gap:2px;
+  font-family:var(--mono);font-size:11.5px;min-width:170px;flex:1}
+.neuron.hot{border-color:#b48cff99;box-shadow:0 0 14px #b48cff26}
+.nverdict{font-weight:600}
 .eng{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:6px;
   padding:10px 12px;display:flex;gap:12px;align-items:center;min-width:0}
 .eng.dead{opacity:.45}
@@ -184,6 +194,15 @@ main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
   <section class="panel" id="hourpanel" aria-label="Hourly audit" style="border:1px solid #b48cff33">
     <div class="ptitle">HOURLY AUDIT — maker @ 30-55min <span id="h-status" class="badge" style="float:right">…</span></div>
     <div id="h-body" style="font-size:13px;line-height:1.9">waiting for data…</div>
+  </section>
+
+  <section class="panel" id="brain" aria-label="Bot brain — live decision process">
+    <div style="display:flex;flex-direction:column;gap:5px;min-width:150px">
+      <div class="ptitle" style="margin:0">BRAIN &middot; LIVE</div>
+      <div style="display:flex;align-items:center;gap:8px"><span class="heart" id="heart"></span><span id="hb-age" class="tapechip">&hellip;</span></div>
+      <div id="brainflow" style="font-size:12px;font-family:var(--mono);color:var(--ink2)">&hellip;</div>
+    </div>
+    <div id="brainbody" style="display:flex;gap:10px;flex-wrap:wrap;flex:1">waiting for telemetry&hellip;</div>
   </section>
 
   <section class="panel" id="coins" aria-label="Live prices"></section>
@@ -294,6 +313,28 @@ function ring(n){const r=17,c=2*Math.PI*r,f=Math.min(n/40,1);
       stroke-dasharray="${(f*c).toFixed(1)} ${c}" transform="rotate(-90 22 22)" stroke-linecap="round"/>
     <text x="22" y="26" text-anchor="middle" font-size="11" fill="var(--ink2)" font-family="var(--mono)">${n}</text>
   </svg>`}
+function renderBrain(br){
+  const el=$("#brainbody");if(!el)return;
+  if(!br){el.textContent="no telemetry yet…";return}
+  const age=Date.now()/1000+srvSkew-br.ts;
+  const hb=$("#heart");hb.className="heart"+(age<45?" beat":age<90?" slow":"");
+  $("#hb-age").textContent=age<45?`tick ${Math.max(0,Math.round(age))}s ago`:`STALE ${Math.round(age)}s`;
+  const mins=Math.floor(br.t_left/60),secs=String(br.t_left%60).padStart(2,"0");
+  let flow=`<b style="color:#b48cff">${br.state}</b> · ${mins}:${secs} left`;
+  if(br.order)flow+=`<br>◫ resting ${br.order.coin} ${br.order.dir} @ ${Math.round(br.order.px*100)}c`;
+  if(br.open)flow+=`<br>📌 holding ${br.open.coin} ${br.open.dir} @ ${Math.round(br.open.px*100)}c`;
+  $("#brainflow").innerHTML=flow;
+  el.innerHTML=Object.entries(br.coins||{}).map(([c,d])=>{
+    if(d.err)return `<div class="neuron" style="opacity:.5"><b>${c}</b><span>${d.err}</span></div>`;
+    const hot=(d.verdict||"").includes("OK");
+    const f=x=>x?Math.round(x*100):"–";
+    return `<div class="neuron${hot?" hot":""}">
+      <b>${c}</b>
+      <span>${d.fav?`sees fav <b>${d.fav}</b> @ ${f(d.px)}c`:"no favourite"}</span>
+      <span style="color:var(--ink3)">UP ${f(d.ub)}/${f(d.ua)} · DOWN ${f(d.db)}/${f(d.da)}</span>
+      <span class="nverdict" style="color:${hot?"var(--good)":"var(--ink3)"}">${d.verdict}</span>
+    </div>`}).join("");
+}
 function renderHour(h){
   const st=$("#h-status"),bd=$("#h-body");
   if(!st||!bd)return;
@@ -498,7 +539,7 @@ async function connect(){
       const dn=$("#daynet");dn.textContent=`day ${m.day_net>0?"+":""}${fmt(m.day_net)}`;
       dn.className="chip "+(m.day_net>0?"pos":m.day_net<0?"neg":"");
       $("#openpos").textContent=`${m.open_positions} open`+(m.resting&&m.resting.length?` · ${m.resting.length} resting`:"");
-      renderHour(m.hour);}
+      renderHour(m.hour);renderBrain(m.brain);}
     else if(m.t==="prices"){
       clock(m.window);
       for(const[c,d] of Object.entries(m.coins||{})){

@@ -109,6 +109,7 @@ class HourBot:
         self.om = OrderManager()
         self.client = self.om.client
         self.s = {"bets": [], "net": 0.0, "done": "", "open": None, "order": None}
+        self._brain_mk = {}                     # (coin, hs) -> market_for cache
         if os.path.exists(STATE):
             try:
                 self.s.update(json.load(open(STATE)))
@@ -158,7 +159,56 @@ class HourBot:
                 self.step()
             except Exception as e:
                 logger.warning(f"loop error: {e}")
+            try:
+                _now = time.time()
+                _hs = int(_now // 3600) * 3600
+                self.brain_dump(_hs, _hs + 3600 - _now)
+            except Exception:
+                pass
             time.sleep(20)
+
+    def brain_dump(self, hs, t_left):
+        """Live telemetry of the decision process — what the bot SEES each tick.
+        Read by quantum_dash; fully guarded so it can never touch the trade path."""
+        coins = {}
+        for coin in COINS:
+            if (coin, hs) not in self._brain_mk:
+                self._brain_mk[(coin, hs)] = market_for(coin)
+                for k in [k for k in self._brain_mk if k[1] < hs - 3600]:
+                    del self._brain_mk[k]
+            info = self._brain_mk.get((coin, hs))
+            if not info:
+                coins[coin] = {"err": "market not found"}
+                continue
+            _c, toks, _sl = info
+            ub, ua = self.book_top(toks.get("UP", ""))
+            db, da = self.book_top(toks.get("DOWN", ""))
+            fav = px = None
+            verdict = "no favourite"
+            if ua and (not da or ua > da):
+                fav, px = "UP", ua
+            elif da:
+                fav, px = "DOWN", da
+            if fav:
+                if MIN_ASK <= px <= MAX_ASK:
+                    verdict = "IN BAND OK"
+                elif px > MAX_ASK:
+                    verdict = "too certain (>" + str(int(MAX_ASK * 100)) + "c)"
+                else:
+                    verdict = "coinflip (<" + str(int(MIN_ASK * 100)) + "c)"
+            coins[coin] = {"ub": ub, "ua": ua, "db": db, "da": da,
+                           "fav": fav, "px": px, "verdict": verdict}
+        b = [x for x in self.s["bets"] if x.get("sh", 0) > 0]
+        state = ("DONE" if self.s.get("done") else
+                 "HOLDING" if self.s.get("open") else
+                 "RESTING" if self.s.get("order") else
+                 "ENTRY BAND OPEN" if T_ENTRY_MIN <= t_left <= T_ENTRY_MAX else
+                 "WAITING FOR BAND")
+        json.dump({"ts": time.time(), "hs": hs, "t_left": int(t_left), "state": state,
+                   "coins": coins, "open": self.s.get("open"), "order": self.s.get("order"),
+                   "n": len(b), "w": sum(1 for x in b if x["won"]),
+                   "net": round(self.s.get("net", 0.0), 2)},
+                  open(os.path.join(V3, "hour_bot_brain.json"), "w"))
 
     def step(self):
         now = time.time()

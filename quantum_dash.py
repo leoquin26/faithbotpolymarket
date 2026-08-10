@@ -29,6 +29,7 @@ LOG = os.path.join(V3, "clean_bot.log")
 STATE = os.path.join(V3, "clean_bot_state.json")
 HOUR_LOG = os.path.join(V3, "hour_bot.log")
 HOUR_STATE = os.path.join(V3, "hour_bot_state.json")
+HOUR_BRAIN = os.path.join(V3, "hour_bot_brain.json")
 UI = os.path.join(V3, "quantum_ui")
 CERT = os.path.join(V3, "quantum_cert.pem")
 KEY = os.path.join(V3, "quantum_key.pem")
@@ -186,7 +187,13 @@ def _poll_state():
                         "done": h.get("done") or ""}
             except Exception:
                 pass
+            brain = None
+            try:
+                brain = json.load(open(HOUR_BRAIN, encoding="utf-8"))
+            except Exception:
+                pass
             _broadcast({"t": "state",
+                        "brain": brain,
                         "bankroll": s.get("bankroll"),
                         "day_net": round((s.get("wins") or 0) - (s.get("losses") or 0), 2),
                         "killed": bool(s.get("killed")),
