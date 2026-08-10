@@ -170,10 +170,19 @@ def _poll_state():
                 hn = len(bets)
                 hw = sum(1 for b in bets if b.get("won"))
                 stk = sum(b.get("px", 0) * b.get("sh", 0) for b in bets)
+                cycles = []
+                for cn in ("cycle1", "cycle2", "cycle3", "cycle4"):
+                    c = h.get(cn)
+                    if c:
+                        cb = [x for x in c.get("bets", []) if x.get("sh", 0) > 0]
+                        cw = sum(1 for x in cb if x.get("won"))
+                        cycles.append({"name": cn, "n": len(cb), "w": cw,
+                                       "net": round(c.get("net", 0.0), 2)})
                 hour = {"n": hn, "w": hw, "l": hn - hw,
                         "net": round(h.get("net", 0.0), 2),
                         "ev": round(h.get("net", 0.0) / stk, 3) if stk else None,
                         "open": h.get("open"), "order": h.get("order"),
+                        "cycles": cycles,
                         "done": h.get("done") or ""}
             except Exception:
                 pass
@@ -362,7 +371,7 @@ async def _startup():
     global _loop
     _loop = asyncio.get_running_loop()
     binance_ws.start()
-    for fn in (_tail_log, _tail_hour_log, _poll_state, _poll_prices):
+    for fn in (_tail_hour_log, _poll_state, _poll_prices):   # 15m log retired from console
         threading.Thread(target=fn, daemon=True).start()
 
 
