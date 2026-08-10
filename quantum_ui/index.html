@@ -94,6 +94,32 @@ main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
   font-family:var(--mono);font-size:11.5px;min-width:170px;flex:1}
 .neuron.hot{border-color:#b48cff99;box-shadow:0 0 14px #b48cff26}
 .nverdict{font-weight:600}
+/* animated decision pipeline */
+#brain{align-items:stretch}
+.pipe{display:flex;align-items:center;gap:0;flex:1.2;min-width:0}
+.tnode{background:var(--panel2);border:1.5px solid var(--line);border-radius:8px;
+  padding:6px 10px;font-family:var(--mono);font-size:10.5px;text-align:center;
+  color:var(--ink2);min-width:64px;transition:all .4s;position:relative;z-index:2}
+.tnode b{display:block;font-size:11px;color:var(--ink)}
+.tnode.lit{border-color:#b48cff;box-shadow:0 0 16px #b48cff44;color:var(--ink)}
+.tnode.go{border-color:var(--good);box-shadow:0 0 16px rgba(53,181,115,.35)}
+.tnode.no{border-color:var(--line);opacity:.45}
+.tstack{display:flex;flex-direction:column;gap:6px}
+.flow{height:2px;flex:1;min-width:18px;position:relative;z-index:1;
+  background:repeating-linear-gradient(90deg,#b48cff 0 6px,transparent 6px 12px);
+  background-size:24px 2px;opacity:.35}
+.flow.on{opacity:1;animation:flowmove .8s linear infinite}
+@keyframes flowmove{to{background-position:24px 0}}
+/* thought stream */
+#thoughts{flex:1;min-width:220px;max-width:34%;background:var(--panel2);
+  border:1px solid var(--line);border-radius:6px;padding:8px 10px;overflow-y:auto;
+  font-family:var(--mono);font-size:11px;line-height:1.7;max-height:150px}
+#thoughts div{opacity:0;animation:think .5s forwards}
+#thoughts .tk{color:#b48cff}
+#thoughts .ok{color:var(--good)}
+#thoughts .rej{color:var(--ink3)}
+#thoughts .act{color:var(--amber)}
+@keyframes think{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .eng{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:6px;
   padding:10px 12px;display:flex;gap:12px;align-items:center;min-width:0}
 .eng.dead{opacity:.45}
@@ -202,7 +228,22 @@ main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
       <div style="display:flex;align-items:center;gap:8px"><span class="heart" id="heart"></span><span id="hb-age" class="tapechip">&hellip;</span></div>
       <div id="brainflow" style="font-size:12px;font-family:var(--mono);color:var(--ink2)">&hellip;</div>
     </div>
-    <div id="brainbody" style="display:flex;gap:10px;flex-wrap:wrap;flex:1">waiting for telemetry&hellip;</div>
+    <div class="pipe" id="pipe">
+      <div class="tnode" id="n-scan"><b>&#9889; SCAN</b><span id="n-scan-s">&hellip;</span></div>
+      <div class="flow" id="f1"></div>
+      <div class="tstack">
+        <div class="tnode" id="n-BTC"><b>BTC</b><span id="n-BTC-s">&hellip;</span></div>
+        <div class="tnode" id="n-ETH"><b>ETH</b><span id="n-ETH-s">&hellip;</span></div>
+        <div class="tnode" id="n-SOL"><b>SOL</b><span id="n-SOL-s">&hellip;</span></div>
+      </div>
+      <div class="flow" id="f2"></div>
+      <div class="tnode" id="n-band"><b>BAND<br>55-85c</b></div>
+      <div class="flow" id="f3"></div>
+      <div class="tnode" id="n-one"><b>ONE BET<br>RULE</b></div>
+      <div class="flow" id="f4"></div>
+      <div class="tnode" id="n-act"><b id="n-act-b">DECISION</b><span id="n-act-s">&hellip;</span></div>
+    </div>
+    <div id="thoughts"></div>
   </section>
 
   <section class="panel" id="coins" aria-label="Live prices"></section>
@@ -313,27 +354,57 @@ function ring(n){const r=17,c=2*Math.PI*r,f=Math.min(n/40,1);
       stroke-dasharray="${(f*c).toFixed(1)} ${c}" transform="rotate(-90 22 22)" stroke-linecap="round"/>
     <text x="22" y="26" text-anchor="middle" font-size="11" fill="var(--ink2)" font-family="var(--mono)">${n}</text>
   </svg>`}
+let _lastTick=0;
+function think(html,cls){
+  const t=$("#thoughts");if(!t)return;
+  const d=document.createElement("div");if(cls)d.className=cls;d.innerHTML=html;
+  t.appendChild(d);while(t.childElementCount>60)t.firstElementChild.remove();
+  t.scrollTop=t.scrollHeight;
+}
 function renderBrain(br){
-  const el=$("#brainbody");if(!el)return;
-  if(!br){el.textContent="no telemetry yet…";return}
+  if(!br)return;
   const age=Date.now()/1000+srvSkew-br.ts;
-  const hb=$("#heart");hb.className="heart"+(age<45?" beat":age<90?" slow":"");
+  const hb=$("#heart");if(hb)hb.className="heart"+(age<45?" beat":age<90?" slow":"");
   $("#hb-age").textContent=age<45?`tick ${Math.max(0,Math.round(age))}s ago`:`STALE ${Math.round(age)}s`;
   const mins=Math.floor(br.t_left/60),secs=String(br.t_left%60).padStart(2,"0");
-  let flow=`<b style="color:#b48cff">${br.state}</b> · ${mins}:${secs} left`;
-  if(br.order)flow+=`<br>◫ resting ${br.order.coin} ${br.order.dir} @ ${Math.round(br.order.px*100)}c`;
-  if(br.open)flow+=`<br>📌 holding ${br.open.coin} ${br.open.dir} @ ${Math.round(br.open.px*100)}c`;
-  $("#brainflow").innerHTML=flow;
-  el.innerHTML=Object.entries(br.coins||{}).map(([c,d])=>{
-    if(d.err)return `<div class="neuron" style="opacity:.5"><b>${c}</b><span>${d.err}</span></div>`;
-    const hot=(d.verdict||"").includes("OK");
-    const f=x=>x?Math.round(x*100):"–";
-    return `<div class="neuron${hot?" hot":""}">
-      <b>${c}</b>
-      <span>${d.fav?`sees fav <b>${d.fav}</b> @ ${f(d.px)}c`:"no favourite"}</span>
-      <span style="color:var(--ink3)">UP ${f(d.ub)}/${f(d.ua)} · DOWN ${f(d.db)}/${f(d.da)}</span>
-      <span class="nverdict" style="color:${hot?"var(--good)":"var(--ink3)"}">${d.verdict}</span>
-    </div>`}).join("");
+  $("#brainflow").innerHTML=`<b style="color:#b48cff">${br.state}</b> · ${mins}:${secs}`;
+  const f=x=>x?Math.round(x*100):"–";
+  // node states
+  const anyOK=Object.values(br.coins||{}).some(d=>(d.verdict||"").includes("OK"));
+  $("#n-scan-s").textContent=`${mins}:${secs}`;
+  for(const c of ["BTC","ETH","SOL"]){
+    const d=(br.coins||{})[c]||{},n=$("#n-"+c),sp=$("#n-"+c+"-s");
+    if(!n)continue;
+    const ok=(d.verdict||"").includes("OK");
+    n.className="tnode "+(d.err?"no":ok?"go":"lit");
+    sp.textContent=d.err?"–":(d.fav?`${d.fav} ${f(d.px)}c`:"no fav");
+  }
+  const holding=!!br.open,resting=!!br.order,inBand=br.state==="ENTRY BAND OPEN";
+  $("#n-band").className="tnode "+(anyOK?"go":"lit");
+  $("#n-one").className="tnode "+((holding||resting)?"no":"go");
+  const act=$("#n-act"),actB=$("#n-act-b"),actS=$("#n-act-s");
+  if(holding){actB.textContent="HOLDING";actS.textContent=`${br.open.coin} ${br.open.dir} ${f(br.open.px)}c`;act.className="tnode go";}
+  else if(resting){actB.textContent="RESTING";actS.textContent=`${br.order.coin} ${br.order.dir} ${f(br.order.px)}c`;act.className="tnode go";}
+  else if(inBand&&anyOK){actB.textContent="PLACING";actS.textContent="next tick";act.className="tnode go";}
+  else{actB.textContent="PASS";actS.textContent=inBand?"nothing qualifies":"band closed";act.className="tnode lit";}
+  // flows animate while alive
+  for(const id of ["f1","f2","f3","f4"])$("#"+id).className="flow"+(age<45?" on":"");
+  // narrate NEW ticks only
+  if(br.ts!==_lastTick){
+    _lastTick=br.ts;
+    think(`⚡ <span class="tk">tick</span> — scanning 3 markets · ${mins}:${secs} left`,"");
+    for(const [c,d] of Object.entries(br.coins||{})){
+      if(d.err){think(`${c}: market not found`,"rej");continue}
+      if(!d.fav){think(`${c}: no clear favourite — pass`,"rej");continue}
+      const ok=(d.verdict||"").includes("OK");
+      think(`${c}: favourite <b>${d.fav}</b> @ ${f(d.px)}c — ${ok?"in my band ✓":d.verdict}`,ok?"ok":"rej");
+    }
+    if(holding)think(`📌 I hold ${br.open.coin} ${br.open.dir} @ ${f(br.open.px)}c — patience until the hour settles.`,"act");
+    else if(resting)think(`◫ my bid rests at ${f(br.order.px)}c — waiting for an impatient seller.`,"act");
+    else if(inBand&&anyOK)think(`→ a market qualifies — placing my bid next tick.`,"act");
+    else if(inBand)think(`→ band is open but nothing qualifies. I don't force trades.`,"");
+    else think(`→ outside my entry window. I don't chase. Waiting.`,"");
+  }
 }
 function renderHour(h){
   const st=$("#h-status"),bd=$("#h-body");
