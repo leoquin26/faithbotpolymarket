@@ -39,10 +39,11 @@ logger.add(os.path.join(V3, "hour_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 COINS = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}
-SHARES = 10           # cycle 3: pooled 80-settle record earned +25% (z~+1.9); cycle-2 standalone z=0.70 capped the step
-MIN_ASK, MAX_ASK = 0.55, 0.85  # 85-92c trimmed: n=141 offline ROI +0.49% z=+0.2 (zero edge, worst geometry); 75-85c is the strongest band (+5.94% z=+2.2)
+SHARES = 8            # cycle 4: de-scale per pre-commitment — cycle 3 (10sh) missed the +0.03 bar (n=40, EV -0.04)
+MIN_ASK, MAX_ASK = 0.55, 0.85  # PRE-REGISTERED cycle-4 trigger: if pooled live 70c+ subgroup still negative at verdict -> MAX_ASK = 0.75 (population 75-85c measured +0.1% n=101)
+MIN_MID = 0.55        # cycle 4: a favourite is only real if the book MID agrees — ask-in-band with mid<55c measured ~0 ROI (n=281); kills the wide-spread coinflip entries
 T_ENTRY_MAX, T_ENTRY_MIN, T_CANCEL = 3300, 1800, 1800
-STOP_N, STOP_NET = 40, -25.0   # cycle 3 stops
+STOP_N, STOP_NET = 40, -20.0   # cycle 4 stops (8sh, same as cycle 2)
 ET_OFFSET = 4          # EDT; capture tool falls back to 5 (EST) on miss — we try both
 
 
@@ -142,7 +143,7 @@ class HourBot:
         if n >= STOP_N or self.s["net"] <= STOP_NET:
             w = sum(1 for b in self.s["bets"] if b["won"])
             self.s["done"] = (f"AUDIT COMPLETE n={n} {w}W/{n-w}L net={self.s['net']:+.2f} "
-                              f"(stop: {'n>=40' if n >= STOP_N else 'net<=-15'})")
+                              f"(stop: {f'n>={STOP_N}' if n >= STOP_N else f'net<={STOP_NET}'})")
             logger.info(f"[HOUR VERDICT] {self.s['done']}")
             tg._send(f"🏁 <b>HOURLY AUDIT COMPLETE</b> — {self.s['done']}")
             self.save()
@@ -190,12 +191,16 @@ class HourBot:
             elif da:
                 fav, px = "DOWN", da
             if fav:
-                if MIN_ASK <= px <= MAX_ASK:
-                    verdict = "IN BAND OK"
-                elif px > MAX_ASK:
+                fb = ub if fav == "UP" else db
+                mid = (fb + px) / 2 if fb else None
+                if px > MAX_ASK:
                     verdict = "too certain (>" + str(int(MAX_ASK * 100)) + "c)"
-                else:
+                elif px < MIN_ASK:
                     verdict = "coinflip (<" + str(int(MIN_ASK * 100)) + "c)"
+                elif mid is None or mid < MIN_MID:
+                    verdict = "wide book (mid<" + str(int(MIN_MID * 100)) + "c)"
+                else:
+                    verdict = "IN BAND OK"
             coins[coin] = {"ub": ub, "ua": ua, "db": db, "da": da,
                            "fav": fav, "px": px, "verdict": verdict}
         b = [x for x in self.s["bets"] if x.get("sh", 0) > 0]
@@ -225,7 +230,7 @@ class HourBot:
                 self.s["net"] = round(self.s["net"] + pnl, 2)
                 self.s["bets"].append({"hs": p["hs"], "coin": p["coin"], "dir": p["dir"],
                                        "px": p["px"], "sh": p["sh"], "won": won,
-                                       "pnl": round(pnl, 2)})
+                                       "pnl": round(pnl, 2), "fill_s": p.get("fill_s")})
                 n = len(self.s["bets"]); wtot = sum(1 for b in self.s["bets"] if b["won"])
                 logger.info(f"[{'WIN' if won else 'LOSS'}] {p['coin']} {p['dir']} @ "
                             f"{p['px']*100:.0f}c -> {wn} | {pnl:+.2f} | audit net "
@@ -244,12 +249,15 @@ class HourBot:
         o = self.s.get("order")
         if o:
             m = self.matched_of(o["oid"])
-            if m > 0:
+            if int(m) >= 1:
                 sh = int(m)
+                fill_s = round(now - o.get("rest_ts", now), 1)
                 self.s["open"] = {"hs": o["hs"], "coin": o["coin"], "dir": o["dir"],
-                                  "px": o["px"], "sh": sh, "slug": o["slug"]}
+                                  "px": o["px"], "sh": sh, "slug": o["slug"],
+                                  "fill_s": fill_s}
                 self.s["order"] = None
-                logger.info(f"[FILLED] {o['coin']} {o['dir']} @ {o['px']*100:.0f}c x{sh} (maker, fee $0)")
+                logger.info(f"[FILLED] {o['coin']} {o['dir']} @ {o['px']*100:.0f}c x{sh} "
+                            f"(maker, fee $0, fill {fill_s:.0f}s)")
                 tg._send(f"🤖 <b>HOURLY FILL</b> {o['coin']} {o['dir']} @ {o['px']*100:.0f}c x{sh}")
                 self.save()
                 return
@@ -264,7 +272,8 @@ class HourBot:
                 if int(m) >= 1:
                     sh = int(m)
                     self.s["open"] = {"hs": o["hs"], "coin": o["coin"], "dir": o["dir"],
-                                      "px": o["px"], "sh": sh, "slug": o["slug"]}
+                                      "px": o["px"], "sh": sh, "slug": o["slug"],
+                                      "fill_s": round(time.time() - o.get("rest_ts", now), 1)}
                     logger.info(f"[FILLED-RACE] {o['coin']} {o['dir']} @ {o['px']*100:.0f}c x{sh}")
                 else:
                     logger.info(f"[CANCEL] unfilled {o['coin']} {o['dir']} @ {o['px']*100:.0f}c ($0 lost)")
@@ -292,6 +301,10 @@ class HourBot:
                 continue
             if not bid or not (MIN_ASK <= ask <= MAX_ASK):
                 continue
+            if (bid + ask) / 2 < MIN_MID:
+                logger.info(f"[SKIP] {coin} {d} ask {ask*100:.0f}c but mid "
+                            f"{(bid+ask)/2*100:.1f}c — wide book, not a real favourite")
+                continue
             px = round(min(bid + 0.01, ask - 0.01), 2)
             if px < 0.02:
                 continue
@@ -302,7 +315,7 @@ class HourBot:
                 oid = (res or {}).get("orderID") or (res or {}).get("orderId")
                 if oid:
                     self.s["order"] = {"oid": oid, "hs": hs, "coin": coin, "dir": d,
-                                       "px": px, "slug": slug}
+                                       "px": px, "slug": slug, "rest_ts": now}
                     logger.info(f"[REST] {coin} {d} @ {px*100:.0f}c x{SHARES} "
                                 f"(bid {bid*100:.0f}/ask {ask*100:.0f}) T={t_left/60:.0f}min")
                     # SIGNAL FEED: the decision itself, pushed the moment it's made —
