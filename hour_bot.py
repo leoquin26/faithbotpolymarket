@@ -145,7 +145,11 @@ class HourBot:
             self.s["done"] = (f"AUDIT COMPLETE n={n} {w}W/{n-w}L net={self.s['net']:+.2f} "
                               f"(stop: {f'n>={STOP_N}' if n >= STOP_N else f'net<={STOP_NET}'})")
             logger.info(f"[HOUR VERDICT] {self.s['done']}")
-            tg._send(f"🏁 <b>HOURLY AUDIT COMPLETE</b> — {self.s['done']}")
+            bank = (f"\n🏦 <b>BANKING LAW</b>: cycle passed — withdraw "
+                    f"${self.s['net'] * 0.5:.2f} (50% of profit) from the trading "
+                    f"wallet now. Banked money never rides again."
+                    if self.s["net"] > 0 else "")
+            tg._send(f"🏁 <b>HOURLY AUDIT COMPLETE</b> — {self.s['done']}{bank}")
             self.save()
             return True
         return False
@@ -286,6 +290,7 @@ class HourBot:
             return
         if any(b["hs"] == hs for b in self.s["bets"]):
             return
+        cands = []
         for coin in COINS:
             mk = market_for(coin)
             if not mk:
@@ -308,6 +313,13 @@ class HourBot:
             px = round(min(bid + 0.01, ask - 0.01), 2)
             if px < 0.02:
                 continue
+            cands.append((round(ask - bid, 2), coin, d, ask, bid, px, tok, slug))
+        # tightest spread first: tight books were the only split-consistent
+        # positive slice (<=2c: +2.7% ROI both halves); wide books fake favourites
+        for spread, coin, d, ask, bid, px, tok, slug in sorted(cands):
+            if len(cands) > 1:
+                logger.info(f"[PICK] {coin} (spread {spread*100:.0f}c) over "
+                            + ", ".join(f"{c[1]} ({c[0]*100:.0f}c)" for c in sorted(cands)[1:]))
             try:
                 res = self.client.create_and_post_order(
                     OrderArgs(price=px, size=SHARES, side=BUY, token_id=tok),
