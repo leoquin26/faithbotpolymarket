@@ -424,10 +424,15 @@ function renderHour(h){
     cl.innerHTML=h.cycles.map((c,i)=>`<div>🏁 ${c.name.toUpperCase()}: ${c.w}W/${c.n-c.w}L · <b style="color:${c.net>=0?'var(--good)':'var(--bad)'}">${c.net>=0?'+':''}$${c.net.toFixed(2)}</b></div>`).join("")
       +`<div style="color:#b48cff">▶ CYCLE ${h.cycles.length+1} (live): ${h.w}W/${h.l}L · ${h.net>=0?'+':''}$${h.net.toFixed(2)}</div>`;
   }
+  const lifetime=(h.cycles||[]).reduce((a,c)=>a+c.net,0)+h.net;
+  const equity=77.84+lifetime;
+  const inpos=h.open?h.open.px*h.open.sh:0;
   bd.innerHTML=
-    `<div><b>${h.w}W</b> / <b>${h.l}L</b> of <b>${h.n}</b> settles · net <b style="color:${h.net>=0?'var(--good)':'var(--bad)'}">${h.net>=0?'+':''}$${h.net.toFixed(2)}</b> · EV/$ <b style="color:${evc}">${h.ev==null?'—':(h.ev>=0?'+':'')+h.ev.toFixed(3)}</b></div>
+    `<div style="font-size:16px;margin-bottom:2px">💰 EQUITY <b style="color:${lifetime>=0?'var(--good)':'var(--bad)'}">$${equity.toFixed(2)}</b>
+       <span style="color:var(--ink3);font-size:11.5px">= cash ≈$${(equity-inpos).toFixed(2)}${inpos?` + $${inpos.toFixed(2)} riding in ${h.open.coin} ${h.open.dir} (the wallet dip is the bet, not a loss)`:" · nothing at risk right now"}</span></div>
+     <div><b>${h.w}W</b> / <b>${h.l}L</b> of <b>${h.n}</b> settles · net <b style="color:${h.net>=0?'var(--good)':'var(--bad)'}">${h.net>=0?'+':''}$${h.net.toFixed(2)}</b> · EV/$ <b style="color:${evc}">${h.ev==null?'—':(h.ev>=0?'+':'')+h.ev.toFixed(3)}</b></div>
      <div style="background:var(--ink3)22;border-radius:4px;height:8px;margin:4px 0"><div style="width:${pct}%;height:8px;border-radius:4px;background:#b48cff"></div></div>
-     <div style="color:var(--ink3)">verdict at n=40 (${40-h.n} to go) · hard stop at −$15${h.done?` · <b>${h.done}</b>`:''}</div>
+     <div style="color:var(--ink3)">verdict at n=40 (${40-h.n} to go) · stop −$20 armed${h.done?` · <b>${h.done}</b>`:''}</div>
      ${live}`;
 }
 function engines(list){
