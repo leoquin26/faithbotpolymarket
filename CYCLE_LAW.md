@@ -39,6 +39,23 @@ split-consistent positive slice, ≤2c: +2.7% ROI both halves; wide books
 produced the fake-favourite losses). Bets 1-7 predate this tie-break; the
 cycle-4 verdict must note it.
 
+## OUTCOME (2026-08-12, ~15:00 UTC) — LAW EXECUTED, ENGINE RETIRED
+Cycle 4 verdict: n=40, 23W/17L, net −$15.43 (near-identical to cycle 3).
+Pooled lifetime: 158 settles, 100W/58L (63%), +$11.13, EV/$ +0.015, z=+0.50.
+Floor rule applied: z < +1 → NO CYCLE 5. Project closes NET POSITIVE
+($77.84 → ~$89 ledger).
+
+EPILOGUE FINDING (edge_watch, population sim on 268k rows): the seat's edge
+decayed MARKET-WIDE, not just for us — weekly population ROI: +6.2% (launch
+week, cycles 1-2 passed) → +2.6% → −1.1% → +0.9% (cycles 3-4 failed). The
+edge was real, was captured while it lived, and was competed away. The
+meter tracked reality with ~1 week of lag. Nothing was broken; nothing is
+fixable; the market moved.
+
+STANDING WATCH: edge_watch.py runs Sundays 15:00 UTC (cron), Telegram
+digest. RE-ARM RULE (pre-registered): population ROI ≥ +4% two consecutive
+weeks → owner may consider a $20 micro-audition. Until then: spend nothing.
+
 ## 5. WHAT THE DATA REFUSED (do not relitigate without NEW large-sample evidence)
 Hour-of-day filters (24-bucket noise farm, no split-consistent block).
 Coin drops (SOL n=8; population says all three fine). 65-70c sub-band cut
