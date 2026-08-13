@@ -26,8 +26,9 @@ holdings = []
 for st in ("micro_bot_state.json", "hour_bot_state.json"):
     try:
         s = json.load(open(os.path.join(V3, st)))
-        p = s.get("open")
-        if p:
+        opens = s.get("opens") or ({s.get("open", {}).get("coin"): s["open"]}
+                                   if s.get("open") else {})
+        for p in opens.values():
             open_cost += p["px"] * p["sh"]
             holdings.append(f"{p['coin']} {p['dir']} {p['px']*100:.0f}c x{p['sh']}")
     except Exception:
