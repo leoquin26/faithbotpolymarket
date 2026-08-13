@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QUANTUM DATA CONTROL</title>
+<style>
+:root{--bg:#07080d;--panel:#0d0f17;--panel2:#12141f;--line:#1e2233;--ink:#e8eaf2;
+--ink2:#9aa0b4;--ink3:#5a6078;--good:#35b573;--bad:#e05561;--warn:#e0a935;
+--vio:#b48cff;--mono:'SFMono-Regular',Consolas,monospace}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,sans-serif;padding:18px}
+h1{font-size:18px;letter-spacing:3px;color:var(--vio);font-family:var(--mono)}
+h1 small{color:var(--ink3);letter-spacing:1px;font-size:11px;display:block;margin-top:2px}
+.grid{display:grid;gap:14px;margin-top:16px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.ptitle{font-family:var(--mono);font-size:11px;letter-spacing:2px;color:var(--ink3);margin-bottom:10px}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px}
+.card b{font-family:var(--mono)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.mono{font-family:var(--mono)}
+.muted{color:var(--ink3);font-size:12px}
+table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+td,th{padding:4px 6px;text-align:right;border-bottom:1px solid var(--line)}
+th{color:var(--ink3);font-weight:400}
+td:first-child,th:first-child{text-align:left}
+canvas{width:100%;height:130px;background:var(--panel2);border-radius:6px}
+.pos{color:var(--good)}.neg{color:var(--bad)}
+footer{margin-top:18px;color:var(--ink3);font-size:11.5px;font-family:var(--mono);letter-spacing:1px}
+</style>
+</head>
+<body>
+<h1>QUANTUM DATA CONTROL<small id="built">loading&hellip;</small></h1>
+<div class="grid">
+  <section class="panel" style="grid-column:1/-1">
+    <div class="ptitle">DATA INVENTORY — the product</div>
+    <div id="inv" class="grid" style="margin-top:0"></div>
+  </section>
+  <section class="panel">
+    <div class="ptitle">SEAT PULSE — weekly population ROI (edge watch)</div>
+    <canvas id="cweek" width="600" height="130"></canvas>
+    <div class="muted" id="pulse"></div>
+  </section>
+  <section class="panel">
+    <div class="ptitle">CALIBRATION — favourite ask vs reality</div>
+    <canvas id="ccal" width="600" height="130"></canvas>
+    <div class="muted">above diagonal = favourites win more than priced (edge); n&ge;30 buckets</div>
+  </section>
+  <section class="panel">
+    <div class="ptitle">SEAT ROI BY ENTRY TIME</div>
+    <table id="ttleft"></table>
+  </section>
+  <section class="panel">
+    <div class="ptitle">SEAT ROI BY PRICE BAND</div>
+    <table id="tband"></table>
+  </section>
+  <section class="panel" style="grid-column:1/-1">
+    <div class="ptitle">AUDITED LEDGER — 1H maker engine (retired by law, net positive)</div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap">
+      <div style="flex:2;min-width:300px"><canvas id="ceq" width="900" height="130"></canvas></div>
+      <div style="flex:1;min-width:240px"><table id="tcycles"></table><div class="mono" id="pooled" style="margin-top:8px"></div></div>
+    </div>
+  </section>
+</div>
+<footer>ANALYST PROPOSES · OWNER DISPOSES · NOTHING SELF-DEPLOYS — re-arm rule: population &ge;+4% two consecutive weeks</footer>
+<script>
+const $=q=>document.querySelector(q);
+const fmt=n=>n==null?"—":n>=1e6?(n/1e6).toFixed(2)+"M":n>=1e3?(n/1e3).toFixed(1)+"k":n;
+function line(cv,pts,opts={}){
+  const c=cv.getContext("2d"),W=cv.width,H=cv.height;c.clearRect(0,0,W,H);
+  if(!pts.length)return;
+  const xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]);
+  const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys,opts.ymin??Infinity),y1=Math.max(...ys,opts.ymax??-Infinity);
+  const X=x=>8+(x-x0)/((x1-x0)||1)*(W-16),Y=y=>H-10-(y-y0)/((y1-y0)||1)*(H-20);
+  if(opts.zero!=null&&opts.zero>=y0&&opts.zero<=y1){c.strokeStyle="#5a6078";c.setLineDash([4,4]);
+    c.beginPath();c.moveTo(8,Y(opts.zero));c.lineTo(W-8,Y(opts.zero));c.stroke();c.setLineDash([])}
+  if(opts.diag){c.strokeStyle="#5a6078";c.setLineDash([4,4]);c.beginPath();
+    c.moveTo(X(x0),Y(x0));c.lineTo(X(x1),Y(x1));c.stroke();c.setLineDash([])}
+  c.strokeStyle=opts.color||"#b48cff";c.lineWidth=2;c.beginPath();
+  pts.forEach((p,i)=>i?c.lineTo(X(p[0]),Y(p[1])):c.moveTo(X(p[0]),Y(p[1])));c.stroke();
+}
+function bars(cv,items,color){
+  const c=cv.getContext("2d"),W=cv.width,H=cv.height;c.clearRect(0,0,W,H);
+  if(!items.length)return;
+  const vals=items.map(i=>i[1]),lo=Math.min(0,...vals),hi=Math.max(0.001,...vals);
+  const Y=v=>H-18-(v-lo)/(hi-lo||1)*(H-34),bw=Math.min(70,(W-20)/items.length-8);
+  items.forEach((it,i)=>{
+    const x=14+i*((W-20)/items.length);
+    c.fillStyle=it[1]>=0?"#35b573":"#e05561";
+    const y=Y(Math.max(0,it[1])),h=Math.abs(Y(it[1])-Y(0));
+    c.fillRect(x,y,bw,Math.max(2,h));
+    c.fillStyle="#9aa0b4";c.font="10px monospace";c.fillText(it[0],x,H-5);
+    c.fillText((it[1]*100).toFixed(1)+"%",x,y-4);
+  });
+}
+async function j(u){const r=await fetch(u);return r.json()}
+async function load(){
+  const [inv,hm,led]=await Promise.all([j("/api/inventory"),j("/api/hourly/metrics"),j("/api/ledger")]);
+  $("#built").textContent="cache built "+(inv.built?new Date(inv.built*1000).toLocaleTimeString():"—")+" · auto-refresh 60s";
+  $("#inv").innerHTML=(inv.datasets||[]).map(d=>d.missing?
+    `<div class="card"><b>${d.name}</b><div class="muted">missing</div></div>`:
+    `<div class="card"><span class="dot" style="background:${d.fresh?"var(--good)":"var(--ink3)"}"></span><b>${d.name}</b>
+     <div class="mono">${fmt(d.rows)} rows · ${d.mb} MB${d.growth_day?` · +${fmt(d.growth_day)}/day`:""}</div>
+     <div class="muted">${d.desc}</div>
+     ${d.first?`<div class="muted mono">${String(d.first).slice(0,10)} → ${String(d.last).slice(0,16)}</div>`:""}</div>`).join("");
+  const wk=(hm.weekly_seat||[]).slice(0,6).reverse();
+  bars($("#cweek"),wk.map(w=>["w-"+w.weeks_ago,w.roi||0]));
+  const cur=(hm.weekly_seat||[]).find(w=>w.weeks_ago===0);
+  $("#pulse").textContent=cur?`this week: n=${cur.n} ROI ${(cur.roi*100).toFixed(1)}% win ${(cur.win*100).toFixed(0)}% — re-arm needs ≥+4% two weeks`:"";
+  line($("#ccal"),(hm.calibration||[]).map(b=>[b.ask,b.actual]),{diag:true,color:"#b48cff"});
+  const tt=hm.roi_by_tleft||{};
+  $("#ttleft").innerHTML="<tr><th>window time left</th><th>n</th><th>ROI</th><th>win%</th></tr>"+
+    Object.entries(tt).filter(([k,v])=>v).map(([k,v])=>
+    `<tr><td>${k}</td><td>${v.n}</td><td class="${v.roi>=0?'pos':'neg'}">${(v.roi*100).toFixed(1)}%</td><td>${(v.win*100).toFixed(0)}%</td></tr>`).join("");
+  const tb=hm.roi_by_band||{};
+  $("#tband").innerHTML="<tr><th>favourite ask</th><th>n</th><th>ROI</th><th>win%</th></tr>"+
+    Object.entries(tb).filter(([k,v])=>v).map(([k,v])=>
+    `<tr><td>${k}</td><td>${v.n}</td><td class="${v.roi>=0?'pos':'neg'}">${(v.roi*100).toFixed(1)}%</td><td>${(v.win*100).toFixed(0)}%</td></tr>`).join("");
+  if(led.cycles){
+    $("#tcycles").innerHTML="<tr><th>cycle</th><th>record</th><th>net</th></tr>"+
+      led.cycles.map(c=>`<tr><td>${c.cycle}${c.live?" (live)":""}</td><td>${c.w}W/${c.l}L</td>
+      <td class="${c.net>=0?'pos':'neg'}">${c.net>=0?"+":""}$${c.net.toFixed(2)}</td></tr>`).join("");
+    const p=led.pooled;
+    $("#pooled").innerHTML=`POOLED: n=${p.n} · ${p.w}W · net <span class="${p.net>=0?'pos':'neg'}">${p.net>=0?"+":""}$${p.net}</span> · EV/$ ${p.ev} · z=${p.z}${led.done?`<div class="muted">${led.done}</div>`:""}`;
+    line($("#ceq"),(led.equity||[]).map(e=>[e.hs,e.eq]),{color:"#35b573",zero:led.launch,ymin:led.launch-5});
+  }
+}
+load();setInterval(load,60000);
+</script>
+</body>
+</html>
