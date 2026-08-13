@@ -237,7 +237,7 @@ main{flex:1;display:grid;min-height:0;padding:14px 20px;gap:14px;
         <div class="tnode" id="n-SOL"><b>SOL</b><span id="n-SOL-s">&hellip;</span></div>
       </div>
       <div class="flow" id="f2"></div>
-      <div class="tnode" id="n-band"><b>BAND<br>55-85c</b></div>
+      <div class="tnode" id="n-band"><b>BAND<br>75-85c</b></div>
       <div class="flow" id="f3"></div>
       <div class="tnode" id="n-one"><b>ONE BET<br>RULE</b></div>
       <div class="flow" id="f4"></div>
@@ -332,9 +332,9 @@ function arc(el,fromS,toS){ // seconds-remaining space: WLEN..0, clockwise from 
   const large=((fromS-toS)>WLEN/2)?1:0;
   el.setAttribute("d",`M${x0},${y0} A${R},${R} 0 ${large} 1 ${x1},${y1}`);
 }
-arc($("#slotarc"),3300,1800);   // maker entry band: 55min..30min remaining
+arc($("#slotarc"),3000,1200);   // maker entry band: 55min..30min remaining
 function clock(w){
-  if(w.wlen&&w.wlen!==WLEN){WLEN=w.wlen;arc($("#slotarc"),3300,1800);}
+  if(w.wlen&&w.wlen!==WLEN){WLEN=w.wlen;arc($("#slotarc"),3000,1200);}
   const t=w.t_rem, mm=String(Math.floor(t/60)),ss=String(t%60).padStart(2,"0");
   $("#trem").textContent=`${mm}:${ss}`;
   arc($("#progarc"),WLEN,Math.max(t,1));
@@ -425,14 +425,18 @@ function renderHour(h){
       +`<div style="color:#b48cff">▶ CYCLE ${h.cycles.length+1} (live): ${h.w}W/${h.l}L · ${h.net>=0?'+':''}$${h.net.toFixed(2)}</div>`;
   }
   const lifetime=(h.cycles||[]).reduce((a,c)=>a+c.net,0)+h.net;
-  const equity=77.84+lifetime;
-  const inpos=h.open?h.open.px*h.open.sh:0;
+  const model=77.84+lifetime;
+  const w=h.wallet;
+  const inpos=w?w.open_cost:(h.open?h.open.px*h.open.sh:0);
+  const equity=(w&&w.equity!=null)?w.equity:model;
+  const src=(w&&w.equity!=null)?`chain-verified${w.holdings&&w.holdings.length?` · $${inpos.toFixed(2)} riding in ${w.holdings.join(", ")}`:" · nothing at risk"} · ledger model $${model.toFixed(2)}`
+    :`ledger model${inpos?` · $${inpos.toFixed(2)} riding in ${h.open.coin} ${h.open.dir}`:" · nothing at risk"}`;
   bd.innerHTML=
-    `<div style="font-size:16px;margin-bottom:2px">💰 EQUITY <b style="color:${lifetime>=0?'var(--good)':'var(--bad)'}">$${equity.toFixed(2)}</b>
-       <span style="color:var(--ink3);font-size:11.5px">= cash ≈$${(equity-inpos).toFixed(2)}${inpos?` + $${inpos.toFixed(2)} riding in ${h.open.coin} ${h.open.dir} (the wallet dip is the bet, not a loss)`:" · nothing at risk right now"}</span></div>
-     <div><b>${h.w}W</b> / <b>${h.l}L</b> of <b>${h.n}</b> settles · net <b style="color:${h.net>=0?'var(--good)':'var(--bad)'}">${h.net>=0?'+':''}$${h.net.toFixed(2)}</b> · EV/$ <b style="color:${evc}">${h.ev==null?'—':(h.ev>=0?'+':'')+h.ev.toFixed(3)}</b></div>
+    `<div style="font-size:16px;margin-bottom:2px">💰 EQUITY <b style="color:${equity>=77.84?'var(--good)':'var(--bad)'}">$${equity.toFixed(2)}</b>
+       <span style="color:var(--ink3);font-size:11.5px">${src} · the wallet dip when a bet opens is the bet, not a loss</span></div>
+     <div><b>${h.w}W</b> / <b>${h.l}L</b> of <b>${h.n}</b> settles · net <b style="color:${h.net>=0?'var(--good)':'var(--bad)'}">${h.net>=0?'+':''}$${h.net.toFixed(2)}</b> · EV/$ <b style="color:${evc}">${h.ev==null?'—':(h.ev>=0?'+':'')+h.ev.toFixed(3)}</b> · <span style="color:#b48cff">MICRO 75-85c · 3sh</span></div>
      <div style="background:var(--ink3)22;border-radius:4px;height:8px;margin:4px 0"><div style="width:${pct}%;height:8px;border-radius:4px;background:#b48cff"></div></div>
-     <div style="color:var(--ink3)">verdict at n=40 (${40-h.n} to go) · stop −$20 armed${h.done?` · <b>${h.done}</b>`:''}</div>
+     <div style="color:var(--ink3)">verdict at n=40 (${40-h.n} to go) · stop −$10 armed · unseen-data kill switch ~Fri${h.done?` · <b>${h.done}</b>`:''}</div>
      ${live}`;
 }
 function engines(list){

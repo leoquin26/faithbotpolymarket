@@ -30,6 +30,10 @@ STATE = os.path.join(V3, "clean_bot_state.json")
 HOUR_LOG = os.path.join(V3, "hour_bot.log")
 HOUR_STATE = os.path.join(V3, "hour_bot_state.json")
 HOUR_BRAIN = os.path.join(V3, "hour_bot_brain.json")
+MICRO_STATE = os.path.join(V3, "micro_bot_state.json")
+MICRO_BRAIN = os.path.join(V3, "micro_bot_brain.json")
+MICRO_LOG = os.path.join(V3, "micro_bot.log")
+BALANCE = os.path.join(V3, "balance.json")
 UI = os.path.join(V3, "quantum_ui")
 CERT = os.path.join(V3, "quantum_cert.pem")
 KEY = os.path.join(V3, "quantum_key.pem")
@@ -124,6 +128,10 @@ def _tail_hour_log():
     _tail_file(HOUR_LOG, prefix="[1H] ")
 
 
+def _tail_micro_log():
+    _tail_file(MICRO_LOG, prefix="[MICRO] ")
+
+
 def _engines_from_state(s: dict) -> list:
     ev = s.get("recent_ev") or []
     mult = s.get("engine_mult") or {}
@@ -167,10 +175,6 @@ def _poll_state():
             hour = None
             try:
                 h = json.load(open(HOUR_STATE, encoding="utf-8"))
-                bets = h.get("bets") or []
-                hn = len(bets)
-                hw = sum(1 for b in bets if b.get("won"))
-                stk = sum(b.get("px", 0) * b.get("sh", 0) for b in bets)
                 cycles = []
                 for cn in ("cycle1", "cycle2", "cycle3", "cycle4"):
                     c = h.get(cn)
@@ -179,19 +183,45 @@ def _poll_state():
                         cw = sum(1 for x in cb if x.get("won"))
                         cycles.append({"name": cn, "n": len(cb), "w": cw,
                                        "net": round(c.get("net", 0.0), 2)})
+                # hour_bot's own final run is cycle 4's ledger (retired Aug 12)
+                hb = [x for x in (h.get("bets") or []) if x.get("sh", 0) > 0]
+                if hb:
+                    cycles.append({"name": f"cycle{len(cycles)+1}",
+                                   "n": len(hb),
+                                   "w": sum(1 for x in hb if x.get("won")),
+                                   "net": round(h.get("net", 0.0), 2)})
+                # live meter = micro_bot (cycle 5, the 75-85c seat) when present
+                live = {"bets": [], "net": 0.0, "open": None, "order": None,
+                        "done": ""}
+                try:
+                    live = json.load(open(MICRO_STATE, encoding="utf-8"))
+                except Exception:
+                    pass
+                bets = [x for x in (live.get("bets") or []) if x.get("sh", 0) > 0]
+                hn = len(bets)
+                hw = sum(1 for b in bets if b.get("won"))
+                stk = sum(b.get("px", 0) * b.get("sh", 0) for b in bets)
+                wallet = None
+                try:
+                    wallet = json.load(open(BALANCE, encoding="utf-8"))
+                except Exception:
+                    pass
                 hour = {"n": hn, "w": hw, "l": hn - hw,
-                        "net": round(h.get("net", 0.0), 2),
-                        "ev": round(h.get("net", 0.0) / stk, 3) if stk else None,
-                        "open": h.get("open"), "order": h.get("order"),
-                        "cycles": cycles,
-                        "done": h.get("done") or ""}
+                        "net": round(live.get("net", 0.0), 2),
+                        "ev": round(live.get("net", 0.0) / stk, 3) if stk else None,
+                        "open": live.get("open"), "order": live.get("order"),
+                        "cycles": cycles, "wallet": wallet, "micro": True,
+                        "done": live.get("done") or ""}
             except Exception:
                 pass
             brain = None
             try:
-                brain = json.load(open(HOUR_BRAIN, encoding="utf-8"))
+                brain = json.load(open(MICRO_BRAIN, encoding="utf-8"))
             except Exception:
-                pass
+                try:
+                    brain = json.load(open(HOUR_BRAIN, encoding="utf-8"))
+                except Exception:
+                    pass
             _broadcast({"t": "state",
                         "brain": brain,
                         "bankroll": s.get("bankroll"),
@@ -234,7 +264,7 @@ def _poll_prices():
         t_rem = int(ws_epoch + 3600 - now)
         _broadcast({"t": "prices", "coins": coins,
                     "window": {"start": ws_epoch, "t_rem": t_rem, "wlen": 3600,
-                               "in_slot": 1800 <= t_rem <= 3300}})
+                               "in_slot": 1200 <= t_rem <= 3000}})
         time.sleep(1.0)
 
 
@@ -378,7 +408,7 @@ async def _startup():
     global _loop
     _loop = asyncio.get_running_loop()
     binance_ws.start()
-    for fn in (_tail_hour_log, _poll_state, _poll_prices):   # 15m log retired from console
+    for fn in (_tail_hour_log, _tail_micro_log, _poll_state, _poll_prices):
         threading.Thread(target=fn, daemon=True).start()
 
 
