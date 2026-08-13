@@ -39,6 +39,13 @@ split-consistent positive slice, ≤2c: +2.7% ROI both halves; wide books
 produced the fake-favourite losses). Bets 1-7 predate this tie-break; the
 cycle-4 verdict must note it.
 
+## AMENDMENT (2026-08-13 ~17:25 UTC, owner-approved): exchange minimum forced 5 shares
+Polymarket rejected 3-share orders ("Size (3) lower than the minimum: 5"). Owner chose:
+SHARES=5, STOP_NET=-$12 (3-loss headroom). CONSEQUENCE STATED PLAINLY: worst case is now
+~$71.70 vs the $77.84 launch line — the original "cannot end below launch" floor is
+AMENDED to "cannot end more than ~$6 below launch" (chain truth $83.71 at amendment).
+All other terms unchanged: n=40 verdict, unseen-data kill switch, banking law on a pass.
+
 ## MICRO-AUDITION v2 — pre-registered 2026-08-13 ~16:30 UTC (before confirmation data existed)
 seat_scan found the 75-85c favourite band alive (five adjacent cells z+2.0..+3.1,
 green last-14d) in data through 2026-08-13 16:00 UTC. Confirmation MUST come from

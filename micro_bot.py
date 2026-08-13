@@ -40,12 +40,12 @@ logger.add(os.path.join(V3, "micro_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
 COINS = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "XRP": "xrp"}
-SHARES = 3            # MICRO-AUDITION v2 (seat_scan 2026-08-13): high-band favourites
+SHARES = 5            # exchange minimum (3 rejected: 'lower than the minimum: 5'); owner-approved 2026-08-13
 MIN_ASK, MAX_ASK = 0.75, 0.85  # the band that survived — five adjacent cells z+2.0..+3.1, green last-14d
 MIN_MID = 0.55        # trivially true up here; kept for brain_dump compatibility
 MAX_SPREAD = 0.03     # tight books only — the wide-book lesson carried over
 T_ENTRY_MAX, T_ENTRY_MIN, T_CANCEL = 3000, 1200, 1200   # entry 20-50min left
-STOP_N, STOP_NET = 40, -10.0   # micro stops: full stop-out still leaves bankroll > $77.84 launch
+STOP_N, STOP_NET = 40, -12.0   # 3-loss headroom at 5sh; floor AMENDED (worst ~$71.70, owner-approved)
 ET_OFFSET = 4          # EDT; capture tool falls back to 5 (EST) on miss — we try both
 
 
