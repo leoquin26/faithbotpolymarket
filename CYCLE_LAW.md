@@ -39,6 +39,20 @@ split-consistent positive slice, ≤2c: +2.7% ROI both halves; wide books
 produced the fake-favourite losses). Bets 1-7 predate this tie-break; the
 cycle-4 verdict must note it.
 
+## MICRO-AUDITION v2 — pre-registered 2026-08-13 ~16:30 UTC (before confirmation data existed)
+seat_scan found the 75-85c favourite band alive (five adjacent cells z+2.0..+3.1,
+green last-14d) in data through 2026-08-13 16:00 UTC. Confirmation MUST come from
+windows after that horizon (CUTOFF=1786636800). Gate (confirm_gate.py, 6h cron):
+  seat = fav ask 0.75-0.85, spread <= 3c, entry 20-50min, maker px, hold
+  GATE OPEN : n >= 60 post-cutoff opportunities AND ROI > 0
+              -> micro-audition: 3 shares, stop -$10, verdict n=40, same
+                 constitution (z-gated verdicts, one bet at a time, banking law
+                 applies to any pass)
+  MIRAGE    : n >= 60 AND ROI <= 0 -> stand down; weekly sweep continues
+shadow_bot.py runs the seat live at $0 from 2026-08-13 16:00 UTC (Telegram 🕶).
+Owner's standing instruction ("start from now", 2026-08-13): launch is authorized
+the moment the gate opens — no further approval needed, stops are the guardrail.
+
 ## OUTCOME (2026-08-12, ~15:00 UTC) — LAW EXECUTED, ENGINE RETIRED
 Cycle 4 verdict: n=40, 23W/17L, net −$15.43 (near-identical to cycle 3).
 Pooled lifetime: 158 settles, 100W/58L (63%), +$11.13, EV/$ +0.015, z=+0.50.
