@@ -130,18 +130,26 @@ class HourBot:
             return None, None
 
     def matched_of(self, oid):
-        try:
-            od = self.client.get_order(oid) or {}
-            return float(od.get("size_matched") or od.get("sizeMatched") or 0)
-        except Exception:
-            return 0.0
+        # audit fix: one retry — a transient API error here in the cancel
+        # branch could orphan a filled position (wallet-vs-ledger drift)
+        for attempt in (0, 1):
+            try:
+                od = self.client.get_order(oid) or {}
+                return float(od.get("size_matched") or od.get("sizeMatched") or 0)
+            except Exception:
+                if attempt == 0:
+                    time.sleep(1.0)
+        return 0.0
 
     def verdict_check(self):
-        n = len(self.s["bets"])
+        # audit fix: count only real bets (px>0, sh>0) — legacy phantom
+        # rows (sub-share fills) must not advance the verdict counter
+        real = [b for b in self.s["bets"] if b.get("px", 0) > 0 and b.get("sh", 0) > 0]
+        n = len(real)
         if self.s["done"]:
             return True
         if n >= STOP_N or self.s["net"] <= STOP_NET:
-            w = sum(1 for b in self.s["bets"] if b["won"])
+            w = sum(1 for b in real if b["won"])
             self.s["done"] = (f"AUDIT COMPLETE n={n} {w}W/{n-w}L net={self.s['net']:+.2f} "
                               f"(stop: {f'n>={STOP_N}' if n >= STOP_N else f'net<={STOP_NET}'})")
             logger.info(f"[HOUR VERDICT] {self.s['done']}")
