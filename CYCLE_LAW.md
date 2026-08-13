@@ -46,6 +46,15 @@ SHARES=5, STOP_NET=-$12 (3-loss headroom). CONSEQUENCE STATED PLAINLY: worst cas
 AMENDED to "cannot end more than ~$6 below launch" (chain truth $83.71 at amendment).
 All other terms unchanged: n=40 verdict, unseen-data kill switch, banking law on a pass.
 
+## AMENDMENT 2 (2026-08-13 ~18:20 UTC, owner-directed 3x): MULTI-COIN LIVE
+Owner instruction "let it work live" (asked three times, risks disclosed twice):
+micro_bot now rests on EVERY qualifying coin per window (the shadow's full bet-set,
+real money) instead of one-bet-at-a-time. The -$12 total stop is UNCHANGED and caps
+all positions combined — a single correlated reversal window (~$8-12 across 3 coins)
+can spend most of it at once; the audition can therefore end in as few as 2 bad
+windows. Verdict n=40, kill switch, banking law: unchanged. Gate control data is
+population-based (collector), so live conversion does not degrade Friday's verdict.
+
 ## MICRO-AUDITION v2 — pre-registered 2026-08-13 ~16:30 UTC (before confirmation data existed)
 seat_scan found the 75-85c favourite band alive (five adjacent cells z+2.0..+3.1,
 green last-14d) in data through 2026-08-13 16:00 UTC. Confirmation MUST come from

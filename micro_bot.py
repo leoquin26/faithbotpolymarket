@@ -111,13 +111,26 @@ class HourBot:
     def __init__(self):
         self.om = OrderManager()
         self.client = self.om.client
-        self.s = {"bets": [], "net": 0.0, "done": "", "open": None, "order": None}
+        self.s = {"bets": [], "net": 0.0, "done": "", "open": None, "order": None,
+                  "opens": {}, "orders": {}}
         self._brain_mk = {}                     # (coin, hs) -> market_for cache
         if os.path.exists(STATE):
             try:
                 self.s.update(json.load(open(STATE)))
             except Exception:
                 pass
+        # migrate single-slot state (pre multi-coin) into the dicts
+        if self.s.get("open"):
+            self.s.setdefault("opens", {})[self.s["open"]["coin"]] = self.s["open"]
+        if self.s.get("order"):
+            self.s.setdefault("orders", {})[self.s["order"]["coin"]] = self.s["order"]
+        self._alias()
+
+    def _alias(self):
+        """keep legacy open/order keys pointing at a representative position
+        (dashboard + balance probe read them)"""
+        self.s["open"] = next(iter(self.s.get("opens", {}).values()), None)
+        self.s["order"] = next(iter(self.s.get("orders", {}).values()), None)
 
     def save(self):
         json.dump(self.s, open(STATE, "w"))
@@ -228,8 +241,8 @@ class HourBot:
                            "fav": fav, "px": px, "verdict": verdict}
         b = [x for x in self.s["bets"] if x.get("sh", 0) > 0]
         state = ("DONE" if self.s.get("done") else
-                 "HOLDING" if self.s.get("open") else
-                 "RESTING" if self.s.get("order") else
+                 "HOLDING" if self.s.get("opens") else
+                 "RESTING" if self.s.get("orders") else
                  "ENTRY BAND OPEN" if T_ENTRY_MIN <= t_left <= T_ENTRY_MAX else
                  "WAITING FOR BAND")
         json.dump({"ts": time.time(), "hs": hs, "t_left": int(t_left), "state": state,
@@ -242,48 +255,60 @@ class HourBot:
         now = time.time()
         hs = int(now // 3600) * 3600
         t_left = hs + 3600 - now
+        opens = self.s.setdefault("opens", {})
+        orders = self.s.setdefault("orders", {})
 
-        # 1) settle any held position whose hour has closed
-        p = self.s.get("open")
-        if p and now > p["hs"] + 3600 + 90:
+        # 1) settle every held position whose hour has closed
+        for coin in list(opens):
+            p = opens[coin]
+            if now <= p["hs"] + 3600 + 90:
+                continue
             wn = winner_for(p["slug"])
-            if wn:
-                won = (wn == p["dir"])
-                pnl = (1 - p["px"]) * p["sh"] if won else -p["px"] * p["sh"]
-                self.s["net"] = round(self.s["net"] + pnl, 2)
-                self.s["bets"].append({"hs": p["hs"], "coin": p["coin"], "dir": p["dir"],
-                                       "px": p["px"], "sh": p["sh"], "won": won,
-                                       "pnl": round(pnl, 2), "fill_s": p.get("fill_s")})
-                n = len(self.s["bets"]); wtot = sum(1 for b in self.s["bets"] if b["won"])
-                logger.info(f"[{'WIN' if won else 'LOSS'}] {p['coin']} {p['dir']} @ "
-                            f"{p['px']*100:.0f}c -> {wn} | {pnl:+.2f} | audit net "
-                            f"{self.s['net']:+.2f} | n={n} ({wtot}W)")
-                tg._send(f"{'✅' if won else '❌'} <b>HOURLY {'WIN' if won else 'LOSS'}</b> "
-                         f"{p['coin']} {p['dir']} @ {p['px']*100:.0f}c | {pnl:+.2f} | "
-                         f"net {self.s['net']:+.2f} (n={n})")
-                self.s["open"] = None
-                self.save()
-            return                                     # one thing at a time
+            if not wn:
+                continue
+            won = (wn == p["dir"])
+            pnl = (1 - p["px"]) * p["sh"] if won else -p["px"] * p["sh"]
+            self.s["net"] = round(self.s["net"] + pnl, 2)
+            self.s["bets"].append({"hs": p["hs"], "coin": p["coin"], "dir": p["dir"],
+                                   "px": p["px"], "sh": p["sh"], "won": won,
+                                   "pnl": round(pnl, 2), "fill_s": p.get("fill_s")})
+            n = len(self.s["bets"]); wtot = sum(1 for b in self.s["bets"] if b["won"])
+            logger.info(f"[{'WIN' if won else 'LOSS'}] {p['coin']} {p['dir']} @ "
+                        f"{p['px']*100:.0f}c -> {wn} | {pnl:+.2f} | audit net "
+                        f"{self.s['net']:+.2f} | n={n} ({wtot}W)")
+            tg._send(f"{'✅' if won else '❌'} <b>MICRO {'WIN' if won else 'LOSS'}</b> "
+                     f"{p['coin']} {p['dir']} @ {p['px']*100:.0f}c | {pnl:+.2f} | "
+                     f"net {self.s['net']:+.2f} (n={n})")
+            del opens[coin]
+            self._alias(); self.save()
 
-        if self.s.get("open") or self.verdict_check():
+        if self.verdict_check():
+            # audit over: pull every resting order off the book, hold nothing new
+            for coin in list(orders):
+                try:
+                    self.client.cancel(orders[coin]["oid"])
+                except Exception:
+                    pass
+                del orders[coin]
+            self._alias(); self.save()
             return
 
-        # 2) manage a resting order
-        o = self.s.get("order")
-        if o:
+        # 2) manage every resting order
+        for coin in list(orders):
+            o = orders[coin]
             m = self.matched_of(o["oid"])
             if int(m) >= 1:
                 sh = int(m)
                 fill_s = round(now - o.get("rest_ts", now), 1)
-                self.s["open"] = {"hs": o["hs"], "coin": o["coin"], "dir": o["dir"],
-                                  "px": o["px"], "sh": sh, "slug": o["slug"],
-                                  "fill_s": fill_s}
-                self.s["order"] = None
+                opens[coin] = {"hs": o["hs"], "coin": o["coin"], "dir": o["dir"],
+                               "px": o["px"], "sh": sh, "slug": o["slug"],
+                               "fill_s": fill_s}
+                del orders[coin]
                 logger.info(f"[FILLED] {o['coin']} {o['dir']} @ {o['px']*100:.0f}c x{sh} "
                             f"(maker, fee $0, fill {fill_s:.0f}s)")
                 tg._send(f"🤖 <b>MICRO FILL</b> {o['coin']} {o['dir']} @ {o['px']*100:.0f}c x{sh}")
-                self.save()
-                return
+                self._alias(); self.save()
+                continue
             expired = (o["hs"] != hs) or (t_left < T_CANCEL)
             if expired:
                 try:
@@ -294,23 +319,26 @@ class HourBot:
                 m = self.matched_of(o["oid"])
                 if int(m) >= 1:
                     sh = int(m)
-                    self.s["open"] = {"hs": o["hs"], "coin": o["coin"], "dir": o["dir"],
-                                      "px": o["px"], "sh": sh, "slug": o["slug"],
-                                      "fill_s": round(time.time() - o.get("rest_ts", now), 1)}
+                    opens[coin] = {"hs": o["hs"], "coin": o["coin"], "dir": o["dir"],
+                                   "px": o["px"], "sh": sh, "slug": o["slug"],
+                                   "fill_s": round(time.time() - o.get("rest_ts", now), 1)}
                     logger.info(f"[FILLED-RACE] {o['coin']} {o['dir']} @ {o['px']*100:.0f}c x{sh}")
                 else:
                     logger.info(f"[CANCEL] unfilled {o['coin']} {o['dir']} @ {o['px']*100:.0f}c ($0 lost)")
-                self.s["order"] = None
-                self.save()
-            return
+                del orders[coin]
+                self._alias(); self.save()
 
-        # 3) maybe place one new rest (entry band only, one per hour window)
+        # 3) place a rest on EVERY qualifying coin this window (owner-directed
+        # 2026-08-13 "let it work live": full shadow bet-set, real money, one
+        # shared -$12 stop caps the total — a correlated window can spend it fast)
         if not (T_ENTRY_MIN <= t_left <= T_ENTRY_MAX):
             return
-        if any(b["hs"] == hs for b in self.s["bets"]):
-            return
-        cands = []
+        taken = {b["coin"] for b in self.s["bets"] if b["hs"] == hs}
+        taken |= {c for c, o in orders.items() if o["hs"] == hs}
+        taken |= {c for c, p in opens.items() if p["hs"] == hs}
         for coin in COINS:
+            if coin in taken:
+                continue
             mk = market_for(coin)
             if not mk:
                 continue
@@ -332,32 +360,22 @@ class HourBot:
             px = round(min(bid + 0.01, ask - 0.01), 2)
             if px < 0.02:
                 continue
-            cands.append((round(ask - bid, 2), coin, d, ask, bid, px, tok, slug))
-        # tightest spread first: tight books were the only split-consistent
-        # positive slice (<=2c: +2.7% ROI both halves); wide books fake favourites
-        for spread, coin, d, ask, bid, px, tok, slug in sorted(cands):
-            if len(cands) > 1:
-                logger.info(f"[PICK] {coin} (spread {spread*100:.0f}c) over "
-                            + ", ".join(f"{c[1]} ({c[0]*100:.0f}c)" for c in sorted(cands)[1:]))
             try:
                 res = self.client.create_and_post_order(
                     OrderArgs(price=px, size=SHARES, side=BUY, token_id=tok),
                     PartialCreateOrderOptions(tick_size="0.01"), OrderType.GTC)
                 oid = (res or {}).get("orderID") or (res or {}).get("orderId")
                 if oid:
-                    self.s["order"] = {"oid": oid, "hs": hs, "coin": coin, "dir": d,
-                                       "px": px, "slug": slug, "rest_ts": now}
+                    orders[coin] = {"oid": oid, "hs": hs, "coin": coin, "dir": d,
+                                    "px": px, "slug": slug, "rest_ts": now}
                     logger.info(f"[REST] {coin} {d} @ {px*100:.0f}c x{SHARES} "
                                 f"(bid {bid*100:.0f}/ask {ask*100:.0f}) T={t_left/60:.0f}min")
-                    # SIGNAL FEED: the decision itself, pushed the moment it's made —
-                    # the owner can mirror it manually or just watch the engine work.
                     tg._send(f"📡 <b>MICRO SIGNAL 75-85c</b> — {coin} favourite is <b>{d}</b> "
                              f"(ask {ask*100:.0f}c). Bot resting {px*100:.0f}c ×{SHARES}, "
                              f"{t_left/60:.0f}min to close. Mirror: buy {d} ≤ {px*100:.0f}c "
                              f"on the {coin} 1h market, hold to settlement.",
                              dedup_key=f"msig-{coin}-{hs}")
-                    self.save()
-                    return
+                    self._alias(); self.save()
             except Exception as e:
                 logger.warning(f"[ORDER FAIL] {coin}: {e}")
         return
