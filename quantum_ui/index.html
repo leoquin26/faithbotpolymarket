@@ -431,9 +431,12 @@ function renderHour(h){
   const equity=(w&&w.equity!=null)?w.equity:model;
   const src=(w&&w.equity!=null)?`chain-verified${w.holdings&&w.holdings.length?` · $${inpos.toFixed(2)} riding in ${w.holdings.join(", ")}`:" · nothing at risk"} · ledger model $${model.toFixed(2)}`
     :`ledger model${inpos?` · $${inpos.toFixed(2)} riding in ${h.open.coin} ${h.open.dir}`:" · nothing at risk"}`;
+  const sd=h.shadow;
+  const shline=!sd?"":`<div style="font-family:var(--mono);font-size:12px;color:#b48cff;margin:2px 0">🕶 SHADOW TESTER ($0 real): ${sd.w}W/${sd.n-sd.w}L · net ${sd.net>=0?'+':''}$${sd.net.toFixed(2)} fake${sd.pending?` · ${sd.pending} riding`:""} — ${sd.saved>0?`<b style="color:var(--good)">the lock has saved ≈$${sd.saved.toFixed(2)} real since the halt</b>`:`<span style="color:var(--warn)">lock has cost ≈$${(-sd.saved).toFixed(2)} vs betting</span>`}</div>`;
   bd.innerHTML=
     `<div style="font-size:16px;margin-bottom:2px">💰 EQUITY <b style="color:${equity>=77.84?'var(--good)':'var(--bad)'}">$${equity.toFixed(2)}</b>
        <span style="color:var(--ink3);font-size:11.5px">${src} · the wallet dip when a bet opens is the bet, not a loss</span></div>
+     ${shline}
      <div><b>${h.w}W</b> / <b>${h.l}L</b> of <b>${h.n}</b> settles · net <b style="color:${h.net>=0?'var(--good)':'var(--bad)'}">${h.net>=0?'+':''}$${h.net.toFixed(2)}</b> · EV/$ <b style="color:${evc}">${h.ev==null?'—':(h.ev>=0?'+':'')+h.ev.toFixed(3)}</b> · <span style="color:#b48cff">MICRO 75-85c · 3sh</span></div>
      <div style="background:var(--ink3)22;border-radius:4px;height:8px;margin:4px 0"><div style="width:${pct}%;height:8px;border-radius:4px;background:#b48cff"></div></div>
      <div style="color:var(--ink3)">verdict at n=40 (${40-h.n} to go) · stop −$10 armed · unseen-data kill switch ~Fri${h.done?` · <b>${h.done}</b>`:''}</div>

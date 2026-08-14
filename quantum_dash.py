@@ -218,11 +218,27 @@ def _poll_state():
                     wallet = json.load(open(BALANCE, encoding="utf-8"))
                 except Exception:
                     pass
+                shadow = None
+                try:
+                    shd = json.load(open(os.path.join(V3, "shadow_state.json"),
+                                         encoding="utf-8"))
+                    done_e = [x for x in shd.get("entries", []) if "won" in x]
+                    HALT_HS = 1786730400   # 2026-08-14 18:00 UTC — micro gate-halted
+                    post = [x for x in done_e if x["hs"] >= HALT_HS]
+                    # shadow runs 3sh nominal; live runs 5sh -> scale what the lock avoided
+                    shadow = {"n": len(done_e),
+                              "w": sum(1 for x in done_e if x["won"]),
+                              "net": round(sum(x["pnl"] for x in done_e), 2),
+                              "pending": len(shd.get("entries", [])) - len(done_e),
+                              "saved": round(-sum(x["pnl"] for x in post) * 5.0 / 3.0, 2)}
+                except Exception:
+                    pass
                 hour = {"n": hn, "w": hw, "l": hn - hw,
                         "net": round(live.get("net", 0.0), 2),
                         "ev": round(live.get("net", 0.0) / stk, 3) if stk else None,
                         "open": live.get("open"), "order": live.get("order"),
                         "cycles": cycles, "wallet": wallet, "micro": True,
+                        "shadow": shadow,
                         "done": live.get("done") or ""}
             except Exception:
                 pass
