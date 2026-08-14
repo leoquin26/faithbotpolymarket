@@ -78,6 +78,8 @@ def _broadcast(msg: dict):
 
 
 LOG_CLASS = (
+    (re.compile(r"\[SHADOW (WIN|LOSS)\]"), "result"),
+    (re.compile(r"\[SHADOW REST\]"), "maker"),
     (re.compile(r"\[(WIN|LOSS)\]"), "result"),
     (re.compile(r"\[LATE ENTER\]|\[FAV ENTER\]|\[FILLED"), "enter"),
     (re.compile(r"\[VERDICT|\[TRACK"), "verdict"),
@@ -130,6 +132,10 @@ def _tail_hour_log():
 
 def _tail_micro_log():
     _tail_file(MICRO_LOG, prefix="[MICRO] ")
+
+
+def _tail_shadow_log():
+    _tail_file(os.path.join(V3, "shadow_bot.log"), prefix="[SHDW] ")
 
 
 def _engines_from_state(s: dict) -> list:
@@ -414,7 +420,7 @@ async def _startup():
     global _loop
     _loop = asyncio.get_running_loop()
     binance_ws.start()
-    for fn in (_tail_hour_log, _tail_micro_log, _poll_state, _poll_prices):
+    for fn in (_tail_hour_log, _tail_micro_log, _tail_shadow_log, _poll_state, _poll_prices):
         threading.Thread(target=fn, daemon=True).start()
 
 
