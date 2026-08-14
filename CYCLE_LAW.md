@@ -55,6 +55,17 @@ can spend most of it at once; the audition can therefore end in as few as 2 bad
 windows. Verdict n=40, kill switch, banking law: unchanged. Gate control data is
 population-based (collector), so live conversion does not degrade Friday's verdict.
 
+## CYCLE 6 KILLED BY GATE + HYSTERESIS AMENDMENT (2026-08-14 ~19:10 UTC)
+90 minutes after the lawful launch, the rolling gate re-read flipped MIRAGE
+(n=67, -2.9%) and the kill switch halted cycle 6 at n=1, -$3.80. The full
+unseen trajectory (-3.6% @41 -> +3.2% @63 -> -2.9% @67) is the verdict: the
+75-85c edge is ~ZERO wearing noise. High-band chapter total: -$12.87.
+HYSTERESIS (fixes my gate-design flaw — a zero-threshold switch whipsaws):
+exit stays roi<=0, but RE-ENTRY now requires roi >= +4% at n>=60 on a FRESH
+cutoff, sustained across two consecutive 6h reads. The 2026-08-13 standing
+"launch the moment the gate opens" authorization is REVOKED — superseded by
+this bar. Shadow + gate keep measuring for $0. Chain equity $74.72.
+
 ## GATE RULING + CYCLE 6 (2026-08-14 ~16:55 UTC, owner-directed launch)
 The gate RULED GREEN on schedule: n=63 unseen opportunities, ROI +3.2%, win 81%
 (recovered from -3.6% at n=41; ex-XRP slice +1.6% n=72; shadow n=91 +$5.82).
