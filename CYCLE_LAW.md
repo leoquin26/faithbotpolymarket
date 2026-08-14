@@ -55,6 +55,13 @@ can spend most of it at once; the audition can therefore end in as few as 2 bad
 windows. Verdict n=40, kill switch, banking law: unchanged. Gate control data is
 population-based (collector), so live conversion does not degrade Friday's verdict.
 
+## THE GATE-FIRST LAW (2026-08-14 ~06:50 UTC — born from cycle 5's $12 lesson)
+No live dollars on ANY seat, ever again, until its unseen-data gate reads GREEN at
+n >= 60. The shadow bot + gate test any candidate seat for $0 in ~48h; cycle 5 paid
+~$12 to learn what that instrument would have reported free (gate: +22% at n=22 ->
+-3.6% at n=41 — the winner's curse washing out in real time, caught in 36 hours).
+Impatience now has a measured price. The hunt stays free until the data says pay.
+
 ## MICRO-AUDITION v2 — pre-registered 2026-08-13 ~16:30 UTC (before confirmation data existed)
 seat_scan found the 75-85c favourite band alive (five adjacent cells z+2.0..+3.1,
 green last-14d) in data through 2026-08-13 16:00 UTC. Confirmation MUST come from
