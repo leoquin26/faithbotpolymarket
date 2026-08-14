@@ -39,7 +39,7 @@ logger.add(sys.stdout, level="INFO", format="{time:HH:mm:ss} | {message}")
 logger.add(os.path.join(V3, "micro_bot.log"), level="INFO",
            format="{time:YYYY-MM-DD HH:mm:ss} | {message}", rotation="20 MB")
 
-COINS = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "XRP": "xrp"}
+COINS = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana"}  # cycle 6: XRP out — discovery cells were MIRAGE-graded and it owned the entire cycle-5 loss (-10.45 of -9.07)
 SHARES = 5            # exchange minimum (3 rejected: 'lower than the minimum: 5'); owner-approved 2026-08-13
 MIN_ASK, MAX_ASK = 0.75, 0.85  # the band that survived — five adjacent cells z+2.0..+3.1, green last-14d
 MIN_MID = 0.55        # trivially true up here; kept for brain_dump compatibility
@@ -328,17 +328,16 @@ class HourBot:
                 del orders[coin]
                 self._alias(); self.save()
 
-        # 3) place a rest on EVERY qualifying coin this window (owner-directed
-        # 2026-08-13 "let it work live": full shadow bet-set, real money, one
-        # shared -$12 stop caps the total — a correlated window can spend it fast)
+        # 3) CYCLE 6: ONE bet per window, tightest book wins — cycle 5's entire
+        # drawdown lived in correlated multi-coin windows (two hours = -$16.65)
         if not (T_ENTRY_MIN <= t_left <= T_ENTRY_MAX):
             return
-        taken = {b["coin"] for b in self.s["bets"] if b["hs"] == hs}
-        taken |= {c for c, o in orders.items() if o["hs"] == hs}
-        taken |= {c for c, p in opens.items() if p["hs"] == hs}
+        if (any(b["hs"] == hs for b in self.s["bets"])
+                or any(o["hs"] == hs for o in orders.values())
+                or any(p["hs"] == hs for p in opens.values())):
+            return
+        cands = []
         for coin in COINS:
-            if coin in taken:
-                continue
             mk = market_for(coin)
             if not mk:
                 continue
@@ -360,6 +359,11 @@ class HourBot:
             px = round(min(bid + 0.01, ask - 0.01), 2)
             if px < 0.02:
                 continue
+            cands.append((round(ask - bid, 2), coin, d, ask, bid, px, tok, slug))
+        for spread, coin, d, ask, bid, px, tok, slug in sorted(cands):
+            if len(cands) > 1:
+                logger.info(f"[PICK] {coin} (spread {spread*100:.0f}c) over "
+                            + ", ".join(f"{c[1]} ({c[0]*100:.0f}c)" for c in sorted(cands)[1:]))
             try:
                 res = self.client.create_and_post_order(
                     OrderArgs(price=px, size=SHARES, side=BUY, token_id=tok),
@@ -376,6 +380,7 @@ class HourBot:
                              f"on the {coin} 1h market, hold to settlement.",
                              dedup_key=f"msig-{coin}-{hs}")
                     self._alias(); self.save()
+                    return                     # ONE bet per window — cycle 6 law
             except Exception as e:
                 logger.warning(f"[ORDER FAIL] {coin}: {e}")
         return

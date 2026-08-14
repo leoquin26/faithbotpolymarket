@@ -55,6 +55,17 @@ can spend most of it at once; the audition can therefore end in as few as 2 bad
 windows. Verdict n=40, kill switch, banking law: unchanged. Gate control data is
 population-based (collector), so live conversion does not degrade Friday's verdict.
 
+## GATE RULING + CYCLE 6 (2026-08-14 ~16:55 UTC, owner-directed launch)
+The gate RULED GREEN on schedule: n=63 unseen opportunities, ROI +3.2%, win 81%
+(recovered from -3.6% at n=41; ex-XRP slice +1.6% n=72; shadow n=91 +$5.82).
+Under the GATE-FIRST LAW, live capital is authorized. CYCLE 6 config:
+  BTC/ETH/SOL only (XRP: discovery cells MIRAGE-graded, owned cycle 5's whole
+  loss), ONE bet per window (tightest book — cycle 5's drawdown was entirely
+  correlated multi-coin windows), 5sh, stop -$12, verdict n=40, rolling gate
+  kill switch (roi<=0 at any 6h re-read -> self-halt), banking law on a pass.
+HONESTY CLAUSE: the confirmed edge is thin (+1.5..+3.2%); even if real, this
+cycle is ~coin-flip to clear the +0.03 bar. Cycle 5 archived in micro state.
+
 ## THE GATE-FIRST LAW (2026-08-14 ~06:50 UTC — born from cycle 5's $12 lesson)
 No live dollars on ANY seat, ever again, until its unseen-data gate reads GREEN at
 n >= 60. The shadow bot + gate test any candidate seat for $0 in ~48h; cycle 5 paid

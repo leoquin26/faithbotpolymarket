@@ -197,6 +197,12 @@ def _poll_state():
                     live = json.load(open(MICRO_STATE, encoding="utf-8"))
                 except Exception:
                     pass
+                c5 = live.get("cycle5")
+                if c5:
+                    cb = [x for x in c5.get("bets", []) if x.get("sh", 0) > 0]
+                    cycles.append({"name": "cycle5", "n": len(cb),
+                                   "w": sum(1 for x in cb if x.get("won")),
+                                   "net": round(c5.get("net", 0.0), 2)})
                 bets = [x for x in (live.get("bets") or []) if x.get("sh", 0) > 0]
                 hn = len(bets)
                 hw = sum(1 for b in bets if b.get("won"))
