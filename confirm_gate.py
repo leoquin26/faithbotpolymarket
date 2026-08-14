@@ -13,7 +13,7 @@ from collections import defaultdict
 
 V3 = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, V3)
-CUTOFF = 1786636800          # 2026-08-13 16:00 UTC — the sweep's data horizon
+CUTOFF = 1786734000          # 2026-08-14 19:00 UTC — FRESH window post cycle-6 kill (hysteresis law)
 GATE = os.path.join(V3, "gate_state.json")
 COINS = {"BTC", "ETH", "SOL", "XRP"}
 
@@ -79,19 +79,24 @@ try:
 except Exception:
     pass
 
-status = ("OPEN" if n >= 60 and roi > 0 else
-          "MIRAGE" if n >= 60 else "FILLING")
+# HYSTERESIS (law 2026-08-14): re-entry needs roi >= +4% at n>=60,
+# TWO consecutive reads -> ARMED (cycle 7 authorized). Exit stays <= 0.
+status = ("OPEN" if n >= 60 and roi >= 0.04 else
+          "MIRAGE" if n >= 60 and roi <= 0 else
+          "WEAK" if n >= 60 else "FILLING")
 prev = {}
 try:
     prev = json.load(open(GATE))
 except Exception:
     pass
-head = {"OPEN":   "🟢 <b>GATE OPEN</b> — unseen data confirms the 75-85c seat. "
-                  "Micro-audition is authorized: 3sh, stop -$10, n=40. Say the "
-                  "word and it launches.",
-        "MIRAGE": "🔴 <b>MIRAGE</b> — unseen data rejects the 75-85c seat. "
-                  "Stand down; the Sunday sweep keeps hunting.",
-        "FILLING": "⏳ gate filling"}[status]
+greens = (prev.get("greens", 0) + 1) if status == "OPEN" else 0
+armed = greens >= 2
+head = {"OPEN":   ("🚀 <b>CYCLE 7 AUTHORIZED</b> — two consecutive fresh reads >= +4%. "
+                   "Hysteresis bar met; relaunch is lawful." if armed else
+                   "🟡 gate green (1/2) — one more >= +4% read arms cycle 7"),
+        "MIRAGE": "🔴 MIRAGE — seat still dead on fresh data; nothing to launch.",
+        "WEAK":   "⚪ seat alive but under the +4% bar — watch, spend nothing.",
+        "FILLING": "⏳ fresh gate window filling"}[status]
 msg = (f"{head}\nconfirmation sample (post-sweep only): n={n}/60 "
        f"ROI {roi*100:+.1f}% win {wr*100:.0f}%{sh_line}")
 print(msg)
@@ -102,10 +107,10 @@ if changed or stale:
     try:
         import telegram_notifier as tg
         tg._send(msg, dedup_key=f"gate-{status}-{int(time.time()//21600)}")
-        json.dump({"status": status, "sent": time.time(), "n": n, "roi": roi},
+        json.dump({"status": status, "sent": time.time(), "n": n, "roi": roi, "greens": greens},
                   open(GATE, "w"))
     except Exception as e:
         print("tg send failed:", e)
 else:
-    json.dump({"status": status, "sent": prev.get("sent", 0), "n": n, "roi": roi},
+    json.dump({"status": status, "sent": prev.get("sent", 0), "n": n, "roi": roi, "greens": greens},
               open(GATE, "w"))
