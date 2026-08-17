@@ -13,7 +13,7 @@ from collections import defaultdict
 
 V3 = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, V3)
-CUTOFF = 1786734000          # 2026-08-14 19:00 UTC — FRESH window post cycle-6 kill (hysteresis law)
+CUTOFF = 1786986000          # 2026-08-17 17:00 UTC — fresh window for the 55-65c@40-50m candidate
 GATE = os.path.join(V3, "gate_state.json")
 COINS = {"BTC", "ETH", "SOL", "XRP"}
 
@@ -29,7 +29,7 @@ for r in csv.DictReader(open(os.path.join(V3, "hourly_research.csv"))):
         continue
     try:
         t = int(r["t_left"])
-        if not (1200 <= t <= 3000):
+        if not (2400 <= t <= 3000):
             continue
         ua, ub = float(r["up_ask"]), float(r["up_bid"])
         da, db = float(r["down_ask"]), float(r["down_bid"])
@@ -55,7 +55,7 @@ for (hs, coin), rows in quotes.items():
             fav, ask, bid = "UP", ua, ub
         else:
             fav, ask, bid = "DOWN", da, db
-        if not (0.75 <= ask <= 0.85) or (ask - bid) > 0.03:
+        if not (0.55 <= ask <= 0.65) or (ask - bid) > 0.03:
             continue
         pairs.append((min(bid + 0.01, ask - 0.01), wn == fav))
 
@@ -94,7 +94,7 @@ armed = greens >= 2
 head = {"OPEN":   ("🚀 <b>CYCLE 7 AUTHORIZED</b> — two consecutive fresh reads >= +4%. "
                    "Hysteresis bar met; relaunch is lawful." if armed else
                    "🟡 gate green (1/2) — one more >= +4% read arms cycle 7"),
-        "MIRAGE": "🔴 MIRAGE — seat still dead on fresh data; nothing to launch.",
+        "MIRAGE": "🔴 MIRAGE — candidate not confirming on fresh data; nothing to launch.",
         "WEAK":   "⚪ seat alive but under the +4% bar — watch, spend nothing.",
         "FILLING": "⏳ fresh gate window filling"}[status]
 msg = (f"{head}\nconfirmation sample (post-sweep only): n={n}/60 "

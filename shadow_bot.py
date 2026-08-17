@@ -17,9 +17,9 @@ from hour_bot import http_json, hour_slug, winner_for   # read-only helpers
 import telegram_notifier as tg
 
 NAMES = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "XRP": "xrp"}
-MIN_ASK, MAX_ASK = 0.75, 0.85
+MIN_ASK, MAX_ASK = 0.55, 0.65  # Sunday sweep candidate: n=1148, +5.7% z=2.2, all splits green
 MAX_SPREAD = 0.03
-T_MIN, T_MAX = 1200, 3000          # 20-50min left
+T_MIN, T_MAX = 2400, 3000          # 40-50min left (the candidate cell)
 SHARES = 3                          # nominal, mirrors the pre-registered audition
 
 
@@ -125,7 +125,7 @@ def step(s):
             f"(bid {bid*100:.0f}/ask {ask*100:.0f}) T={t_left/60:.0f}min")
         tg._send(f"🕶 <b>SHADOW SIGNAL</b> {coin} favourite <b>{d}</b> @ ask "
                  f"{ask*100:.0f}c — would rest {px*100:.0f}c ×{SHARES}. "
-                 f"High-band seat, $0 real until the gate opens.",
+                 f"55-65c seat audition, $0 real until the gate arms.",
                  dedup_key=f"shr-{coin}-{hs}")
         save(s)
 
