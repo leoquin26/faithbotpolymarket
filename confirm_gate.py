@@ -33,9 +33,10 @@ for r in csv.DictReader(open(os.path.join(V3, "hourly_research.csv"))):
             continue
         ua, ub = float(r["up_ask"]), float(r["up_bid"])
         da, db = float(r["down_ask"]), float(r["down_bid"])
+        drift = float(r["drift_pct"])
     except ValueError:
         continue
-    quotes[(hs, r["coin"])].append((t, ua, ub, da, db))
+    quotes[(hs, r["coin"])].append((t, ua, ub, da, db, drift))
 
 pairs = []
 for (hs, coin), rows in quotes.items():
@@ -44,7 +45,7 @@ for (hs, coin), rows in quotes.items():
         continue
     rows.sort(key=lambda x: -x[0])
     seen = set()
-    for t, ua, ub, da, db in rows:
+    for t, ua, ub, da, db, drift in rows:
         tb = t // 600
         if tb in seen or ua <= 0 or da <= 0 or ub <= 0 or db <= 0:
             continue
@@ -56,6 +57,8 @@ for (hs, coin), rows in quotes.items():
         else:
             fav, ask, bid = "DOWN", da, db
         if not (0.55 <= ask <= 0.65) or (ask - bid) > 0.03:
+            continue
+        if (fav == "UP") != (drift > 0):      # DIRECTION ENGINE v0: aligned only
             continue
         pairs.append((min(bid + 0.01, ask - 0.01), wn == fav))
 

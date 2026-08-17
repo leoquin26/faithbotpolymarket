@@ -56,6 +56,23 @@ def book_top(token):
         return None, None
 
 
+def latest_drift(coin, hs):
+    """freshest drift_pct for this coin's CURRENT window, from the collector's
+    CSV tail (written every 30s). None if not found/stale."""
+    try:
+        path = os.path.join(V3, "hourly_research.csv")
+        with open(path, "rb") as f:
+            f.seek(max(0, os.path.getsize(path) - 16384))
+            lines = f.read().decode(errors="replace").strip().splitlines()
+        for ln in reversed(lines):
+            p = ln.split(",")
+            if len(p) >= 6 and p[2] == coin and p[1] == str(hs):
+                return float(p[5])
+    except Exception:
+        pass
+    return None
+
+
 def load():
     try:
         return json.load(open(STATE))
@@ -117,6 +134,12 @@ def step(s):
         else:
             continue
         if not (MIN_ASK <= ask <= MAX_ASK) or (ask - bid) > MAX_SPREAD:
+            continue
+        drift = latest_drift(coin, hs)
+        if drift is None or (d == "UP") != (drift > 0):
+            log(f"[SKIP] {coin} {d} @ {ask*100:.0f}c — drift "
+                f"{'unknown' if drift is None else f'{drift:+.3f}% opposed'} "
+                f"(direction engine)")
             continue
         px = round(min(bid + 0.01, ask - 0.01), 2)
         s["entries"].append({"ts": now, "hs": hs, "coin": coin, "dir": d,
