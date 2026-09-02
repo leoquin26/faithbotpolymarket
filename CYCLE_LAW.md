@@ -1,7 +1,107 @@
 # CYCLE LAW — pre-registered, owner-approved 2026-08-11 (~00:55 UTC Aug 12)
 
+## T3 LIVE AMENDMENT — THE CLOCK spoke (2026-09-02 06:05 UTC)
+Clock (registered 2026-09-01): filtered BTC paper ledger, px 20-85c, fair 10-90c,
+EV/$ >= +0.03 -> live. Reading at 06:05 UTC: **n=9, 5W/4L, +$4.11 fake, EV/$ +0.377**
+(`clock_exec.log`). GO branch. Honesty: n=9 is tiny; this is a micro-audition of the
+LATE-digital seat (`late_shadow` logic, unchanged) with real money, not a proven edge.
+T3 config (`t3_live.py`, seat `T3-late-digital-btc`): BTC only, last 10 min of the 1h
+window (T 30-600s), P(UP)=Φ(ln(S/S0)/(σ√τ)) σ=180s realized, maker px=min(bid+1c,ask-1c),
+fire if fair-px >= 4c, px in [0.20,0.85], fair in (0.10,0.90), spread <= 4c, ONE order
+per hour, 5 shares (exchange min), GTC, hold to settlement, unfilled cancels at T-30s.
+STOPS: n=40 settles or net <= -$12 -> halt forever. Banking law on a pass (50%).
+Auto-launch stays REVOKED: the clock authorized it, a human started it.
+`late_shadow` keeps running at $0 as the paper twin for fill-realism comparison.
+mm_shadow (15m paper) stays OFF until T3 resolves — one live hypothesis at a time.
+
+
 Registered at cycle 4, n=7 (4W/3L, net −$5.38), BEFORE any cycle-4 verdict
 exists. Git commit timestamp = proof of pre-registration.
+
+## AMENDMENT LATE SHADOW CUT (2026-09-01 ~05:50 UTC) — still $0, clock is set
+Paper n=23 11W/12L +$8.10 EV/$ +0.325. Last two rests ETH LOSS −0.57 then
+−1.41. ETH paper EV/$ +0.11 and falling. Three rests at px=0c (WS book
+does not clip pennies). BTC px∈[0.20,0.85] counterfactual: n=7 6W/1L
++$7.20 fake — too small to launch; large enough to stop measuring junk.
+
+Mid-stream (same SEAT_ID, ledger kept): BTC only, maker px [0.20, 0.85],
+fair ∈ (0.10, 0.90). No live dollars. Decision clock **2026-09-02 06:00 UTC**:
+- filtered BTC 20-85c EV/$ ≥ +0.03 → T3 live 5 shares, stop −$12, one/hour
+- else kill `late_shadow.py` like T2. No third wait.
+
+## AMENDMENT LATE SHADOW (2026-08-30) — $0, live stays dead
+T2 halt 2026-08-26: n=11 5W/6L −$14.34, chain $69.38. T2 shadow after halt
+still ROI ~−21% n=21. Do NOT relaunch T2. t1_live remains `done`.
+
+New measurement only: `late_shadow.py` seat `LATE-digital-10m`.
+  Last 10 minutes of the 1H window (τ ∈ [30s, 600s]).
+  Fair P(UP)=Φ(ln(S/S0)/(σ√τ)) from Binance ticks (WS/REST) vs maker px.
+  Fire if model−px ≥ 4c, spread≤4c, BTC+ETH, one bet/hour, $0, hold settle.
+  Hypothesis from 2026 literature: edge is late conversion of spot→binary,
+  not 40–50m favourite hold. If this does not print EV>0 on unseen hours,
+  it is refused like T2. No live dollars. No share scale.
+
+## AMENDMENT T2 CYCLE (2026-08-24 ~15:20 UTC) — cycle 1 passed, apply the audit
+T1 live verdict 2026-08-24 05:01 UTC: n=40, 31W/9L, net **+$8.11**, EV/$ +0.056
+(pass bar +0.03). z=+0.62 — BELOW the |z|≥1 scale gate. Chain equity $83.08
+(launch $74.72). BTC +$15.86 (n=23); ETH −$7.75 (n=17), and post-67c-filter
+ETH was −$11.50 (n=15). Cheap px<67c −$3.80.
+
+Therefore cycle 2 is lawful as a **passed-cycle continuation**, with:
+- BANKING LAW: withdraw **$4.06** (50% of +$8.11) from the trading wallet.
+  Agent cannot move USDC; owner must send it out. Banked money never rides.
+- **Do NOT scale** (z<1; cycle 3 died after 5→8→10). SHARES stay **5**.
+- **ETH out.** Seat T2 = BTC only, ask [0.67, 0.85], |drift|≥0.20, 1 bet/hour,
+  first look. SEAT_ID=`T2-btc-67-85-dmin20`. Fresh unseen cutoff 2026-08-24
+  16:00 UTC. Cycle-1 ledger archived inside t1_live_state.json.
+- Stops unchanged: n=40 or net≤−$12. Gate MIRAGE still kills.
+- Auto-launch remains REVOKED; this start is the owner "apply your recs".
+
+## AMENDMENT T1 TIGHTEN (2026-08-20 ~01:55 UTC) — mid-audition, after 65c dying
+Live n=8 7W/1L net +$7.40 then BTC DOWN @ 65c x5 (ask 66c, |drift|=0.10) marked
+to ~0 before settle (same family as the only prior live loss: 66c ask 67c
+d=0.18, −$3.30). Lucky 59c/60c wins do not excuse the band. Change in
+`qualify.py` (shadow + live import it):
+  MIN_ASK 0.60 → **0.67**  (65c ask-66 and 66c ask-67 out)
+  D_MIN   0.00 → **0.20**  (weak-chop drift out)
+  5 shares, stop −$12, n=40, 1 coin: unchanged.
+  Open 65c position is left to settle — not cancelled mid-hour.
+  SEAT_ID unchanged (tightening, not a new ledger). Bets 1-8 + the 65c
+  open predate this filter.
+
+## AMENDMENT T1 LIVE (2026-08-19 ~15:25 UTC) — OWNER DIRECTED
+Owner instruction: "enciende live vamos a probar". Gate at launch is NOT
+green (FILLING, collector n=5 ROI −16%, shadow n=6 +$0.18 fake). This
+violates GATE-FIRST on purpose; the owner overrode it. Config:
+  T1 seat (`qualify.py`), 5 shares (exchange min), ONE coin/hour, first
+  look, GTC maker, hold to settlement. STOP_NET=−$12, verdict n=40.
+  Kill switch: gate MIRAGE → halt. Shadow keeps running at $0.
+  hour_bot + micro_bot stay retired (killed so they cannot double-fire).
+HONESTY: worst case this audition is −$12 (equity ~$62.72). Impatience
+tuition of cycles 5–6 is the prior of this launch. Auto-launch remains
+REVOKED for any future seat.
+
+## AMENDMENT T1 SHADOW (2026-08-19 ~03:30 UTC) — measure only, $0
+Post-mortem of the 55-65c ALIGNED collapse: that band is structurally chop
+(a 58c favourite at 40-50min means the hour has not decided). The surviving
+slice on the same CSV is T1: favourite ask [0.60, 0.85], 40-50min half-open,
+spread ≤3c, mid ≥55c, drift-aligned, BTC/ETH/SOL, ONE coin/hour (tightest
+spread), first snapshot in the bucket (do not wait for price to fall in).
+Definition: `research_brain/qualify.py` (SEAT_ID=`T1-fav-60-85-40-50-align`).
+
+HONESTY: T1 was cut AFTER seeing 55-65 die. It is a new fork, not a
+pre-registered cell. Therefore:
+- Shadow + gate run T1 at $0 from cutoff 2026-08-19 04:00 UTC (T1_CUTOFF=
+  1787109600). Old 55-65 / 75-85 shadow ledger is archived, not mixed.
+- Gate unit = clustered UTC hours, not coin-rows. OPEN: n_hours ≥ 24 AND
+  ROI ≥ +8%. MIRAGE: n_hours ≥ 24 AND ROI ≤ 0. ARMED = two consecutive
+  OPEN reads. Auto-launch stays REVOKED (2026-08-14 hysteresis). ARMED
+  only means the owner MAY consider a $20 micro-audition.
+- Original-seat RE-ARM (55-85c / 30-55m, two weeks ≥ +4%) is separately
+  MET as of 2026-08-19 and remains available; we are NOT launching it in
+  this amendment. One live hypothesis at a time, and T1 is still $0.
+- Neural nets / logistic as a live sizer: refused. Walk-forward Brier did
+  not beat the ask.
 
 ## 1. THE FLOOR RULE
 Cycle 4 is the last cycle funded on faith.
