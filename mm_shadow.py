@@ -192,8 +192,12 @@ def step(win: Window, now, ws=None):
         top[o] = (bb, ba, dep)
         h = win.hist[o]; h.append((now, bb, ba, dep))
         while h and now - h[0][0] > 12: h.popleft()
-    if not (top["UP"][0] and top["UP"][1]):
+    if not (top["UP"][0] and top["UP"][1] and top["DOWN"][0] and top["DOWN"][1]):
         return
+    if ws is not None and not all(ws.get_book(win.toks[o]) for o in ("UP", "DOWN")):
+        return                      # WS not warmed up: never quote from a stale REST top
+    if not (0.90 <= top["UP"][0] + top["DOWN"][0] <= 1.00):
+        return                      # inconsistent two-token snapshot (fast move): skip loop
     mid = (top["UP"][0] + top["UP"][1]) / 2
     if not (MID_LO <= mid <= MID_HI):
         for o in ("UP", "DOWN"):            # market decided enough: stay flat
