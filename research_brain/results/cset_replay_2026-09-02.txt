@@ -1,0 +1,22 @@
+ASYNC COMPLETE-SET ACCUMULATION replay — hourly_research.csv (1h markets, 30s books)
+run locally 2026-09-02 ~16:45 UTC, 4,388 windows (BTC/ETH/SOL/XRP), price-through fills,
+resting bids both sides (K below touch), second side repriced to lock pair <= TARGET.
+
+quote until T-1800s (first 30 min):
+  K=0     tgt .99: pair 72% (cost .990) single 26% (EV/$ -0.68) | EV/$ -0.095 | test -0.113
+  K=0     tgt .97: pair 68%              single 30% (EV/$ -0.67) | EV/$ -0.098 | test -0.113
+  K=0.03  tgt .99: pair 71%              single 27% (EV/$ -0.66) | EV/$ -0.087 | test -0.106
+  K=0.08  tgt .99: pair 69%              single 28% (EV/$ -0.62) | EV/$ -0.078 | test -0.095  <- best
+  K=0.08  tgt .93: pair 55%              single 42% (EV/$ -0.58) | EV/$ -0.087 | test -0.098
+quote until T-600s (first 50 min):
+  K=0     tgt .99: pair 78% (cost .990) single 21% (EV/$ -0.88) | EV/$ -0.095 | test -0.109
+  K=0.08  tgt .99: pair 76%              single 22% (EV/$ -0.89) | EV/$ -0.083 | test -0.105
+  K=0.08  tgt .93: pair 66%              single 33% (EV/$ -0.87) | EV/$ -0.090 | test -0.107
+
+VERDICT: pairs lock often (55-78%) and earn 1-7c each, but the 21-42% of windows that
+end SINGLE-filled lose 58-90% of the stake: the first side to fill is the side that is
+dropping, and the second side only fills on a swing back. Net EV/$ -7.8% to -9.9% in
+every configuration, test worse than train. Passive complete-set accumulation with
+price-through fills is dominated by the same adverse selection as every other passive
+seat we measured. The profitable bots in the RetroValix article must be adding a
+predictive signal / taker timing / 1s execution that this passive replay lacks.
