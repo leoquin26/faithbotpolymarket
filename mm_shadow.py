@@ -37,6 +37,10 @@ try:
     import telegram_notifier as tg
 except Exception:
     tg = None
+try:
+    from polymarket_ws import get_singleton as poly_ws   # 1Hz book feed (box only)
+except Exception:
+    poly_ws = None
 from research_brain.digital import p_up
 
 STATE = os.path.join(V3, "mm_shadow_state.json")
@@ -56,7 +60,9 @@ T_START, T_PULL_ALL = WLEN - 60, 300      # quote from open+60s, flat by T-300s
 MAX_SPREAD = 0.03
 CALM_S = 20                               # re-quote after this many quiet seconds
 TRIG = {"askdrop": (1, 3), "otherbid": (1, 3), "depth": (0.5, 5),
-        "model_margin": 0.04, "sigma_lookback": 180}
+        "model_margin": 0.10, "sigma_lookback": 180}   # 0.04 thrashed (9/16 pulls in 3h)
+MID_LO, MID_HI = 0.20, 0.80   # quote only while BOTH sides are live probabilities;
+                              # v1 quoted at 85-91c and got run over (paper -7.50 / 12 windows)
 RATE, REBATE = 0.07, 0.20
 
 
@@ -157,23 +163,43 @@ class Window:
     def other(self, o): return "DOWN" if o == "UP" else "UP"
 
 
-def step(win: Window, now):
+_depth_cache = {"t": 0.0, "bk": None}
+
+
+def step(win: Window, now, ws=None):
     tr = win.ws + WLEN - now
     if tr <= 0 or tr > T_START:
         return
-    bk = {o: book(win.toks[o]) for o in ("UP", "DOWN")}
-    if not all(bk.values()) or not bk["UP"][0] or not bk["UP"][1]:
+    # depth (for Q-share + depth trigger) via REST every 10s; top-of-book via WS each loop
+    if now - _depth_cache["t"] > 10 or _depth_cache["bk"] is None or _depth_cache.get("ws") != win.ws:
+        _depth_cache.update(t=now, ws=win.ws, bk={o: book(win.toks[o]) for o in ("UP", "DOWN")})
+    bk = _depth_cache["bk"]
+    if not bk or not all(bk.values()) or not bk["UP"][0] or not bk["UP"][1]:
         return
     top = {}
     for o in ("UP", "DOWN"):
         bids, asks = bk[o]
         bb = bids[0][0] if bids else None
         ba = asks[0][0] if asks else None
+        if ws is not None:
+            try:
+                b = ws.get_book(win.toks[o])
+                if b and b.get("bid") and b.get("ask"):
+                    bb, ba = float(b["bid"]), float(b["ask"])
+            except Exception:
+                pass
         dep = sum(sz for _, sz in bids[:2])
         top[o] = (bb, ba, dep)
         h = win.hist[o]; h.append((now, bb, ba, dep))
         while h and now - h[0][0] > 12: h.popleft()
+    if not (top["UP"][0] and top["UP"][1]):
+        return
     mid = (top["UP"][0] + top["UP"][1]) / 2
+    if not (MID_LO <= mid <= MID_HI):
+        for o in ("UP", "DOWN"):            # market decided enough: stay flat
+            if win.q[o] is not None and not win.fill[o]:
+                win.q[o] = None
+        return
     fair = None
     if binance_ws and win.opn:
         spot = binance_ws.get_price(COIN)
@@ -295,8 +321,15 @@ def main():
         s = {"seat": SEAT_ID, "windows": []}
     if binance_ws:
         binance_ws.start()
-    log(f"=== MM SHADOW start | {SEAT_ID} | {SHARES}sh both sides, band {BAND*100:.1f}c, "
-        f"flat at T-{T_PULL_ALL}s | triggers {TRIG} | $0 | n={len(s['windows'])} ===")
+    feed = None
+    if poly_ws:
+        try:
+            feed = poly_ws()
+        except Exception:
+            feed = None
+    log(f"=== MM SHADOW v2 start | {SEAT_ID} | {SHARES}sh both sides, band {BAND*100:.1f}c, "
+        f"mid {MID_LO}-{MID_HI}, flat at T-{T_PULL_ALL}s | triggers {TRIG} | feed "
+        f"{'WS' if feed else 'REST'} | $0 | n={len(s['windows'])} ===")
     cur: Window | None = None
     pending: list[Window] = []
     while True:
@@ -310,9 +343,14 @@ def main():
                 d = discover(ws)
                 if d:
                     cur = Window(ws, d[0], d[1], candle_open(ws))
+                    if feed:
+                        try:
+                            feed.set_subscriptions(list(d[1].values()))
+                        except Exception:
+                            pass
                     log(f"[MM WINDOW] {ws} market {d[0]} open {cur.opn}")
             if cur:
-                step(cur, now)
+                step(cur, now, feed)
             for w in list(pending):
                 if now > w.ws + WLEN + 45 and settle(w, s):
                     pending.remove(w)
