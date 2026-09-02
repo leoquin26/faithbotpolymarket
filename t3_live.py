@@ -222,8 +222,16 @@ class T3Live:
         if not (ua and ub and da and db):
             return
         best = None
+        skipped = []
         for d, ask, bid, fair in (("UP", ua, ub, pu), ("DOWN", da, db, 1.0 - pu)):
             if (ask - bid) > MAX_SPREAD:
+                continue
+            # T3 v2 (2026-09-02, protective): NEVER fade the hour's drift. Opposed
+            # favourites measured -8.0% (n=118, test -20.8%) vs aligned +4.6%
+            # (n=2,643, z=+3.3); T3's 4 losses today were 2 opposed + 2 aligned,
+            # its 14-bet seat record: aligned 4W/2L, opposed 2W/6L.
+            if (d == "UP") != (spot > opn):
+                skipped.append(f"{d}@{maker_px(ask, bid)*100:.0f}c opposed drift")
                 continue
             px = maker_px(ask, bid)
             if not (MIN_PX <= px <= MAX_PX) or not (FAIR_LO < fair < FAIR_HI):
@@ -235,7 +243,8 @@ class T3Live:
         if not best:
             if t_left <= 45:
                 self.s["decided_hs"] = hs; self.save()
-                logger.info(f"[T3 SKIP] hs={hs} no 4c edge in last 10m")
+                logger.info(f"[T3 SKIP] hs={hs} no aligned 4c edge in last 10m "
+                            + (" | ".join(skipped) if skipped else ""))
             return
         self.s["decided_hs"] = hs
         try:

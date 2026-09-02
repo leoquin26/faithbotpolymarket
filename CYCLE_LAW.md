@@ -1,5 +1,17 @@
 # CYCLE LAW — pre-registered, owner-approved 2026-08-11 (~00:55 UTC Aug 12)
 
+## T3 v2 — protective mid-cycle change (2026-09-02 ~16:50 UTC, owner: "no pares, corrige")
+T3 after 5 live settles: 1W/4L −$5.64 (chain $62.03). The $0 paper twin took the SAME
+five decisions and lost the same (−$4.38) → the model, not execution. All fills landed in
+10-12s (instant = informed seller, the mechanism mm_replay measured on 5.05M snapshots).
+The clock's n=9 bar was too low (+0.377 was noise; seat record now 6W/8L) — process
+error, recorded. Owner chose to continue and improve rather than halt.
+CHANGE (removes bets only, never adds): T3 takes a signal ONLY on the side aligned with
+the hour's drift (spot vs candle open). Evidence: aligned favourites +4.6% (n=2,643,
+z=+3.3) vs opposed −8.0% (n=118, test −20.8%); on T3's own 14-bet seat record (paper+live)
+aligned = 4W/2L, opposed = 2W/6L. Stops unchanged (n=40 / −$12, $6.36 of runway left).
+late_shadow stays UNFILTERED at $0 as the control for the opposed side.
+
 ## T3 LIVE AMENDMENT — THE CLOCK spoke (2026-09-02 06:05 UTC)
 Clock (registered 2026-09-01): filtered BTC paper ledger, px 20-85c, fair 10-90c,
 EV/$ >= +0.03 -> live. Reading at 06:05 UTC: **n=9, 5W/4L, +$4.11 fake, EV/$ +0.377**
