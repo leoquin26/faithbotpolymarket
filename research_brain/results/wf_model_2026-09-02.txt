@@ -1,0 +1,18 @@
+LAYER-3 WALK-FORWARD (LightGBM) on clean_bot_research.csv — 15m markets, run locally 2026-09-02
+36,998 decision rows over 53 days (2026-07-11 -> 09-01); train on days <= d, test on day d+1;
+32,901 test rows over 46 days. Features: drift_pct, roc60/300, sigma, fav/up/down ask,
+btc/sol drift, t_left, er, flow60, book_imb, hmm, coin, phase. Prices in cents -> dollars.
+
+  AUC   model 0.765   vs   MARKET (up_ask alone) 0.773
+  Brier model 0.1966  vs   market 0.1937
+  => the market price is a better forecaster than our best walk-forward model.
+
+Taker seat (buy side X when P(X) - (ask + 0.07*p(1-p)) >= margin), test days only:
+  margin >= 4c : n=7,844  EV/$ -0.032  (10-15m -0.023 | 5-10m -0.038 | 2-5m -0.039)
+  margin >= 8c : n=2,953  EV/$ -0.022  (10-15m +0.001 | 5-10m -0.046 | 2-5m -0.044)
+  margin >= 12c: n=1,285  EV/$ -0.037  (10-15m -0.020 | 5-10m -0.003 | 2-5m -0.149)
+
+VERDICT: no configuration is positive after fees on unseen days. With the features we
+record, a model cannot beat the market's own price on 15m Up/Down. "Faster" or "smarter"
+on these inputs does not create an edge; new INFORMATION would be required (order flow /
+trade prints, cross-venue leads at sub-second latency), not new math on the same inputs.
