@@ -46,7 +46,13 @@ WLEN = 900
 SHARES = 50                               # rewards min size on this market
 BAND = 0.015                              # rewards max spread (1.5c) from mid
 POOL_PER_WINDOW = 7500 / 96               # $7,500/day BTC-15m (verify daily)
-T_START, T_PULL_ALL = WLEN - 60, 120      # quote from open+60s, flat by T-120s
+# LAB VERDICT (mm_lab on 5.05M snapshots, 2026-09-02): in the LAST 5 MINUTES no
+# pull rule crosses zero — best rule net -4.5%/$ vs -6.5% baseline (single-fill
+# toxicity drops from -19c to -3c/share but single fills become 70% of windows).
+# The last 5 minutes are unquotable at 1Hz reaction speed. So: farm rewards in
+# minutes 1-10 and go FLAT at T-300s; triggers stay as a safety net. Whether
+# minutes 1-10 are benign is UNMEASURED on our tape — this bot exists to measure it.
+T_START, T_PULL_ALL = WLEN - 60, 300      # quote from open+60s, flat by T-300s
 MAX_SPREAD = 0.03
 CALM_S = 20                               # re-quote after this many quiet seconds
 TRIG = {"askdrop": (1, 3), "otherbid": (1, 3), "depth": (0.5, 5),

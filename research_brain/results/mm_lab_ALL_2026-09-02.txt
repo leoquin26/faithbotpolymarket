@@ -1,0 +1,10 @@
+loaded 11399 windows from 5053520 lines in 28s
+
+rule                           win  dbl%  sgl% none% EV/$ gross net w/rebate single EV/$ reward-sec
+baseline (no pull)           10605    67    31     1    -0.0693      -0.0648      -0.192       100%
+askdrop 1t/3s                10605    12    70    18    -0.0500      -0.0454      -0.032        92%
+askdrop 2t/5s                10605    27    65     8    -0.0573      -0.0528      -0.051        99%
+other-bid +1t/3s             10605    14    69    17    -0.0517      -0.0471      -0.034        92%
+other-bid +2t/5s             10605    29    64     7    -0.0585      -0.0540      -0.054        99%
+depth <=50%/5s               10605    15    66    20    -0.0504      -0.0457      -0.034        78%
+askdrop1/3s OR other1/3s     10605    12    69    19    -0.0494      -0.0448      -0.031        91%

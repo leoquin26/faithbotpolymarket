@@ -101,6 +101,39 @@ traded through our level). Rebate credited at 0.2·fee(px) per filled share.
   in the window, but WE HAVE NO NUMBER. That is the first thing the lab must
   collect.
 
+## 4b. THE NEW IDEA, TESTED: the defensive maker (mm_lab, 2026-09-02, run locally)
+
+Our own design: quote both sides, but PULL a side when the 1Hz book shows the
+sweep forming against it. Seven rules replayed on all 11,399 windows (quote
+from ~5.5 min out = the whole tape, flat at T-60s):
+
+| rule (all coins) | double-fill | single | net EV/$ (w/ rebate) | single-fill EV/share | reward-sec kept |
+|---|---|---|---|---|---|
+| baseline, no pull | 67% | 31% | **−0.065** | −0.192 | 100% |
+| ask-drop 1 tick / 3s | 12% | 70% | −0.045 | −0.032 | 92% |
+| ask-drop 2 ticks / 5s | 27% | 65% | −0.053 | −0.051 | 99% |
+| other-side bid +1 tick / 3s | 14% | 69% | −0.047 | −0.034 | 92% |
+| depth ≤ 50% / 5s | 15% | 66% | −0.046 | −0.034 | 78% |
+| ask-drop OR other-bid (1t/3s) | 12% | 69% | **−0.045** | −0.031 | 91% |
+
+BTC-only: baseline −0.058 → best rule −0.039. Same shape.
+
+**Verdict, honestly:** the pulls work as detectors — toxicity per single fill
+collapses from −19c to −3c/share, i.e. the book DOES telegraph the sweep — but
+pulling one side turns most windows into single-fill windows, and those leftover
+fills still lose ~3c on a ~60c price. Net stays negative. **The last 5 minutes
+of a 15m window are unquotable at 1Hz reaction speed, period.** No rule crosses
+zero there, so the defensive maker cannot earn its keep in the zone our tape
+covers.
+
+What survives: the toxicity concentrates near resolution by mechanism (the
+sweep IS the settlement). Minutes 1-10 are where rewards can be farmed with
+less adverse selection — but that zone is **unmeasured** (late_book only
+records the final ~5.5 min). `mm_shadow.py` was therefore changed to go flat
+at **T−300s**, and its first job is to measure minutes 1-10 live at $0: real
+fill toxicity there vs real Q-share/reward $. That measurement, not the lab, is
+the gate for any live dollar.
+
 ## 5. Reward-farm yield estimate (upper bound) from our book depth
 
 Quoting 50 shares both sides at best bid within 1.5c: our per-minute Q-share vs
