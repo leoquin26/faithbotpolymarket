@@ -1,5 +1,17 @@
 # AGENT STATUS — read this first
 
+## UPDATE 2026-09-02 17:30 UTC (Claude)
+- T3 live: 6 settles 1W/5L net −$8.19 (chain $59.48). v2 (aligned-only) deployed 16:44 UTC;
+  its first bet (UP@51c fair 58c, filled in 5s) lost. **$3.81 from the −$12 stop = one loss.**
+  Owner instruction: do not halt; let the stop rule. Paper twin lost the same 6 → the seat.
+- `mm_shadow.py` STARTED 17:26 UTC ($0 paper, BTC-15m defensive maker, flat at T-300s) to
+  measure minutes 1-10 fill toxicity and real reward Q-share. State `mm_shadow_state.json`,
+  log `mm_shadow.log`, Telegram 🧱. Not in the watchdog. Memory on box ~330 MB free — watch.
+- Three experiments today, all negative, in `research_brain/results/`: defensive-maker lab
+  (last 5 min unquotable), async complete-set replay (−8..−10%), walk-forward LightGBM
+  (market beats the model, taker −2..−4%). Next real lead = NEW INFORMATION collector
+  (trade prints WS + sub-second Binance lead), not new math.
+
 ## UPDATE 2026-09-02 06:10 UTC (Claude) — THE CLOCK SAID GO; T3 IS LIVE
 - **Clock verdict 06:05 UTC:** filtered BTC paper n=9 5W/4L +$4.11 fake, EV/$ +0.377 → GO.
 - **`t3_live.py` LIVE since 06:06:41 UTC** (seat `T3-late-digital-btc`): late_shadow's Φ
